@@ -68,6 +68,13 @@ def introduce_package():
     print("- Constraint focussed environment")
     print("\nGet started now and elevate your data analysis game!")
 
+def fun_intro():
+    print('\n Numbers that entice, and all things precise.')
+    print('\nThese were the ingredients chosen to create the perfect econometric models')
+    print('\n\But Professor Paz accidentally added an extra ingredient: HypothesisX')
+    print('\nThus, powerful insights were born!')
+    print('Using their ultra - metaheuristics, Choice, Count, and Mixture Have Dedicated Their Lives to Solving Complex Problems')
+
 def test_fit_mxl():
     import  pandas as pd
     from MixedLogit import MixedLogit
@@ -88,7 +95,7 @@ def test_fit_mxl():
     correlated_vars = ['pf', 'wk']  # Optional
     model.setup(X, y, ids=df['chid'].values, panels=df['id'].values, varnames=varnames,
                 isvars=isvars, transvars=transvars, correlated_vars=correlated_vars, randvars=randvars,
-                fit_intercept=False, alts=df['alt'], n_draws=200, mnl_init=True)
+                fit_intercept=True, alts=df['alt'], n_draws=200, mnl_init=True)
     model.fit()
     model.get_loglik_null()
     model.summarise()

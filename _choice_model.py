@@ -140,7 +140,7 @@ class DiscreteChoiceModel(ABC):
 
         # Define boolean flags:
         self.converged = False
-        self.return_grad, self.return_hess, fit_intercept = True, True, False
+        self.return_grad, self.return_hess, self.fit_intercept = True, True, False
         self.scipy_optimisation = True
         self.method, self.transformation = "bfgs", "boxcox"
 
@@ -168,13 +168,44 @@ class DiscreteChoiceModel(ABC):
         pass
     # }
 
+    @staticmethod
+    def add_single_intercept(data):
+        """
+        Adds a single intercept column to the dataset for all alternatives.
+
+        Parameters:
+        - data (pd.DataFrame): The input data in long format.
+
+        Returns:
+        - pd.DataFrame: The modified data with a single intercept column added.
+        """
+        if "intercept" not in data.columns:
+            data["intercept"] = 1
+            print("Single intercept column added to the dataset.")
+        else:
+            print("Intercept column already exists. No changes were made.")
+        return data
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Convert to numpy arrays                          '''
     ''' ---------------------------------------------------------- '''
     def set_asarray(self, X, y, varnames, alts, isvars, transvars, ids, weights, panels, avail): # {
+        if self.fit_intercept:
+            X = self.add_single_intercept(X)
         X = np.asarray(X)
         y = np.asarray(y)
         varnames = np.asarray(varnames, dtype="<U64") if varnames is not None else None
+        if self.fit_intercept:
+            if varnames is not None:
+                if "intercept" not in varnames:
+                    varnames = np.insert(varnames, 0, "intercept")  # Insert '_inter' into the first
+                    print("'_inter' added to varnames.")
+                else:
+                    print("'_inter' is already in varnames.")
+            else:
+                # Initialize varnames with only "_inter" if varnames is None
+                varnames = np.array(["_inter"], dtype="<U64")
+                print("'_inter' added as the first item in varnames.")
         alts = np.asarray(alts) if alts is not None else None
         isvars = np.asarray(isvars, dtype="<U64") if isvars is not None else None
         transvars = np.asarray(transvars, dtype="<U64") if transvars is not None else []
@@ -213,6 +244,7 @@ class DiscreteChoiceModel(ABC):
         self.alts = np.unique(alts)   # Extract unique alternatives from the data
         self.varnames = list(varnames)  # Easier to handle with lists
         self.fit_intercept = fit_intercept
+
         self.transformation = transformation
         self.base_alt = self.alts[0] if base_alt is None else base_alt
         self.correlated_vars = False if correlated_vars is None else correlated_vars
@@ -221,6 +253,8 @@ class DiscreteChoiceModel(ABC):
         # Assign panels to self.panels if self.panels attribute does not exist
         self.panels = getattr(self, 'panels', panels) # i.e., if not hasattr(self, 'panels'): self.panels = panels
     # }
+
+
 
 
     ''' ---------------------------------------------------------- '''
@@ -688,6 +722,7 @@ class DiscreteChoiceModel(ABC):
         converting the isvars to a dummy representation that removes the base
         alternative.
         """
+
         J = getattr(self, 'J', len(self.alts))
        
         N = P_N = int(len(X)/J)

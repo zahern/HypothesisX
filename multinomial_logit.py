@@ -295,6 +295,9 @@ class MultinomialLogit(DiscreteChoiceModel):
         print(f'observed probs debug{self.obs_prob}')
     # }
 
+
+
+
     ''' -------------------------------------------------------------------- '''
     ''' Function. Fit multinomial and/or conditional logit models            '''
     ''' -------------------------------------------------------------------- '''
