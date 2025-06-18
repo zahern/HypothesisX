@@ -169,21 +169,19 @@ class DiscreteChoiceModel(ABC):
     # }
 
     @staticmethod
-    def add_single_intercept(data):
-        """
-        Adds a single intercept column to the dataset for all alternatives.
-
-        Parameters:
-        - data (pd.DataFrame): The input data in long format.
-
-        Returns:
-        - pd.DataFrame: The modified data with a single intercept column added.
-        """
-        if "intercept" not in data.columns:
-            data["intercept"] = 1
-            print("Single intercept column added to the dataset.")
+    def add_single_intercept(data, varnames = None):
+        # Check if data is a NumPy array
+        if isinstance(data, np.ndarray):
+            # Add intercept as a new column (prepend or append)
+            intercept_col = np.ones((data.shape[0], 1))  # Column of ones
+            if "intercept" not in varnames:  # Handle both DataFrame and ndarray
+                data = np.hstack([intercept_col, data])  # Append intercept for NumPy arrays
+        elif isinstance(data, pd.DataFrame):
+            # Check and add intercept for DataFrames
+            if "intercept" not in data.columns:
+                data["intercept"] = 1  # Add intercept column
         else:
-            print("Intercept column already exists. No changes were made.")
+            raise TypeError("Data must be a NumPy array or Pandas DataFrame")
         return data
 
     ''' ---------------------------------------------------------- '''
@@ -191,7 +189,7 @@ class DiscreteChoiceModel(ABC):
     ''' ---------------------------------------------------------- '''
     def set_asarray(self, X, y, varnames, alts, isvars, transvars, ids, weights, panels, avail): # {
         if self.fit_intercept:
-            X = self.add_single_intercept(X)
+            X = self.add_single_intercept(X, varnames)
         X = np.asarray(X)
         y = np.asarray(y)
         varnames = np.asarray(varnames, dtype="<U64") if varnames is not None else None
@@ -204,10 +202,12 @@ class DiscreteChoiceModel(ABC):
                     print("'_inter' is already in varnames.")
             else:
                 # Initialize varnames with only "_inter" if varnames is None
-                varnames = np.array(["_inter"], dtype="<U64")
+                varnames = np.array(["intercept"], dtype="<U64")
                 print("'_inter' added as the first item in varnames.")
         alts = np.asarray(alts) if alts is not None else None
         isvars = np.asarray(isvars, dtype="<U64") if isvars is not None else None
+        if self.fit_intercept and "intercept" not in isvars:
+            isvars = np.insert(isvars, 0, "intercept")
         transvars = np.asarray(transvars, dtype="<U64") if transvars is not None else []
         ids = np.asarray(ids) if ids is not None else None
         weights = np.asarray(weights) if weights is not None else None
@@ -471,35 +471,6 @@ class DiscreteChoiceModel(ABC):
             # }
         # }
 
-        if self.fit_intercept:
-        # {
-            if '_inter' not in self.isvars:  # stop running in validation
-            # {
-                ones_array = np.ones(J * N) # Create an array of ones with length J * N.
-                column_vector =  ones_array[:, None] # Reshapes array to have dimensions (J * N, 1)
-                X = np.hstack((column_vector, X)) # Stack arrays horizontally
-                
-                # Adjust variables to allow intercept parameters
-                # These lines of code check if self has specific attributes. If it does, it will
-                # convert it to a NumPy array with boolean dtype using np.array().
-                # If the attribute doesn't exist, it will create an array of False values using np.repeat()
-                # with length J - 1. Then, it will insert False at the beginning of the array using np.insert().
-                self.isvars = np.insert(np.array(self.isvars, dtype="<U64"), 0, '_inter')
-                self.varnames = np.insert(np.array(self.varnames, dtype="<U64"), 0, '_inter')
-                self.fxidx = np.insert(np.array(self.fxidx, dtype="bool_"),  0, np.repeat(True, J - 1))
-                self.fxtransidx = np.insert(np.array(self.fxtransidx, dtype="bool_"), 0, np.repeat(False, J - 1))
-
-
-                # Get the attribute if it exits, otherwise add False, 'J-1' times
-                current_rvidx = getattr(self, 'rvidx', np.repeat(False, J - 1))
-                self.rvidx = np.insert(current_rvidx, 0, np.repeat(False, J - 1)) # Insert at beginning
-
-                current_rvtransidx = getattr(self, 'rvtransidx', np.repeat(False, J - 1))
-                self.rvtransidx = np.insert(current_rvtransidx, 0, np.repeat(False, J - 1))  # Insert at beginning
-
-            # }
-        # }
-
         if self.transformation == "boxcox": # {
             self.trans_func = boxcox_transformation
             self.transform_deriv = boxcox_param_deriv
@@ -629,14 +600,12 @@ class DiscreteChoiceModel(ABC):
         elif (len(self.isvars)):
             X = Xis
         else:
-            x_varname_length = len(self.varnames) if not self.fit_intercept \
-                else (len(self.varnames) - 1) + (J - 1)
+            x_varname_length = len(self.varnames)
             X = X.reshape((-1, len(self.alts), x_varname_length))
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
-        intercept_names = ["_intercept.{}".format(j) for j in self.alts
-                           if j != self.base_alt] if self.fit_intercept else []
+        intercept_names = []
 
         names = ["{}.{}".format(isvar, j) for isvar in isvars for j in self.alts if j != self.base_alt]
 
@@ -681,7 +650,7 @@ class DiscreteChoiceModel(ABC):
 
 
     def check_instance(self, obj):
-        print('this is bad check this...')
+
         if "MultinomialLogit" in obj.__class__.__name__:
             
             return True
@@ -748,15 +717,8 @@ class DiscreteChoiceModel(ABC):
 
         lst = varnames
         lst = np.array(lst, dtype='<U64')
-        if self.fit_intercept:
-            lst = np.insert(lst, 0, '_inter').tolist()
-            if '_inter' not in self.isvars:
-                if hasattr(self, 'ispos'):
-                    self.isvars = np.insert(self.isvars, 0, '_inter')
-                else:
-                    self.isvars = np.array(['_inter'])
-        else:
-            lst = lst.tolist()
+
+        lst = lst.tolist()
 
         ispos = [lst.index(str) for str in self.isvars if str in lst]  # Position of IS vars
         #ispos = [self.varnames.tolist().index(i) for i in self.isvars]  # Position of IS vars
@@ -783,21 +745,7 @@ class DiscreteChoiceModel(ABC):
                                             0, np.repeat(False, len(self.isvars)*(J - 1)))
         else:
             self.restate_idx(ispos, isvars, asvars)
-        if self.fit_intercept:
-            X = np.hstack((np.ones(J*N)[:, None], X))
-            #X=np.hstack(np.tile(np.eye(J), reps=(P_N, 1)),X)
-            #eye = np.tile(np.eye(J), reps=(P_N, 1))
-            #X = np.hstack((eye,X))
-            if '_inter' not in self.isvars:  # stop running in validation
-                # adjust variables to allow intercept parameters
-                self.isvars = np.insert(np.array(self.isvars, dtype="<U64"), 0, '_inter')
-                self.varnames = np.insert(np.array(self.varnames, dtype="<U64"), 0, '_inter')
-                self.fxidx = np.insert(np.array(self.fxidx, dtype="bool_"), 0, np.repeat(True, J-1))
-                if hasattr(self, 'rvidx'):
-                    self.rvidx = np.insert(np.array(self.rvidx, dtype="bool_"), 0, np.repeat(False, J-1))
-                self.fxtransidx = np.insert(np.array(self.fxtransidx, dtype="bool_"), 0, np.repeat(False, J-1))
-                if hasattr(self, 'rvtransidx'):
-                    self.rvtransidx = np.insert(np.array(self.rvtransidx, dtype="bool_"), 0, np.repeat(False, J-1))
+
 
 
         if self.transformation == "boxcox":
@@ -925,12 +873,10 @@ class DiscreteChoiceModel(ABC):
         elif (len(self.isvars)):
             X = Xis
         else:
-            x_varname_length = len(self.varnames) if not self.fit_intercept \
-                               else (len(self.varnames) - 1)+(J-1)
+            x_varname_length = len(self.varnames)
             X = X.reshape(-1, len(self.alts), x_varname_length)
 
-        intercept_names = ["_intercept.{}".format(j) for j in self.alts
-                           if j != self.base_alt] if self.fit_intercept else []
+        intercept_names = [] #toddo remove
 
         names = ["{}.{}".format(isvar, j) for isvar in isvars for j in self.alts if j != self.base_alt]
 
@@ -958,13 +904,9 @@ class DiscreteChoiceModel(ABC):
 
         if (isinstance(self.correlated_vars, list)):  # if not all r.v.s correlated
             # {
-            if self.fit_intercept:
-                if '_inter' not in self.varnames:
-                    names_for_p = np.insert(self.varnames, 0, '_inter')
-                else:
-                    names_for_p = self.varnames
-            else:
-                names_for_p = self.varnames
+
+
+            names_for_p = self.varnames
             sd_uncorrelated_pos = [lst.index(str) for str in names_for_p
                                    if str not in self.correlated_vars and str in randvars]
             br_w_names = np.char.add("sd.", names_for_p[sd_uncorrelated_pos])
@@ -975,24 +917,19 @@ class DiscreteChoiceModel(ABC):
         #if isvars then isvars gets positionemed to fromt
         if len(self.isvars) >0:
 
-            inter_o = ["_inter" for j in self.alts
-                           if j != self.base_alt] if self.fit_intercept else ['_inter']
+            inter_o = []
 
             names_o = [isvar for isvar in isvars for j in self.alts if j != self.base_alt]
             restvars = [var for var in self.varnames if var not in names_o and var not in inter_o]
             self.ordered_varnames = names_o + restvars
 
-        elif self.fit_intercept:
-                inter_o = ["_inter" for j in self.alts
-                           if j != self.base_alt]
-                restvars = [var for var in self.varnames if var  not in inter_o]
-                self.ordered_varnames = restvars
+
 
 
             
         else:        
             self.ordered_varnames = self.varnames
-        np.insert(np.array(self.varnames, dtype="<U64"), 0, '_inter')
+        #np.insert(np.array(self.varnames, dtype="<U64"), 0, '_inter')
 
        
         names = np.concatenate((intercept_names, names, asvars_names, randvars,

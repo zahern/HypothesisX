@@ -1,0 +1,43 @@
+__________________________
+Solution: Initial Solution
+__________________________
+Objectives:
+[0]. (Minimise) bic = 211700.9705
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 1e-06
+Final gradient norm: 7.1999999999999815e+22
+**************************************************
+Estimation time= 15.4 seconds
+
+Proportion of alternatives: observed choice
+[0.22576177 0.26246537 0.23684211 0.26939058]
+
+Proportion of alternatives: predicted choice
+[0.2406125  0.28177901 0.23307171 0.24453678]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient              Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+seas                -0.0051122896  1.0000000000 -0.0051122896         0.996    
+lambda.seas         -1.0701092854  1.0000000000 -2.0701092854        0.0384 *  
+cl                   0.1287675374  1.0000000000  0.1287675374         0.898    
+sd.cl                0.1000000000  1.0000000000  0.1000000000          0.92    
+lambda.cl            0.1287675374  1.0000000000 -0.8712324626         0.384    
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -105835.763; AIC = 211681.526; BIC = 211700.970; ADJLIK RATIO: 1.000
+
+asvars =  ['cl', 'seas']
+isvars =  []
+randvars =  {'cl': 't'}
+bcvars =  ['cl', 'seas']
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model= 
+

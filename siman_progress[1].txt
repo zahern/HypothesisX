@@ -1,0 +1,1 @@
+SA[1]. Progress @ Step=0; Curr=[211700.9705]; Best=[211700.9705]; Elapsed Time=20.08
