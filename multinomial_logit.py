@@ -202,6 +202,8 @@ class MultinomialLogit(DiscreteChoiceModel):
         method="bfgs", scipy_optimisation=True):
     # {
 
+
+        self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # RECAST AS NUMPY NDARRAY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -269,9 +271,7 @@ class MultinomialLogit(DiscreteChoiceModel):
             self.betas = np.append((np.repeat(0.1, expected_length_betas)), np.repeat(1, expected_length_lambdas))# Add
         else: #{
             self.betas = self.init_coeff
-            if len(self.init_coeff) != expected_length \
-                    and not (hasattr(self, 'is_latent_class') and self.is_latent_class):
-                raise ValueError(f"The size of init_coeff must be: {self.X.shape[1]}")
+
         # }
 
         if self.weights is not None:
@@ -292,7 +292,7 @@ class MultinomialLogit(DiscreteChoiceModel):
         self.obs_prob = np.mean(self.y, axis=0)  # Compute: obs_prob[j] = average(y[:,j])
 
 
-        print(f'observed probs debug{self.obs_prob}')
+
     # }
 
 

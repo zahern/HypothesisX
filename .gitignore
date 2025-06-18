@@ -1,0 +1,76 @@
+#Compiled python modules.
+*.pyc
+
+# Setuptools distribution folder.
+/dist/
+/build/
+cris_test.py
+examples/benchmark/Rprof.out
+# Python egg metadata, regenerated from source files by setuptools.
+/*.egg-info
+
+
+# Unit tests/coverage
+.coverage
+
+# Docs builds
+/docs/build/
+
+# misc
+.vscode/
+logs/
+venv/
+.venv/
+.DS_Store
+Makefile
+docs/.DS_Store
+prof/
+assets/
+env/
+__pycache__/
+.vs/
+.fleet/
+.ipynb_checkpoints/
+
+
+
+# Ignore all TeX auxiliary files:
+*.aux
+*.lof
+*.log
+*.lot
+*.fls
+*.out
+*.toc
+*.fmt
+*.fot
+*.cb
+*.cb2
+*.lb
+*.bbl
+*.bcf
+*.blg
+*.acn
+*.acr
+*.alg
+*.glg
+*.zip
+*.glo
+*.gls
+*.ist
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.run.xml
+*.tex
+
+
+# Ignore specific auto-generated files
+*.pdf  # Uncomment if you don't want to track PDFs
+
+# Ignore generated directories
+*/_minted*/
+
+# OS generated files
+.DS_Store
+Thumbs.db
