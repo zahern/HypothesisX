@@ -86,8 +86,7 @@ class MixedLogit(DiscreteChoiceModel):
         self.ftol, self.gtol = ftol, gtol
         self.return_grad, self.return_hess = return_grad, return_hess
         self.fit_intercept = fit_intercept
-        print('fitting interecpt')
-        print('write me a function to always have intercpet in the model.')
+
 
         self.init_coeff = init_coeff
         self.halton, self.halton_opts = halton, halton_opts
@@ -238,15 +237,13 @@ class MixedLogit(DiscreteChoiceModel):
         # Initalise coefficients using a multinomial logit model
         if self.mnl_init and self.init_coeff is None:
             # {
-            # Exclude '_inter' from varnames
-            if self.fit_intercept and '_inter' in self.varnames:
-                self.varnames_mnl = self.varnames[self.varnames != '_inter']
+            # Exclude 'intercept' from varnames
+            if self.fit_intercept and 'intercept' in self.varnames:
+                self.varnames_mnl = self.varnames[self.varnames != 'intercept']
             else:
                 self.varnames_mnl = self.varnames
 
-            # Exclude '_inter' from isvars
-            if self.fit_intercept and '_inter' in self.asvars:
-                self.isvars = self.isvars[self.isvars != '_inter']
+
 
             # else:
             # self.isvars = self.asvars
@@ -254,9 +251,9 @@ class MixedLogit(DiscreteChoiceModel):
             mnl = MultinomialLogit()
 
             mnl.setup(self.X_original, self.y_original.flatten(),  # Collapse to one dimension!
-                      self.varnames_mnl, self.alts, self.isvars, transvars=self.transvars,
+                      self.varnames, self.alts, self.isvars, transvars=self.transvars,
                       ids=self.ids, weights=self.weights, avail=self.avail, base_alt=self.base_alt,
-                      fit_intercept=self.fit_intercept)
+                      fit_intercept=False)
             mnl.fit()
 
             # mnl estimates -> mxl needs to add stdev to random variables
@@ -811,14 +808,14 @@ class MixedLogit(DiscreteChoiceModel):
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # ZEKES ERROR HANDLING. DO NOT ADD ANOTHER INTER_OFFSET
-        # if '_inter' in self.varnames and inter_offset > 1:
+        # if 'intercept' in self.varnames and inter_offset > 1:
         #    inter_offset -= 1
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         for ii, var in enumerate(ordered_varnames):  # TODO: BUGFIX
             # {
 
-            if var in '_inter': continue  # ERROR HANDLING. SKIP REMAINING STEPS
+            if var in 'intercept': continue  # ERROR HANDLING. SKIP REMAINING STEPS
 
             ii_offset = ii + inter_offset
             is_correlated = False

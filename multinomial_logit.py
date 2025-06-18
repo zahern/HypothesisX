@@ -202,6 +202,8 @@ class MultinomialLogit(DiscreteChoiceModel):
         method="bfgs", scipy_optimisation=True):
     # {
 
+
+        self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # RECAST AS NUMPY NDARRAY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -292,7 +294,7 @@ class MultinomialLogit(DiscreteChoiceModel):
         self.obs_prob = np.mean(self.y, axis=0)  # Compute: obs_prob[j] = average(y[:,j])
 
 
-        print(f'observed probs debug{self.obs_prob}')
+
     # }
 
 
