@@ -9,7 +9,8 @@ import inspect
 
 # files
 from RandomP import RandomParameters
-from Halton import HaltonSequence
+from Halton import HaltonSequence, Draws
+
 from _choice_model import  DiscreteChoiceModel
 from _device import device as dev
 from boxcox_functions import boxcox_param_deriv_mixed, boxcox_transformation_mixed, truncate, truncate_lower
@@ -27,8 +28,9 @@ infinity = float('inf')
 class MixedLogit(DiscreteChoiceModel):
     def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u']):
         super().__init__()
-        self.halton_sequence = HaltonSequence(**(halton_opts or {}))  # Initialize HaltonSequence
+        self.draws_generator = Draws(k=len(distributions), halton_opts=halton_opts, rvdist=distributions)
         self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters
+        self.softmax_r = True
 
     def generate_draws(self, sample_size, n_draws, n_vars):
         """
@@ -41,8 +43,10 @@ class MixedLogit(DiscreteChoiceModel):
         """
         if n_vars == 0:
             return np.ndarray((1,0,1))
-        draws = self.halton_sequence.generate(sample_size, n_draws, n_vars)
-        return self.random_parameters.apply_distribution(draws)
+        draws_s = Draws(k=n_vars, halton_opts=None)
+        draws = draws_s.generate_draws(sample_size, n_draws, n_vars)
+        return draws
+
 
     def setup(self, X, y, varnames=None, alts=None, isvars=None, transvars=None,
               transformation="boxcox", ids=None, weights=None, avail=None,
@@ -53,7 +57,7 @@ class MixedLogit(DiscreteChoiceModel):
               gtol=1e-6, return_hess=True, return_grad=True, method="bfgs",
               save_fitted_params=True, mnl_init=True):
         # {
-
+        self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # RECAST AS NUMPY NDARRAY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -82,7 +86,9 @@ class MixedLogit(DiscreteChoiceModel):
         self.ftol, self.gtol = ftol, gtol
         self.return_grad, self.return_hess = return_grad, return_hess
         self.fit_intercept = fit_intercept
-        self.fit_intercept = False
+        print('fitting interecpt')
+        print('write me a function to always have intercpet in the model.')
+
         self.init_coeff = init_coeff
         self.halton, self.halton_opts = halton, halton_opts
         self.minimise_func = minimise_func
@@ -326,7 +332,8 @@ class MixedLogit(DiscreteChoiceModel):
         # SOLVE OPTIMISATION PROBLEM - COMPUTATIONALLY TIME CONSUMING!
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         minimise_func = minimize if self.minimise_func is None else self.minimise_func
-        if self.fit_intercept:
+        self.fit_intercept_old = False
+        if self.fit_intercept_old:
             if self.X.shape[-1] != len(self.fxidx):
                 print(f'difference is {self.X.shape[-1] - len(self.fxidx)}')
                 print('problem here')
@@ -577,7 +584,7 @@ class MixedLogit(DiscreteChoiceModel):
                     Xrtrans_lmda = self.trans_func(Xrtrans, rlmda)
 
                     Brtrans = Brtrans_b[None, :, None] + drawstrans[:, 0:self.Krtrans, :] * Brtrans_w[None, :, None]
-                    Brtrans = self.random_parameters.apply_distribution(Brtrans, self.rvtransdist)
+                    Brtrans = self.draws_generator.apply_distribution(Brtrans, self.rvtransdist)
 
                     grtrans_b = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xrtrans_lmda) * dertrans
 
@@ -646,6 +653,23 @@ class MixedLogit(DiscreteChoiceModel):
         if self.return_grad: result += (-g,)  # Enlarge the tuple and add '-g'
         return result
 
+    # }
+
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function                                                   '''
+    ''' ---------------------------------------------------------- '''
+    def prob_product_across_panels(self, pch, panel_info):
+    # {
+        if not np.all(panel_info):  # If panels unbalanced. Not all ones
+        # {
+            idx = panel_info == 0
+            for i in range(pch.shape[2]):
+                pch[:, :, i][idx] = 1  # Multiply by one when unbalanced
+        # }
+        pch = pch.prod(axis=1)  # (N,R)
+        truncate_lower(pch, min_comp_val)  # i.e., pch[pch == 0] = min_comp_val
+        return pch  # (N,R)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -934,7 +958,7 @@ class MixedLogit(DiscreteChoiceModel):
             # First reshape Br, creating a first and third dimension so dimension (1, Kr, 1)
             # Second, compute Br[i,:,j] = tmp[i,:,j] + Br_b[0,:,0]  for all values of i and j
 
-            Br = self.random_parameters.apply_distribution(Br, self.rvdist)
+            Br = self.draws_generator.apply_distribution(Br, self.rvdist)
             self.Br = Br  # save Br to use later
             Xr = X[:, :, :, self.rvidx]
             XBr = dev.cust_einsum('npjk,nkr -> npjr', Xr, Br)  # (N, P, J, R)
@@ -968,6 +992,10 @@ class MixedLogit(DiscreteChoiceModel):
 
         # Thresholds to avoid overflow warnings
         V = truncate(V, -max_exp_val, max_exp_val)
+        if self.softmax_r:
+            # Apply numerical stability by subtracting the max value for each choice set
+            V = V - dev.np.max(V, axis=2, keepdims=True)
+
         eV = dev.np.exp(V)  # Compute eV = exp(V)
 
         # Exponent of the utility function for the logit formula
@@ -987,3 +1015,125 @@ class MixedLogit(DiscreteChoiceModel):
         return p
     # }
 
+    def balance_panels(self, X, y, avail, panels):
+    #
+        _, J, K = X.shape
+        _, p_obs = np.unique(panels, return_counts=True)
+        p_obs = (p_obs / J).astype(int)
+        N = len(p_obs)  # This is the new N after accounting for panels
+        P = np.max(p_obs)  # panels length for all records
+        NP = N * P
+        if not np.all(p_obs[0] == p_obs):  # Balancing needed
+        # {
+            y = y.reshape(X.shape[0], J, 1) if y is not None else None
+            avail = avail.reshape(X.shape[0], J, 1) if avail is not None else None
+            Xbal = np.zeros((NP, J, K))
+            ybal = np.zeros((NP, J, 1))
+            availbal = np.zeros((NP, J, 1))
+            panel_info = np.zeros((N, P))
+            cum_p = 0  # Cumulative sum of n_obs at every iteration
+            for n, p in enumerate(p_obs):  # {
+                # Copy data from original to balanced version
+                nP = n * P
+                Xbal[nP:nP + p, :, :] = X[cum_p:cum_p + p, :, :]
+                ybal[nP:nP + p, :, :] = y[cum_p:cum_p + p, :, :] if y is not None else None  # TODO? predict mode in xlogit?
+                availbal[nP:nP + p, :, :] = avail[cum_p:cum_p + p, :, :] if avail is not None else None
+                panel_info[n, :p] = np.ones(p)
+                cum_p += p
+            # }
+        # }
+        else:  # No balancing needed
+        # {
+            Xbal, ybal, availbal = X, y, avail
+            panel_info = np.ones((N, P))
+        # }
+        ybal = ybal if y is not None else None
+        availbal = availbal if avail is not None else None
+        return Xbal, ybal, availbal, panel_info
+    # }
+
+    ''' -------------------------------------------------------------------- '''
+    ''' Function. Compute the derivatives based on the mixing distributions  '''
+    ''' note: (betas_random[:, k, :] > 0) creates a boolean mask and         '''
+    ''' astype(int) converts any valure True to 1 and any False to zero      '''
+    ''' -------------------------------------------------------------------- '''
+    def compute_derivatives(self, betas, draws, distr=None, K=None,
+                            chol_mat=None, trans=False, betas_random=None):
+    # {
+        N, R = draws.shape[0], draws.shape[2]
+        Kr = K if K else self.Kr
+        der = dev.np.ones((N, Kr, R))
+        distr = distr if distr else self.rvdist
+        if any(set(distr).intersection(['ln', 'tn'])):  # If any ln or tn
+        # {
+            for k, distr_k in enumerate(distr):  # {
+                if distr_k == 'ln':
+                    der[:, k, :] = betas_random[:, k, :]
+                elif distr_k == 'tn':  # Set any element > 0 as 1 and 0 otherwise
+                    der[:, k, :] = (betas_random[:, k, :] > 0).astype(int)
+            # }
+        # }
+        return der
+    # }
+
+
+
+    def transform_betas(self, betas, draws, index=None, trans=False, chol_mat=None):  # {
+        if trans:
+            betas_fixed, betas_random = self.compute_betas_trans(betas, draws, index)
+        else:
+            betas_fixed, betas_random = self.compute_betas_not_trans(betas, draws, index, chol_mat)
+        return betas_fixed, betas_random
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function                                                   '''
+    ''' ---------------------------------------------------------- '''
+
+    def compute_fitted_params(self, y, p, panel_info, Br):
+        # {
+
+        if Br is None:
+            raise ValueError("BR is undefined in mixed_logit::compute_fitted_params")
+
+        # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+        if dev.using_gpu:
+            y, p = dev.convert_array_gpu(y), dev.convert_array_gpu(p)
+        # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+        pch = np.sum(y * p, axis=2)  # (N, P, R)
+        pch = self.prob_product_across_panels(pch, panel_info)
+        pch = truncate_lower(pch, min_comp_val)  # Remove zero elements, i.e., pch[pch == 0] = min_comp_val
+        pch2 = np.divide(pch, np.sum(pch, axis=1)[:, None])  # pch divide by rowsum(pch)
+        pch2 = pch2.flatten()
+        temp_br = np.zeros((self.N * self.batch_size, self.Kr))
+
+        # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+        if dev.using_gpu:
+            temp_br = dev.convert_array_gpu(temp_br)
+        # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+        for i in range(self.N):  # {
+            start = i * self.batch_size
+            end = (i + 1) * self.batch_size
+            for k in range(self.Kr):
+                temp_br[start:end, k] = Br[i, k, :]
+        # }
+
+        Br = temp_br
+        pch2 = np.multiply(pch2[:, None], Br)
+        pch2_res = np.zeros((self.N, self.Kr))
+        pch2_sd_test = np.zeros((self.N, self.Kr))
+
+        # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+        if dev.using_gpu:
+            pch2_res, pch2_sd_test = dev.convert_array_gpu(pch2_res), dev.convert_array_gpu(pch2_sd_test)
+        # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+        for i in range(self.N):  # {
+            batch_slice = slice(i * self.batch_size, (i + 1) * self.batch_size)
+            pch2_res[i, :] = np.sum(pch2[batch_slice, :], axis=0)
+            pch2_sd_test[i, :] = np.std(pch2[batch_slice, :], axis=0)
+        # }
+        self.pch2_res, self.pch2_sd_test = pch2_res, pch2_sd_test
+    # }
