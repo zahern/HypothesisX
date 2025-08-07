@@ -49,6 +49,7 @@ __pycache__/
 *.lb
 *.bbl
 *.bcf
+*.pypirc
 *.blg
 *.acn
 *.acr

@@ -39,7 +39,7 @@ with open('version.txt', 'w') as f:
 # Setup configuration
 setuptools.setup(
     name='SearchLibrium',
-    version='0.0.2',
+    version='0.0.1',
     description='A Python package for econometric models driven by search',
     long_description=long_description,
     long_description_content_type='text/markdown',  # Specify Markdown content
@@ -47,7 +47,7 @@ setuptools.setup(
     author='Zeke Ahern, Alexander Paz Prithvi Beeramole, Robert Burdett',
     author_email='z.ahern@qut.edu.au',
     license='MIT',
-    packages=['SearchLibrium'],
+    packages=setuptools.find_packages(),
     zip_safe=False,
     python_requires='>=3.10',
     install_requires=[
