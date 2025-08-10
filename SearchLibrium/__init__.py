@@ -8,7 +8,7 @@ from collections import namedtuple
 import numpy as np
 import pandas as pd
 print('loading devices')
-import _device as dev
+from . import _device as dev
 from .multinomial_nested import MultinomialNestedLogit
 from .Halton import Halton
 from .rrm import RRM
@@ -21,6 +21,7 @@ from .search import Search
 from . import misc
 
 print('loaded all')
+print('Welcome to SearchLibrium')
 
 
 
