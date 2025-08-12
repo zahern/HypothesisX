@@ -48,7 +48,10 @@ from scipy import stats
 from scipy.optimize import minimize
 import pandas as pd
 from time import time
-from _choice_model import  DiscreteChoiceModel
+try:
+    from _choice_model import DiscreteChoiceModel
+except ImportError:
+    from ._choice_model import  DiscreteChoiceModel
 minval = 1E-30
 
 ''' ---------------------------------------------------------- '''

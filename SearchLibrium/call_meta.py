@@ -1,9 +1,16 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # META HEURISTIC OPTIMISATION APPROACH
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-from harmony import*
-from siman import*
-from threshold import*
+
+try:
+    from harmony import*
+    from siman import*
+    from threshold import*
+except ImportError:
+    from .harmony import*
+    from .siman import*
+    from .threshold import*
+
 def call_harmony(parameters, init_sol=None):
 # {
     solver = HarmonySearch(parameters, init_sol)

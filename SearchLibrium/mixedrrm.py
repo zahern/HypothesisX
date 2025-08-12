@@ -1,5 +1,9 @@
-from rrm import  RandomRegret
-from MixedLogit import MixedLogit
+try:
+    from rrm import  RandomRegret
+    from MixedLogit import MixedLogit
+except ImportError:
+    from .rrm import RandomRegret
+    from .MixedLogit import MixedLogit
 import  numpy as np
 from scipy.optimize import minimize
 class MixedRandomRegret(RandomRegret, MixedLogit):

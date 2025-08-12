@@ -1,5 +1,8 @@
 from scipy.stats import norm
-from multinomial_logit import*
+try:
+    from multinomial_logit import*
+except ImportError:
+    from .multinomial_logit import *
 #import  numpy as np
 
 class MultinomialProbit(MultinomialLogit):

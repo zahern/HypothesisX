@@ -8,14 +8,22 @@ import inspect
 
 
 # files
-from RandomP import RandomParameters
-from Halton import HaltonSequence, Draws
+try:
+    from RandomP import RandomParameters
+    from Halton import HaltonSequence, Draws
 
-from _choice_model import  DiscreteChoiceModel
-from _device import device as dev
-from boxcox_functions import boxcox_param_deriv_mixed, boxcox_transformation_mixed, truncate, truncate_lower
-from multinomial_logit import MultinomialLogit
+    from _choice_model import  DiscreteChoiceModel
+    from _device import device as dev
+    from boxcox_functions import boxcox_param_deriv_mixed, boxcox_transformation_mixed, truncate, truncate_lower
+    from multinomial_logit import MultinomialLogit
+except ImportError:
+    from .RandomP import RandomParameters
+    from .Halton import HaltonSequence, Draws
 
+    from ._choice_model import DiscreteChoiceModel
+    from ._device import device as dev
+    from .boxcox_functions import boxcox_param_deriv_mixed, boxcox_transformation_mixed, truncate, truncate_lower
+    from .multinomial_logit import MultinomialLogit
 
 
 ''' ---------------------------------------------------------- '''
