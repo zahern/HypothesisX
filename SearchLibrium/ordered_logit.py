@@ -1,7 +1,10 @@
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 IMPLEMENTATION: ORDERED LOGIT
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-import misc
+try:
+    import misc
+except ImportError:
+    from . import misc
 
 '''
 THEORY: Ordered Logit models the cumulative probabilities of being in a 
@@ -54,14 +57,19 @@ GOAL: Identify optimal thr and betas
 ''' LIBRARIES                                                  '''
 ''' ---------------------------------------------------------- '''
 import numpy as np
-from _choice_model import DiscreteChoiceModel
-
+try:
+    from _choice_model import DiscreteChoiceModel
+    from Halton import Draws
+    from MixedLogit import*
+except ImportError:
+    from ._choice_model import DiscreteChoiceModel
+    from .Halton import Draws
+    from .MixedLogit import *    
 from scipy import stats
 from scipy.optimize import minimize
 
 import inspect
-from Halton import Draws
-from MixedLogit import*
+
 minval = 1E-30
 
 

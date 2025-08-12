@@ -52,8 +52,10 @@ local optima, as it allows the algorithm to escape local optima and explore the 
 #try:
 #   from .search import*
 #    from .latent_class_constrained import LatentClassCoefficients
-
-from search import*
+try:
+    from search import *
+except ImportError:
+    from .search import*
 
 import copy
 import time

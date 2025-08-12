@@ -1,7 +1,10 @@
 import numpy as np
 from scipy.optimize import minimize
-from multinomial_logit import*
-
+try:
+    from multinomial_logit import*
+except:
+    from .multinomial_logit import *
+    
 class NestedLogit(MultinomialLogit):
     """
     Nested Logit Model (inherits from MultinomialLogit).

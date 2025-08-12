@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SearchLibrium"
-version = "0.0.4"
+version = "0.0.5"
 authors = [
 { name="Zeke Ahern", email="z.ahern@qut.edu.au" },
 ]
@@ -35,7 +35,7 @@ realpython = "SearchLibrium.__main__:main"
 
 
 [tool.bumpver]
-current_version = "0.0.4"
+current_version = "0.0.5"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message  = "Bump version {old_version} -> {new_version}"
 commit          = true
