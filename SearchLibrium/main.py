@@ -53,7 +53,7 @@ def print_ascii_art_logo():
 
 def show_ascii_art():
     # Generate ASCII Art for SwarmetriX
-    ascii_art = pyfiglet.figlet_format("SwarmMetrix", '5lineoblique')
+    ascii_art = pyfiglet.figlet_format("Searchlibrium", '5lineoblique')
 
     print(Fore.MAGENTA +ascii_art)
     print_ascii_art_logo()
@@ -333,13 +333,17 @@ def test_probit():
 def test_nested():
     print('this is a test for nested')
     import pandas as pd
-    from multinomial_nested import NestedLogit
-    from collections import OrderedDict
-    import misc
+    try:
+        from multinomial_nested import NestedLogit
+    except ImportError:
+        from .multinomial_nested import NestedLogit
 
 
-    df = pd.read_csv("data/Swissmetro_final.csv")
-    df_new = pd.read_csv('Z:/activity_sim_resources/zaasim/example_estimation/note_books_zeke/TravelMode.csv')
+
+
+    online_data_src = 'https://raw.githubusercontent.com/zahern/HypothesisX/refs/heads/main/data/'
+    df = pd.read_csv(f"{online_data_src}Swissmetro_final.csv")
+    df_new = pd.read_csv(f'{online_data_src}TravelMode.csv')
 
     df_new['CHOICE'] = df_new['choice'].map({'no': 0, 'yes': 1})
     df_new['AV'] =1
@@ -427,8 +431,12 @@ def test_search():
         This function reads a dataset, prepares the required parameters, and calls the
         optimization function `call_siman` to perform the search.
         """
-    from call_meta import call_siman
-    from search import  Parameters
+    try:
+        from call_meta import call_siman
+        from search import  Parameters
+    except ImportError:
+        from .call_meta import call_siman
+        from .search import Parameters
     import pandas as pd
     import  numpy as np
     df = pd.read_csv("https://raw.githubusercontent.com/arteagac/xlogit/master/examples/data/electricity_long.csv")

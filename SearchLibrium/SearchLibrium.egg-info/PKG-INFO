@@ -1,0 +1,28 @@
+Metadata-Version: 2.4
+Name: SearchLibrium
+Version: 0.0.19
+Summary: A wrapper for Searchlogit with extended functionality for ABM models.
+Author-email: Zeke Ahern <z.ahern@qut.edu.au>
+Project-URL: Homepage, https://github.com/zahern/HypothesisX
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>2.0.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: scikit-learn>=1.3.1
+Requires-Dist: statsmodels
+Requires-Dist: pyfiglit
+Provides-Extra: dev
+Requires-Dist: black; extra == "dev"
+Requires-Dist: bumpver; extra == "dev"
+Requires-Dist: isort; extra == "dev"
+Requires-Dist: pip-tools; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+
+
+# SearchLibrium
+## Econometric Models driven by Search and built on SearchLogit and MetaCountRegresssor
+
+This repository contains the SearchLibrium package, which is a Python library designed for econometric models driven by search. It builds upon the foundations of SearchLogit and MetaCountRegressor, providing a robust framework for estimating data count models.
