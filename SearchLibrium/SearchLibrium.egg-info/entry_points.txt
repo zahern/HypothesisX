@@ -1,0 +1,2 @@
+[console_scripts]
+realpython = SearchLibrium.__main__:main

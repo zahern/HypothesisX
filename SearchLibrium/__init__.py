@@ -8,7 +8,7 @@ from collections import namedtuple
 import numpy as np
 import pandas as pd
 #print('loading devices')
-print('package version')
+
 import os
 
 def get_version_from_pkg_info():
@@ -63,7 +63,6 @@ except ImportError as e:
     
 
 try:
-    from main import print_ascii_art_logo
     print_ascii_art_logo()
 except ImportError:
     print("Error importing print_ascii_art_logo from main module. Continuing without logo.") 
