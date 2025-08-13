@@ -1,0 +1,88 @@
+__________________________
+Solution: Initial Solution
+__________________________
+Objectives:
+[0]. (Minimise) bic = 533.17
+
+Choice Model: Nested Logit
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+**************************************************
+Estimation time= 0.0 seconds
+
+Proportion of alternatives: observed choice
+[0.27619048 0.3        0.14285714 0.28095238]
+
+Proportion of alternatives: predicted choice
+[0.27940301 0.17501344 0.12502983 0.42055373]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient              Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+gcost               -0.0350466357  0.0060412480 -171.3299376864             0 ***
+wait                -0.0874383983  0.0064088322 -169.6780879755             0 ***
+vcost                0.0630758986  0.0064233443 -145.8623518304             0 ***
+income               0.1000000000  1.0000000000 -0.9000000000         0.368    
+lambda_Nest1         2.2559517922  0.1120656499 11.2072860252             0 ***
+lambda_Nest2         2.7622588959  0.1182633223 14.9011448433             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -250.544; AIC = 513.087; BIC = 533.170; ADJLIK RATIO: 0.119
+
+asvars =  ['gcost', 'wait', 'vcost', 'income']
+isvars =  []
+randvars =  {}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  nested_logit
+model= Nested Logit
+
+________________________
+Solution: Final Solution
+________________________
+Objectives:
+[0]. (Minimise) bic = 533.17
+
+Choice Model: Nested Logit
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+**************************************************
+Estimation time= 0.0 seconds
+
+Proportion of alternatives: observed choice
+[0.27619048 0.3        0.14285714 0.28095238]
+
+Proportion of alternatives: predicted choice
+[0.27940301 0.17501344 0.12502983 0.42055373]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient              Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+gcost               -0.0350466357  0.0060412480 -171.3299376864             0 ***
+wait                -0.0874383983  0.0064088322 -169.6780879755             0 ***
+vcost                0.0630758986  0.0064233443 -145.8623518304             0 ***
+income               0.1000000000  1.0000000000 -0.9000000000         0.368    
+lambda_Nest1         2.2559517922  0.1120656499 11.2072860252             0 ***
+lambda_Nest2         2.7622588959  0.1182633223 14.9011448433             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -250.544; AIC = 513.087; BIC = 533.170; ADJLIK RATIO: 0.119
+
+asvars =  ['gcost', 'wait', 'vcost', 'income']
+isvars =  []
+randvars =  {}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  nested_logit
+model= Nested Logit
+
+#Converged=21; #Not Converged=3
+#Accepted=17; #Not Accepted=0

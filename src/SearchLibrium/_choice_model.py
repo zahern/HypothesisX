@@ -180,11 +180,11 @@ class DiscreteChoiceModel(ABC):
             # Check and add intercept for DataFrames
             if "intercept" not in data.columns:
                 data.insert(0, "intercept",1)  # Add intercept column
+
         else:
             raise TypeError("Data must be a NumPy array or Pandas DataFrame")
 
-        print('added intercept')
-        print(data)
+
         return data
 
     ''' ---------------------------------------------------------- '''
@@ -202,12 +202,11 @@ class DiscreteChoiceModel(ABC):
                 if "intercept" not in varnames:
                     varnames = np.insert(varnames, 0, "intercept")  # Insert '_inter' into the first
 
-                else:
-                    print("intercept' is already in varnames.")
+
             else:
                 # Initialize varnames with only "_inter" if varnames is None
                 varnames = np.array(["intercept"], dtype="<U64")
-                print("'_inter' added as the first item in varnames.")
+                #print("'_inter' added as the first item in varnames.")
         alts = np.asarray(alts) if alts is not None else None
         isvars = np.asarray(isvars, dtype=object) if isvars is not None else np.array([])
         if self.fit_intercept and "intercept" not in isvars:
@@ -230,7 +229,7 @@ class DiscreteChoiceModel(ABC):
     ''' Function. Initialise member variables                      '''
     ''' ---------------------------------------------------------- '''
     def pre_process(self, alts, varnames, isvars, transvars, base_alt, fit_intercept, transformation,
-                maxiter, panels=None, correlated_vars=None, randvars=None):
+                maxiter = 2000, panels=None, correlated_vars=None, randvars=None):
     # {
         self.reset_attributes()
         self.fit_start_time = time()  # Set the start time for runtime calculation
@@ -242,6 +241,9 @@ class DiscreteChoiceModel(ABC):
         self.asvars = [v for v in varnames if ((v not in self.isvars) and 
                                                #(v not in self.transvars) and 
                                                (v not in self.randvars))] 
+
+        #todo check asvars, if asvars
+
         # old definition of asvars used to make datasets
         self.asvars_construct_matrix = [v for v in varnames if v not in self.isvars]
         self.randtransvars, self.fixedtransvars = [], []
@@ -276,6 +278,7 @@ class DiscreteChoiceModel(ABC):
         self.coeff_est = result['x']
         self.loglik = -result['fun']
         self.total_iter = result['nit']
+
         self.estim_time_sec = time() - self.fit_start_time
         self.sample_size = sample_size
         self.num_params = self.Kbw + self.Kchol + self.Kf + self.Kftrans + self.Kr + self.Krtrans
@@ -437,10 +440,10 @@ class DiscreteChoiceModel(ABC):
 
         self.varnames = np.array(varnames, dtype="<U64")
         lst = self.varnames.tolist()
-        print(lst)
+        #print(lst)
         ispos = [lst.index(str) for str in self.isvars if str in lst]  # Position of IS vars
-        print('is pos is ', ispos)
-        print('and X is', X)
+        #print('is pos is ', ispos)
+        #print('and X is', X)
         ispos_old = [self.varnames.tolist().index(i) for i in self.isvars]  # Position of IS va
         # adjust index array to include isvars
         if len(self.isvars) > 0 and not hasattr(self, 'ispos'):  # check not done before...
@@ -707,7 +710,7 @@ class DiscreteChoiceModel(ABC):
         """
 
         J = getattr(self, 'J', len(self.alts))
-        print(X)
+        #print(X)
         N = P_N = int(len(X)/J)
         self.P = 0
         self.N = N
@@ -728,14 +731,14 @@ class DiscreteChoiceModel(ABC):
         fixedtransvars = self.fixedtransvars.copy()
         varnames = self.varnames.copy()
         self.varnames = np.array(varnames, dtype="<U64")
-        print('varnames', varnames)
+        #print('varnames', varnames)
         lst = varnames
         lst = np.array(lst, dtype='<U64')
 
         lst = lst.tolist()
 
         ispos = [lst.index(str) for str in self.isvars if str in lst]  # Position of IS vars
-        print(ispos)
+        #print(ispos)
         #ispos = [self.varnames.tolist().index(i) for i in self.isvars]  # Position of IS vars
 
         # adjust index array to include isvars
@@ -776,6 +779,24 @@ class DiscreteChoiceModel(ABC):
         aspos = [self.varnames.tolist().index(i) for i in asvars_construct_matrix]  # Position of AS vars
         self.aspos = np.array(aspos) # saved for later use
         self.ispos = np.array(ispos)
+
+        # **Add Validation for asvars**
+        '''
+        if asvars_construct_matrix:
+
+            for asvar in asvars_construct_matrix:
+                asvar_data = X[:, lst.index(asvar)].reshape(N, J)
+                if np.all(asvar_data == asvar_data[0, :]):  # Check if all rows are identical
+                    raise ValueError(
+                        f"Alternative-specific variable '{asvar}' has the same data "
+                        f"for all individuals across alternatives. This will prevent "
+                        f"capturing alternative-specific effects."
+                    )
+                '''
+
+
+
+
         randpos = [self.varnames.tolist().index(i) for i in randvars]  # Position of AS vars
         randtranspos = [self.varnames.tolist().index(i) for i in randtransvars]  # bc transformed variables with random coeffs
         fixedtranspos = [self.varnames.tolist().index(i) for i in fixedtransvars]  # bc transformed variables with fixed coeffs
@@ -850,7 +871,7 @@ class DiscreteChoiceModel(ABC):
             dummy = np.tile(np.eye(J), reps=(P_N, 1))
 
             # Remove base alternative
-            print(self.alts)
+            #print(self.alts)
             dummy = np.delete(dummy, np.where(self.alts == self.base_alt)[0], axis=1)
             Xis = X[:, self.ispos]
 
@@ -869,7 +890,12 @@ class DiscreteChoiceModel(ABC):
                 # Example of filtering out non-numeric data
                 # Xis = np.array([x for x in Xis if isinstance(x, (int, float))], dtype='float64')
             nbOf = (self.J - 1) * len(self.ispos)
-            Xis = Xis.reshape((P_N, self.J, nbOf))  # ERROR: UNEXPECTED ARGUMENT?
+            try: #TODO this falls over for base alt
+                Xis = Xis.reshape((P_N, self.J, nbOf))  # ERROR: UNEXPECTED ARGUMENT?
+            except Exception as e:
+                nbOf = (self.J) * len(self.ispos)
+                Xis = Xis.reshape((P_N, self.J, nbOf))  # ERROR:TODO BASE ?
+
 
         # }
         else:  # {
@@ -932,7 +958,7 @@ class DiscreteChoiceModel(ABC):
         
         #if isvars then isvars gets positionemed to fromt
         if len(self.isvars) >0:
-            print('ordered names. DEBUG PRINT')
+            #print('ordered names. DEBUG PRINT')
 
             inter_o = []
 
@@ -1040,10 +1066,22 @@ class DiscreteChoiceModel(ABC):
         factor = 1.0 / self.J
         y_ = self.y * factor  # Scale each element by 1/J
         lik = np.sum(y_, axis=1)  # Compute row sums => |lik| = #samples
+        lik =np.clip(lik, 0.00001, None)
+        y_ = np.clip(y_, 0.00001, None)
         loglik = np.log(lik)  # Log each element
         loglik = -2 * np.sum(loglik)  # Sum the elements => |loglik| = 1
         return loglik
     # }
+
+    '''Gets the estimated coefficients of the model.'''
+    def get_coeff(self):
+
+        if self.coeff_est is None:  # {
+            warnings.warn("The current model has not been yet estimated", UserWarning)
+            return
+        else:
+            return self.coeff_est
+# }
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Print the coefficients and estimation outputs    '''
@@ -1092,11 +1130,11 @@ class DiscreteChoiceModel(ABC):
         print("", file=file)
         print("Table.", file=file)
         fmt = "{:19} {:13.10f} {:13.10f} {:13.10f} {:13.3g} {:3}"
-        coeff_name_str_length = 19
+        coeff_name_str_length = 30
 
 
         print("-" * 75, file=file)
-        print("{:19} {:>13} {:>13} {:>13} {:>13}"
+        print("{:30} {:>13} {:>13} {:>13} {:>13}"
               .format("Coefficient", "Estimate", "Std.Err.", "z-val", "P>|z|"), file=file)
         print("-" * 75, file=file)
 

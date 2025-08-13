@@ -505,7 +505,7 @@ class MixedLogit(DiscreteChoiceModel):
             # gradient = (Obs prob. minus predicted probability) * obs. var
             g = np.array([])
             if self.Kf != 0:  # {
-                Xf = X[:, :, :, self.fxidx]
+                Xf = X[:, :, :, self.fxidx].astype(float)
                 g = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xf)
                 g = np.mean(g * pch_batch[:, None, :], axis=2)  # Take the mean across the last axis
             # }
@@ -520,7 +520,7 @@ class MixedLogit(DiscreteChoiceModel):
             if self.Kr != 0:
                 # {
                 der = self.compute_derivatives(betas, draws_batch, chol_mat=chol_mat, betas_random=self.Br)
-                Xr = X[:, :, :, self.rvidx]
+                Xr = X[:, :, :, self.rvidx].astype(float)
                 gr_b = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xr) * der  # (N, Kr, R)
 
                 # For correlation parameters
@@ -554,7 +554,7 @@ class MixedLogit(DiscreteChoiceModel):
                 # {
                 if self.Kftrans:  # with fixed params
                     # {
-                    Xftrans = X[:, :, :, self.fxtransidx]
+                    Xftrans = X[:, :, :, self.fxtransidx].astype(float)
                     Xftrans_lmda = self.trans_func(Xftrans, flmbda)
                     Xftrans_lmda = truncate(Xftrans_lmda, -max_comp_val, max_comp_val)
 
@@ -586,7 +586,7 @@ class MixedLogit(DiscreteChoiceModel):
                                                         distr=self.rvtransdist, chol_mat=temp_chol, K=self.Krtrans,
                                                         trans=True, betas_random=self.Brtrans)
 
-                    Xrtrans = X[:, :, :, self.rvtransidx]
+                    Xrtrans = X[:, :, :, self.rvtransidx].astype(float)
                     Xrtrans_lmda = self.trans_func(Xrtrans, rlmda)
 
                     Brtrans = Brtrans_b[None, :, None] + drawstrans[:, 0:self.Krtrans, :] * Brtrans_w[None, :, None]
@@ -954,7 +954,7 @@ class MixedLogit(DiscreteChoiceModel):
 
         if self.Kf != 0:
             Xf = X[:, :, :, self.fxidx]
-            XBf = dev.cust_einsum('npjk,k -> npj', Xf, Bf)
+            XBf = dev.cust_einsum('npjk,k -> npj', Xf, Bf).astype(float)
 
         if self.Kr != 0:  # {
             tmp = dev.np.matmul(chol_mat[:self.Kr, :self.Kr], draws)
@@ -967,7 +967,7 @@ class MixedLogit(DiscreteChoiceModel):
             Br = self.draws_generator.apply_distribution(Br, self.rvdist)
             self.Br = Br  # save Br to use later
             Xr = X[:, :, :, self.rvidx]
-            XBr = dev.cust_einsum('npjk,nkr -> npjr', Xr, Br)  # (N, P, J, R)
+            XBr = dev.cust_einsum('npjk,nkr -> npjr', Xr, Br).astype(float)  # (N, P, J, R)
             V = XBf[:, :, :, None] + XBr  # Add an extra dimension to XBf and then add XBr
         else:
             self.Br = Br_b[None, :, None]
@@ -992,7 +992,7 @@ class MixedLogit(DiscreteChoiceModel):
             Xrtrans = X[:, :, :, self.rvtransidx]
             Xrtrans_lmda = self.trans_func(Xrtrans, rlmda)  # applying transformation
             Xrtrans_lmda = truncate(Xrtrans_lmda, -max_comp_val, max_comp_val)
-            Xbr_trans = dev.cust_einsum('npjk,nkr -> npjr', Xrtrans_lmda, Brtrans)  # (N, P, J, R)
+            Xbr_trans = dev.cust_einsum('npjk,nkr -> npjr', Xrtrans_lmda, Brtrans).astype(float) # (N, P, J, R)
             V += Xbr_trans  # Combining utilities
         # }
 
@@ -1001,8 +1001,11 @@ class MixedLogit(DiscreteChoiceModel):
         if self.softmax_r:
             # Apply numerical stability by subtracting the max value for each choice set
             V = V - dev.np.max(V, axis=2, keepdims=True)
-
-        eV = dev.np.exp(V)  # Compute eV = exp(V)
+        V = np.array(V)
+        try:
+            eV = np.exp(V)  # Compute eV = exp(V)
+        except:
+            print('inspect above')
 
         # Exponent of the utility function for the logit formula
         if avail is not None:  # {

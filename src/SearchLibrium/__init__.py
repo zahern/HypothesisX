@@ -20,7 +20,7 @@ def get_version_from_pkg_info():
                 if line.startswith("Version:"):
                     return line.split(":")[1].strip()
     except FileNotFoundError:
-        return "unknown"
+        return "0.0.32"
 
 __version__ = get_version_from_pkg_info()
 
@@ -38,7 +38,7 @@ except ImportError:
 try:
     from ._choice_model import DiscreteChoiceModel
     from .multinomial_logit import MultinomialLogit
-    from .multinomial_nested import NestedLogit
+    from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from .Halton import Halton
     from .rrm import RandomRegret
     from .ordered_logit import OrderedLogit, OrderedLogitLong
@@ -46,19 +46,25 @@ try:
 
     #print('loaded models')
     from .search import Search
-    from .main import print_ascii_art_logo
+
     from . import misc
+    from . call_meta import call_harmony, call_siman, call_parsa
+
 except ImportError as e:
     #print(f"Error importing modules: {e}")
     print('trying to import this ')
     from _choice_model import DiscreteChoiceModel
     from multinomial_logit import MultinomialLogit
-    from multinomial_nested import NestedLogit
+    from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from Halton import Halton
     from rrm import RandomRegret
     from ordered_logit import OrderedLogit, OrderedLogitLong
     from mixed_logit import MixedLogit
+    from call_meta import call_siman, call_harmony
     #from multinomial_logit import MultinomialLogit
+try:
+    from .main import print_ascii_art_logo
+except:
     from main import print_ascii_art_logo
     
 

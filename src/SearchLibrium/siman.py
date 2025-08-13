@@ -1,9 +1,7 @@
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 IMPLEMENTATION: SIMULATED ANNEALING
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-#from akshay_test import member_params_spec
 
-#from scipy.special import kwargs
 
 """
 BACKGROUND - SIMULATED ANNEALING:
@@ -73,6 +71,42 @@ import re
 overall_best_solution = None  # PARSA: Reference to best solution
 lock = threading.Lock()  # PARSA: Mutex - synchronization primitive
 
+'''Function for Fancy Printing'''
+def star(func):
+    def inner(*args, **kwargs):
+        print("*" * 15)
+        print(func(*args, **kwargs))
+        print("*" * 15)
+
+    return inner
+
+
+def are_solutions_equivalent(sol1, sol2):
+    """
+    Check if two solutions are equivalent by comparing their attributes.
+
+    Parameters:
+    - sol1: First solution (of type csolution).
+    - sol2: Second solution (of type csolution).
+
+    Returns:
+    - Boolean: True if all attributes are equivalent, False otherwise.
+    """
+    # Compare `asvars` (list or dictionary)
+    if sol1.asvars != sol2.asvars:
+        return False
+
+    # Compare `bcvars` (list or dictionary)
+    if sol1.bcvars != sol2.bcvars:
+        return False
+
+    # Compare `randvars` (list or dictionary)
+    if sol1.randvars != sol2.randvars:
+        return False
+
+    # If all attributes are equivalent
+    return True
+
 
 def generate_random_run_name(prefix="run"):
     # Generate a random string of 6 characters
@@ -96,6 +130,9 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function. Constructor                                      '''
     ''' ---------------------------------------------------------- '''
+
+    #for testing
+    verbose = True
     def __init__(self, param:Parameters, init_sol, ctrl, idnum=generate_random_run_name(), **kwargs):
     # {
         super().__init__(param, idnum, **kwargs)     # Call base class constructor
@@ -103,15 +140,17 @@ class SA(Search):
         tI, tF, max_temp_steps, max_iter = ctrl  # Extract form 'ctrl'
 
 
+
+
         self.start_time = time.time()
         # Set parameters:
-        self.max_time = kwargs.get('max_time', 3600*12)    # Maximum Allowable Run Time (Terminate
-        self.max_total_iter = kwargs.get('max_total_iter', 10000)
+        self.max_time = kwargs.get('max_time', 360)    # Maximum Allowable Run Time (Terminate
+        self.max_total_iter = kwargs.get('max_total_iter', 1000)
         self.tI = tI                # Starting temperature
         self.tF = tF                # Final temperature
         self.max_temp_steps = max_temp_steps    # Maximum number of temperature steps
         self.max_iter = max_iter    # Maximum number of iterations at each temperature step
-        self.max_no_impr = 3        # Max number of steps permitted without improvements
+        self.max_no_impr = 100        # Max number of steps permitted without improvements
         self.terminate = False      # Termination flag
         self.rate = np.exp((1.0 / (self.max_temp_steps-1)) * np.log(self.tF/self.tI)) # Temperature reduction rate
 
@@ -120,7 +159,7 @@ class SA(Search):
 
         self.no_impr = 0            # Current number of iterations without improvement
         self.step = 0               # Current temperature step
-        self.t = 0                  # Current temperature
+        self.t = tI                 # Current temperature
         self.current_sol = init_sol # Current solution
         self.best_sol = None        # Best solution
         self.archive = []           # Archive of solutions
@@ -142,8 +181,14 @@ class SA(Search):
         # Define a member function for the perturbation function
         PerturbFn = Callable[[], None]
         self.perturb_function: PerturbFn = self.perturb_single if self.nb_crit == 1 else self.perturb_multi
+        print(self.nb_crit, 'q')
+        print('n')
 
     # }
+    @classmethod
+    def v_print(cls, message):
+        if cls.verbose:
+            print(message)
 
     def get_run_time(self):
         '''Gets the current run_time in seconds'''
@@ -172,35 +217,99 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
+    @star
     def curr_score(self, i):
         return self.current_sol.obj(i)
 
     def best_score(self, i):
         return self.best_sol.obj(i)
 
+    @star
     def return_best(self):
         return self.best_sol
+
+
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
-    def choose_starting_solution(self):
-    # {
-        print(f"SA[{str(self.idnum)}] - Generating a starting solution")
-        attempts = 0
-        while attempts < 100:
-        # {
-            print(f"SA[{str(self.idnum)}]. Attempt={str(attempts)}")
-            sol = self.generate_solution()  # Generate a solution
 
-            sol, converged = self.evaluate(sol) # Evaluate the solution
 
-            if converged:
-                return sol  # Exit the procedure with a valid solution
-            attempts += 1   # Update attempts
-            print('attempt number', attempts)
-        # }
-        return None
+    def choose_starting_solution(self, N_trials=20):
+        """
+        Generate multiple starting solutions, calculate the starting temperature (tI)
+        for each generated solution, and take the average temperature over all trials.
+
+        Parameters:
+        - N_trials: Number of independent solutions to generate for temperature calculation.
+
+        Returns:
+        - sol: The last generated starting solution.
+        """
+        print(f"SA[{str(self.idnum)}] - Generating {N_trials} independent solutions for temperature calculation")
+
+        delta_Es_all = []  # Store all ΔE values across trials for final averaging
+        temperatures = []  # Store tI values for each generated solution
+
+        for trial in range(N_trials):
+            print(f"SA[{str(self.idnum)}]. Trial {trial + 1}/{N_trials}: Generating a new solution")
+
+            # Generate a new independent starting solution
+            sol = self.generate_solution()
+            sol = self.repair_solution_for_clarity(sol)
+            sol, converged = self.evaluate(sol)
+
+            if not converged:
+                print(f"Trial {trial + 1}: Generated solution did not converge, skipping.")
+                continue
+
+            # Store ΔE values for this specific solution
+            delta_Es = []
+
+            # Perform perturbations for the current solution
+            for _ in range(N_trials):
+                #perturbed_sol = self.copy_solution(sol)
+                #perturbed_sol = self.perturb_solution(perturbed_sol)
+                #perturbed_sol, converged_ = self.evaluate(perturbed_sol)
+                perturbed_sol = self.generate_solution()
+                perturbed_sol = self.repair_solution_for_clarity(perturbed_sol)
+                sol, converged_ = self.evaluate(perturbed_sol)
+
+                if not converged_:
+                    print(f"Trial {trial + 1}: Perturbed solution did not converge, skipping perturbation.")
+                    continue
+
+                # Calculate objective function differences
+                before = [sol.obj(i) for i in range(self.nb_crit)]
+                after = [perturbed_sol.obj(i) for i in range(self.nb_crit)]
+
+                # Calculate ΔE for the first criterion (or extend for multi-objective)
+                delta_E = after[0] - before[0]
+                if delta_E > 0:  # Only consider "worse" solutions
+                    delta_Es.append(delta_E)
+
+            if delta_Es:
+                # Calculate temperature for this solution
+                avg_delta_E = np.mean(delta_Es)
+                tI = -avg_delta_E / np.log(0.5)
+                temperatures.append(tI)
+                delta_Es_all.extend(delta_Es)  # Accumulate ΔE values across trials
+                print(f"Trial {trial + 1}: Calculated temperature tI = {tI}")
+            else:
+                print(f"Trial {trial + 1}: No worse solutions found, skipping temperature calculation.")
+
+        if not temperatures:
+            # Fallback if no temperatures were calculated
+            print("No valid temperatures calculated across all trials. Using default starting temperature.")
+            self.tI = 1.0
+        else:
+            # Average temperature across all trials
+            self.tI = np.mean(temperatures)
+            print(f"Final averaged starting temperature: tI = {self.tI}")
+
+        # Return the last valid generated solution
+        return sol
     # }
     def repair_solution_for_clarity(self, solution):
         '''
@@ -210,9 +319,24 @@ class SA(Search):
         Class 1: cannot Have Price and Price_2
         #TODO placeholder
         '''
-        pass
+        debug_counter = 0
+        if solution.data['model_n'] == 'mixed_logit':
+            while len(solution.data['randvars']) == 0:
+                debug_counter+=1
+                if debug_counter >= 10:
+                    print('add rand feature bug not changing')
+                self.perturb_add_randfeature(solution)
+
+
 
         #make sure i is consistent with the asvars and isvars
+        if solution.data['model_n'] == 'nested_logit':
+            while len(solution.data['isvars']) +len(solution.data['asvars']) == 0:
+                print('perturbation too strong fix')
+                if random.random() > .5:
+                    self.perturb_add_asfeature(solution)
+                else:
+                    self.perturb_add_isfeature(solution)
 
 
                 
@@ -272,6 +396,46 @@ class SA(Search):
         self.log_solution("Initial Solution", self.current_sol, file=self.results_file)
     # }
 
+
+    def calculate_starting_temperature(self, init_sol, N_trials=25):
+        """
+        Dynamically calculate the starting temperature (tI) to achieve ~50% acceptance rate.
+
+        Parameters:
+        - init_sol: Initial solution to perturb.
+        - N_trials: Number of trial perturbations to perform.
+
+        Returns:
+        - tI: Calculated starting temperature.
+        """
+        delta_Es = []  # Store ΔE values (energy differences)
+
+        for _ in range(N_trials):
+            # Generate a random perturbation
+            perturbed_sol = self.copy_solution(init_sol)
+            perturbed_sol = self.perturb_solution(perturbed_sol)
+
+            # Calculate the objective function difference
+            before = [init_sol.obj(i) for i in range(self.nb_crit)]
+            after = [perturbed_sol.obj(i) for i in range(self.nb_crit)]
+
+            # Calculate ΔE for the first criterion (can extend for multi-objective)
+            delta_E = after[0] - before[0]
+            if delta_E > 0:  # Only consider "worse" solutions
+                delta_Es.append(delta_E)
+
+        if len(delta_Es) == 0:
+            # If no worse solutions were found, fallback to a default temperature
+            print("No worse solutions found during trials. Using default starting temperature.")
+            return 1.0
+
+        # Calculate the temperature for ~50% acceptance
+        avg_delta_E = np.mean(delta_Es)
+        tI = -avg_delta_E / np.log(0.5)
+
+        print(f"Calculated starting temperature: tI = {tI}")
+        return tI
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Finish up                                        '''
     ''' ---------------------------------------------------------- '''
@@ -295,11 +459,40 @@ class SA(Search):
     # {
         """ Evaluate Metropolis function for each objective """
         crits = self.param.criterions
+        #crits[1] = -1 btw
 
+        after = np.array(after, dtype=np.float64)
+        before = np.array(before, dtype=np.float64)
+
+        #crits = np.array(crits, dtype=np.float64)
         # Note: crit[1] is the sign and equivalent to crits[i][1]
         rn = np.random.rand()
-        accept_i = [np.log(rn) < (crit[1] * (after[i] - before[i]) / self.t)
+
+        try:
+
+
+            accept_i = [np.log(rn) < (crit[1] * (after[i] - before[i]) / self.t)
                     for i, crit in enumerate(crits)]
+            #print(f" hjhj {np.log(rn)} vs {[(crit[1] * (after[i] - before[i]) / self.t) for i, crit in enumerate(crits)]} jhj")
+            if not accept_i:
+
+                if after - before< 0:
+                    raise ValueError('this should have accepts')
+                    print('concepttal error')
+        except Exception as e:
+            print('todo why')
+            accept_i = []
+            for i, crit in enumerate(crits):
+                # Convert crit[1] to NumPy array if it's a list
+                crit1 = np.array(crit[1]) if isinstance(crit[1], list) else crit[1]
+
+                # Ensure after[i] and before[i] are NumPy arrays
+                after_i = np.array(after[i]) if isinstance(after[i], list) else after[i]
+                before_i = np.array(before[i]) if isinstance(before[i], list) else before[i]
+
+                # Perform the comparison
+                comparison = np.log(rn) < (crit1 * (after_i - before_i) / self.t)
+                accept_i.append(comparison)
         return all(accept_i)
     # }
 
@@ -397,40 +590,67 @@ class SA(Search):
         curr_score = [sol.obj(i) for i in range(self.nb_crit)]
         new_sol = self.copy_solution(sol)
 
-        # ~~~~~~~~~~~~
-        
+        # List to store available perturbation choices and their weights
+
+
         choices = []
+        max_attempts = 10
+        perturbations = np.random.randint(1, 10)
+
+        # ~~~~~~~~~~~~
+
+
+        # Calculate lengths of asvarnames and varnames
+        l_a = len(self.param.asvarnames) if self.param.asvarnames is not None else 0
+        l_b = len(self.param.isvarnames) if self.param.varnames is not None else 0
+
+
+        total_length = l_a + l_b if l_a + l_b > 0 else 1  # Avoid division by zero
+
+        # Normalize lengths to determine weights
+
+
+
+
+
 
 
         #The idea is we only want to play with the options of model types. Ie regret, ordered, multinomial.
 
+        # how to weight the choice based on whats available ie because isvars is so small i want to watither it less that
+        if self.param.asvarnames is not None:
+            for c in range(0, l_a):
+                choices.append(self.perturb_asfeature)
 
-        choices.append(self.perturb_asfeature)
+
 
         if self.param.isvarnames is not None:
-            choices.append(self.perturb_isfeature)
+            for c in range(0, l_b):
+                choices.append(self.perturb_isfeature)
+
 
         if self.param.asvarnames is not None:
             #Not latent so can add
             #if sol['member_params_spec'] is None:
             if self.param.allow_random:
-                choices.append(self.perturb_randfeature)
+                for c in range(0, l_a):
+                    choices.append(self.perturb_randfeature)
 
 
         if sol['randvars'] is not None and self.param.allow_random:
-            choices.append(self.perturb_distribution)
+            for c in range(0, l_a):
+             choices.append(self.perturb_distribution)
 
-        if self.param.avail_models is not None:
+        if self.param.avail_models is not None and len(self.param.avail_models)>1:
 
             choices.append(self.perturb_model_t)
             #raise('does this work')
-        else:
-            raise('not yet implemented')
 
-        if self.param.ps_bctrans is None or self.param.ps_bctrans and self.param.allow_bcvars:
+
+        if self.param.ps_bctrans is not None and self.param.allow_bcvars:
             choices.append(self.perturb_bcfeature)
 
-        if self.param.ps_cor is None or self.param.ps_cor and self.param.allow_corvars:
+        if self.param.ps_cor is not None  and self.param.allow_corvars:
             choices.append(self.perturb_corfeature)
 
 
@@ -440,18 +660,37 @@ class SA(Search):
        
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Call the chosen perturbation strategy
-        choice = np.random.choice(choices)
-        print('perturbation choice:', choice.__name__)
-        new_sol = choice(new_sol)
-        
-        if new_sol is None:
-           # print('perturbation choice is none:', choice.__name__)
-            return sol
-        #print('perturbation choice is fine:', choice.__name__)
-        new_sol = self.repair_solution_for_clarity(new_sol)
-        
-        #TODO add some contraint to ensure membership is cool beans.
 
+        #print('perturbation choice:', choice.__name__)
+
+
+        attempts = 0
+        while attempts < max_attempts:
+            attempts +=1
+
+
+            for i in range(0, perturbations):
+                choice = np.random.choice(choices)
+               # print('b', new_sol['asvars'])
+                new_sol = choice(new_sol)
+                #print('a', new_sol['asvars'])
+
+            if new_sol is None:
+                print('perturbation choice is none:', choice.__name__)
+                return sol
+            # print('perturbation choice is fine:', choice.__name__)
+            new_sol = self.repair_solution_for_clarity(new_sol)
+            if new_sol != sol:
+                #print('found a sol')
+                break
+
+        if new_sol == sol:
+            print('why')
+            return sol
+        #if new solution is the same as old pertunrb aggain.
+
+        #TODO add some contraint to ensure membership is cool beans.
+        #print('evaluate')
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Solution evaluation and acceptance handling
         new_sol, converged = self.evaluate(new_sol)
@@ -462,10 +701,11 @@ class SA(Search):
             if self.accept_change(*args):
             # {
                 accd = True
+                self.no_impr = 0
                 self.accepted += 1  # Tracking acceptances - Increment counter
                 self.current_sol = new_sol  # Set new current solution
                 self.update_best(new_sol)  # Update the best solution if necessary
-                # Optional: self.log_solution("Perturbation", self.current_sol, file=self.results_file)
+                #Optional self.log_solution("Perturbation", self.current_sol, file=self.results_file)
             # }
             else:
                 accd = False
@@ -474,7 +714,8 @@ class SA(Search):
             self.log_kpi(new_sol, self.debug_file, accd)  # Report to file
         # }
         else:
-            new_sol =sol
+            return  self.current_sol
+        return  self.current_sol
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -482,12 +723,22 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     def update_best(self, sol):
     # {
+
+
+        if self.best_sol is None:
+            # Initialize best_sol if it is None
+            self.best_sol = self.copy_solution(sol)
+            print("Initialized best_sol with the first solution")
+            return
+
+        self.no_impr = 0
         if self.nb_crit == 1:
         # {
             if is_better(sol.obj(0), self.best_sol.obj(0), self.param.sign_crit(0)):
-                self.best_sol.copy_solution(sol)
-                print('return the coefficients')
-                sol.get('coeff_est')
+                self.best_sol = self.copy_solution(sol)
+
+                print('new best')
+
                 self.no_impr = 0
         # }
         else:
@@ -602,7 +853,7 @@ class SA(Search):
         # {
             self.perturb_function()
             count = count + 1
-            if count % 1000 == 0:
+            if count % 10000 == 0:
                 print(f'Iteration at {count}')
             if count >= self.max_iter:
                 break

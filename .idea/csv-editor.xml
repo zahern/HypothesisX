@@ -10,13 +10,6 @@
             </Attribute>
           </value>
         </entry>
-        <entry key="Z:\n9471103\paper_1_bic_again\Stage5A_1848_All_Initial_Columns.csv">
-          <value>
-            <Attribute>
-              <option name="separator" value="," />
-            </Attribute>
-          </value>
-        </entry>
         <entry key="\data\Swissmetro_final.csv">
           <value>
             <Attribute>
@@ -31,10 +24,24 @@
             </Attribute>
           </value>
         </entry>
+        <entry key="\data\onsite_cleaned.csv">
+          <value>
+            <Attribute>
+              <option name="separator" value="," />
+            </Attribute>
+          </value>
+        </entry>
         <entry key="\data\rrm_cran_2016_long.csv">
           <value>
             <Attribute>
               <option name="separator" value="," />
+            </Attribute>
+          </value>
+        </entry>
+        <entry key="\data\spdataMaaS.csv">
+          <value>
+            <Attribute>
+              <option name="separator" value="#1e#" />
             </Attribute>
           </value>
         </entry>

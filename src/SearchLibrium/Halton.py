@@ -151,7 +151,7 @@ class Draws:
             elif distr == 'tn':  # truncated normal case
                 # {
                 # Keep any element > 0, and zero all others
-                print("changed betas_random")
+
                 betas_random[:, k, :] = np.maximum(betas_random[:, k, :], 0)
             # }
         # }

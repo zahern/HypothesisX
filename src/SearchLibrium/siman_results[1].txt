@@ -1,0 +1,38 @@
+__________________________
+Solution: Initial Solution
+__________________________
+Objectives:
+[0]. (Minimise) bic = 18655.6245
+
+Choice Model: MNL
+Estimation time= 0.0 seconds
+
+Proportion of alternatives: observed choice
+[0.29610289 0.12938787 0.57450924]
+
+Proportion of alternatives: predicted choice
+[0.3045032  0.15077656 0.54472024]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE_CAR             -0.0094133335  0.0116526445 -0.8078280897         0.419    
+AGE_TRAIN           -0.3617500174  0.0141943004 -25.4855827147             0 ***
+FIRST_SM             0.4099725689  0.0412660041  9.9348744281             0 ***
+LUGGAGE_SM           0.1653665134  0.0319249321  5.1798548157      2.22e-07 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -9309.325; AIC = 18626.649; BIC = 18655.625; ADJLIK RATIO: 0.180
+
+asvars =  ['AGE_CAR', 'AGE_TRAIN', 'FIRST_SM', 'LUGGAGE_SM']
+isvars =  []
+randvars =  {}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  True
+model =  multinomial
+model= MNL
+

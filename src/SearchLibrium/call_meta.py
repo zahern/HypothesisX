@@ -13,15 +13,44 @@ except ImportError:
 
 def call_harmony(parameters, init_sol=None):
 # {
-    solver = HarmonySearch(parameters, init_sol)
+    solver = HarmonySearch(parameters)
+    #todo inject init_sol
     solver.max_mem = 25
     solver.maxiter = 5000
     solver.run()
 # }
 
 def call_siman(parameters, init_sol=None,  **kwargs):
-# {
-    ctrl = kwargs.get('ctrl', (10000, 0.001, 20, 20000))  # i.e. (tI, tF, max_temp_steps, max_iter)
+    '''
+    Runs the Simulated Annealing (SA) algorithm with provided parameters and initial solution.
+
+    Args:
+        parameters (dict): The parameters required for the SA algorithm. Should include:
+            - 'objective': The objective function to optimize.
+            - 'constraints': Any constraints for the optimization problem.
+            - (Other domain-specific parameters can be added.)
+        init_sol (optional): The initial solution for the algorithm. Defaults to None.
+        **kwargs: Additional optional arguments. These can include:
+            - ctrl (tuple): Control parameters for SA as (tI, tF, max_temp_steps, max_iter):
+                - tI: Initial temperature.
+                - tF: Final temperature.
+                - max_temp_steps: Maximum number of temperature steps.
+                - max_iter: Maximum iterations per temperature step.
+            - id_num (optional): An identifier for the current run.
+    '''
+    # Step 2: Extract control parameters or use defaults
+    ctrl = kwargs.get('ctrl',
+                      (1000, 0.001, 250, 10))  # Default: (Initial Temp, Final Temp, Max Temp Steps, Max Iterations)
+    print(f"[INFO] Control parameters (ctrl): {ctrl}")
+    print(
+        "\n[INFO] To change the control parameters, pass the 'ctrl' argument as a tuple:\n"
+        "  Example: ctrl=(200, 0.01, 10, 50)\n"
+        "  - tI: Initial temperature (higher = more exploration).\n"
+        "  - tF: Final temperature (lower = more exploitation).\n"
+        "  - max_temp_steps: Number of temperature steps.\n"
+        "  - max_iter: Number of iterations per temperature step.\n"
+    )
+
     if 'ctrl' in kwargs:
         # Need to delete the 'ctrl' key from kwargs
         # This is because the function has a parameter named 'ctrl'
