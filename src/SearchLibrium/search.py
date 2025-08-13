@@ -3,6 +3,8 @@ IMPLEMENTATION: BASE CLASS FOR DISCRETE CHOICE MODEL SELECTION
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 import math
 
+
+
 #from akshay_test import member_params_spec
 
 """
@@ -70,6 +72,7 @@ try:
     from _device import  device as dev
     from rrm import RandomRegret
     from ordered_logit import OrderedLogitLong
+    from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     import misc
 except ImportError:
     from .misc import list_of_zeros, make_list
@@ -78,7 +81,8 @@ except ImportError:
     from ._device import device as dev
     from .rrm import RandomRegret
     from .ordered_logit import OrderedLogitLong
-    from . import misc
+    from . import misc, NestedLogit
+    from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
 
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS                                                  '''
@@ -100,6 +104,7 @@ class model(Enum):
     random_regret = 'random_regret'
     ordered_logit = 'ordered_logit'
     ordered_probit = 'ordered_probit'
+    nested_logit = 'nested_logit'
 
 # }
 
@@ -111,7 +116,8 @@ class ModelRegistry:
             'mixed_logit',
             'random_regret',
             'ordered_logit',
-            'ordered_probit'
+            'ordered_probit',
+            'nested_logit'
         ]
         if model_dict is not None:
             self.reset_models(model_dict)
@@ -146,6 +152,7 @@ class Model(Enum):
     random_regret = 'random_regret'
     ordered_logit = 'ordered_logit'
     ordered_probit = 'ordered_probit'
+    nested_logit = 'nested_logit'
 
 
 
@@ -285,7 +292,11 @@ def dominates(sol1, sol2, criterions):
 def scale(solutions, i, maxcrit=False):
 # {
     # Extract objective i values:
-    values = [solution.obj[i] for solution in solutions]
+
+    values = [solution[i] for solution in solutions if solution is not  None]
+
+    if maxcrit == 'single':
+        return values
 
     # Find maximum and minimum objective value
     max_obj, min_obj = max(values),  min(values)
@@ -421,23 +432,33 @@ def compute_crowding_dist_front(front, solutions, dist, index, range):
 # Step 2: Iterate through sorted list and remove any solutions with
 # a [key] value equal to that of the predecessor
 def get_unique(solutions, key):
-# {
-    # METHOD 1:
-    unique_solutions = sorted(solutions, key=lambda sol: sol.obj[key])  # Sort by [key]
-    for i, sol in enumerate(unique_solutions):
-        if i > 0 and unique_solutions[i][key] == unique_solutions[i - 1][key]:  # Remove duplicates
-            unique_solutions.remove(solutions[i])  # Remove [i]
+    """
+    Return unique solutions sorted by the specified objective index.
 
-    # METHOD 2
-    '''seen = set()
-    unique_solutions = []
-    for sol in solutions:
-        if sol.obj[key] not in seen:
-            unique.solutions.append(sol)
-            seen.add(sol[key])'''
+    Parameters:
+    - solutions: List of Solution objects.
+    - key: Index of the objective to sort and filter by.
+
+    Returns:
+    - List of unique solutions sorted by the specified objective.
+    """
+    try:
+        if not solutions:
+            return []  # Return empty list if no solutions
+
+        # Sort solutions based on the specified objective index
+        unique_solutions = sorted(solutions, key=lambda sol: sol.obj(key))  # Pass key to obj()
+
+        # Remove duplicates based on the specified objective
+        seen = set()
+        unique_solutions = [sol for sol in unique_solutions if sol.obj(key) not in seen and not seen.add(sol.obj(key))]
+
+    except Exception as e:
+        print(f"Error in get_unique: {e}")
+        raise
 
     return unique_solutions
-# }
+
 
 def get_unique_tuple(solutions):
 # {
@@ -560,17 +581,42 @@ class Parameters:
         test_choices=None, alt_var=None, test_alt_var=None, choice_id=None, test_choice_id=None,
         ind_id=None, test_ind_id=None, isvarnames=None, asvarnames=None, trans_asvars=None,
         ftol=1e-6, gtol=1e-6, gtol_membership_func=1e-5,
-        maxiter=200, n_draws=1000, p_val=0.05, chosen_alts_test=None,
+        maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
 
         intercept_opts=None, base_alt=None, val_share=0.25,  *args, **kwargs):
-    # {
+
         
         if models is None:
             self.models_avail = ModelRegistry().get_models()
         else:
             potential = ModelRegistry().get_models()
             self.models_avail =  [model for model in models if model in potential]
+
+        if "nested_logit" in self.models_avail:
+            self.nests = kwargs.get('nests', None)
+            self.lambdas = kwargs.get('lambdas', None)
+            self.lambdas_mapping = kwargs.get('lambdas_mapping', None)
+            if self.nests is None:
+                raise ValueError('nests must be initialised')
+            elif self.lambdas is None:
+                raise ValueError('lambdas must be initialised')
+            elif self.lambdas_mapping is None:
+                raise ValueError('lambdas mapping must be intiialized')
+
+        else:
+            # If nested_logit is not in models, set nests and lambdas to None
+            self.nests = None
+            self.lambdas = None
+            self.lambdas_mapping = None
+
+        self.generator = np.random
+
+        if kwargs.get('fill_na', True):
+            print('filling na with 0: turn param fill_na false if custom na handiling')
+            df = df.fillna(0)
+            df_test = df_test.fillna(0)
+
         self.df, self.df_test = df, df_test
         self.varnames = varnames
 
@@ -578,11 +624,23 @@ class Parameters:
         self.avail, self.test_avail = avail, test_avail
         self.weights = weights
         self.choice_set, self.choices = choice_set, choices
+        if choice_set is None:
+            print(f'inspect choice set {choice_set}')
+            raise ValueError('choice set must be defined and in list format')
+        if choices is None:
+            print(f'inspect choices {choices}')
+
+            raise ValueError('choice set must be defined and in list format')
+        self.verbose = kwargs.get('verbose', True)
+        if self.verbose:
+            print('verbose = TRUE, Will print all solutions. SET verbose = False in paramaters')
         self.test_choices = test_choices
         self.alt_var, self.test_alt_var = alt_var, test_alt_var
         self.choice_id, self.test_choice_id = choice_id, test_choice_id
         self.ind_id, self.test_ind_id = ind_id, test_ind_id
         self.isvarnames, self.asvarnames = isvarnames, asvarnames
+        if asvarnames is None and isvarnames is None:
+            raise ValueError('require as varnames or isvarname please define one..')
         self.trans_asvars = trans_asvars
         self.ftol, self.gtol = ftol, gtol
         self.gtol_membership_func = gtol_membership_func
@@ -691,14 +749,18 @@ class Parameters:
             pass
 
         # TODO I Think we could initialise it this way more effictively
-        acceptable_keys = ['LCR', 'verbose', 'asc_ind']
+        acceptable_keys = ['LCR', 'verbose', 'asc_ind', 'nests', 'lambdas']
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
         for key, value in kwargs.items():
             if key in acceptable_keys:
                 setattr(self, key, value)
             else:
-                raise ValueError(f"Unexpected keyword argument '{key}' passed to __init__.")
+                print(f"[WARNING]: Unexpected keyword argument '{key}' passed to __init__.")
+                try:
+                    print(f"does key: {self.key} exist and is inititiated")
+                except:
+                    print('[WARNING] key not set..')
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -872,6 +934,10 @@ class Solution(UserDict):
         self.data.setdefault('obj', np.zeros(nb_crit) )
         self.data.setdefault('model', None)
         self.data.setdefault('class_num', None)
+        self.data.setdefault('hash', None)
+
+
+        self.data.setdefault('hash_m', None)
 
         # self.data.setdefault('evaluated', False)
 
@@ -889,6 +955,42 @@ class Solution(UserDict):
             if key in acceptable_keys:
                 setattr(self, key, value)
     # }
+
+
+    def __eq__(self, other):
+        """
+        Define equality comparison for Solution objects.
+
+        Parameters:
+        - other: Another Solution object to compare.
+
+        Returns:
+        - Boolean: True if all attributes (asvars, bcvars, randvars) are equivalent, False otherwise.
+        """
+        if not isinstance(other, Solution):
+            return NotImplemented  # Let Python handle comparison with non-Solution types
+
+        if self.data['hash'] is not None:
+            return (self.data['hash'] == other.data['hash'] or
+                    self.data['hash_m'] == other.data['hash'] or
+                    self.data['hash'] == other.data['hash_m']
+                    )
+
+        # Compare attributes
+        return (self.data['asvars'] == other.data['asvars'] and
+                self.data['bcvars'] == other.data['bcvars'] and
+                self.data['randvars'] == other.data['randvars'] and
+                self.data['isvars'] == other.data['isvars'] and
+                self.data['corvars'] == other.data['corvars'] and
+                self.data['model_n'] == other.data['model_n']
+                )
+
+    def __ne__(self, other):
+        """
+        Define inequality comparison for Solution objects.
+        This is automatically derived in Python 3, but it's good practice to include it.
+        """
+        return not self.__eq__(other)
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Accessing|updating the objective values          '''
@@ -925,6 +1027,30 @@ class Solution(UserDict):
             str_result += str(round(obj,4))
         return str_result
     # }
+
+    '''
+    Function to create efficient mapping
+    '''
+    def create_sol_hash(self, sol):
+        """
+        Create a hash from specific fields in 'sol' to compare equivalence.
+        """
+        # Extract relevant fields
+        asvars = tuple(sol.get('asvars', []))  # Convert list to tuple for immutability
+        isvars = tuple(sol.get('isvars', []))
+        bcvars = tuple(sol.get('bcvars', []))
+        corvars = tuple(sol.get('corvars', []))
+        bctrans = sol.get('bctrans', False)
+        cor = sol.get('cor', False)
+        randvars = tuple(sorted(sol.get('randvars', {}).items()))  # Sort dict items to ensure consistent order
+        model_n = sol.get('model_n', '')
+
+        # Combine into a tuple
+        sol_tuple = (asvars, isvars, bcvars, corvars, bctrans, cor, randvars, model_n)
+        sol['hash'] = hash(sol_tuple)
+        # Return a hash of the tuple
+        return sol
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
@@ -1042,6 +1168,10 @@ class Search():
         self.param = param  # Record the parameters object to use
         self.nb_crit = param.nb_crit
         self.code_name = "search"
+
+
+        self.last_printed_solution = None  # Track the last printed solution
+        self.best_solution = None  # T
 
         self.all_estimated_solutions = []  # Unused currently
         
@@ -1255,7 +1385,10 @@ class Search():
         asvars = self.select_asvars()
         isvars = self.select_isvars()
         asc_ind = self.select_asc_ind()
-        
+        while (len(asvars) + len(isvars)) < 1:
+            asvars = self.select_asvars()
+
+            isvars = self.select_isvars()
 
 
         randvars = self.select_randvars(asvars)
@@ -1271,6 +1404,54 @@ class Search():
 
         return solution
     # }
+
+
+    def repair_solution(self, solution, min_length=1):
+        """
+        Repair a solution by ensuring the combined length of asvars and isvars
+        meets the minimum required length.
+
+        Args:
+            solution (Solution): The solution to repair.
+            min_length (int): The minimum combined length of asvars and isvars.
+
+        Returns:
+            Solution: The repaired solution.
+        """
+        asvars = solution.data['asvars']
+        isvars = solution.data['isvars']
+
+        # Check if the combined length is below the threshold
+        while (len(asvars) + len(isvars)) < min_length:
+            # Re-select variables until the condition is met
+            new_asvars = self.select_asvars()
+            new_isvars = self.select_isvars()
+
+            # Add new variables, ensuring no duplicates
+            asvars = list(set(asvars + new_asvars))
+            isvars = list(set(isvars + new_isvars))
+
+        # Re-select other features (optional: use existing values as defaults)
+        randvars = self.select_randvars(asvars)
+        bcvars, bctrans = self.select_bcvars(asvars)
+        cor, corvars = self.select_corvars(randvars, bcvars)
+        model_n = self.select_model_t()
+
+        # Create a repaired solution object
+        repaired_solution = Solution(
+            self.nb_crit,
+            asvars=asvars,
+            isvars=isvars,
+            bcvars=bcvars,
+            corvars=corvars,
+            bctrans=bctrans,
+            cor=cor,
+            randvars=randvars,
+            model_n=model_n,
+            asc_ind=solution.data['asc_ind']  # Retain original intercept setting
+        )
+
+        return repaired_solution
 
     ''' ---------------------------------------------------------- '''
     ''' Function.  Partition solutions into different fronts       '''
@@ -1319,6 +1500,34 @@ class Search():
         return sorted_soln
     # }
 
+
+    def create_sol_hash(self, sol):
+        """
+        Create a hash from specific fields in 'sol' to compare equivalence.
+        """
+        # Extract relevant fields
+        asvars = tuple(sol.get('asvars', []))  # Convert list to tuple for immutability
+        isvars = tuple(sol.get('isvars', []))
+        bcvars = tuple(sol.get('bcvars', []))
+        corvars = tuple(sol.get('corvars', []))
+        bctrans = sol.get('bctrans', False)
+        cor = sol.get('cor', False)
+        randvars = tuple(sorted(sol.get('randvars', {}).items()))  # Sort dict items to ensure consistent order
+        model_n = tuple(sol.get('model_n', ''))
+
+
+        # Combine into a tuple
+        sol_tuple = (asvars, isvars, bcvars, corvars, bctrans, cor, randvars, model_n)
+
+        a_hashable = tuple(
+            tuple(item) if isinstance(item, list) else item
+            for item in sol_tuple
+        )
+
+
+        # Return a hash of the tuple
+        return hash(a_hashable)
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Returns the first front                          '''
     ''' Assumption: Rank 1 always exists                           '''
@@ -1338,8 +1547,10 @@ class Search():
     # {
         # Compute and store the scaled solutions.
         # The scale function produces a list of |solns| values
-        norm = [scale(solns, self.param.crit(i), self.param.sign_crit(i) == 1) for i in range(self.nb_crit)]
-
+        if self.nb_crit >+2:
+            norm = [scale(solns, self.param.crit(i), self.param.sign_crit(i) == 1) for i in range(self.nb_crit)]
+        else:
+            norm = [scale(solns, self.param.crit(i), 'single') for i in range(self.nb_crit)]
         # Square each element in the 2d array
         norm_sqd = np.array(norm) ** 2
 
@@ -1494,17 +1705,19 @@ class Search():
             solution['asc_ind'] = bool(np.random.randint(2))
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         return solution
-    # }
+
 
     def perturb_add_asfeature(self, solution):
     # {
         candidate = [var for var in self.param.asvarnames if var not in solution['asvars']]
         if len(candidate) > 0:
             new_asvar = np.random.choice(candidate)
-            self.add_asvar(new_asvar, solution)
-        
-        return solution
+            solution = self.add_asvar(new_asvar, solution)
+        return  solution
+
     # }
+
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Randomly exclude an as variable from solution    '''
@@ -1518,7 +1731,7 @@ class Search():
             solution['corvars'] = [var for var in solution['corvars'] if
                                var not in self.param.ps_bcvars and var in list(solution['randvars'].keys())]
             
-            return  solution
+
 
         solution['asvars'] = [var for var in solution['asvars'] if var != rem_asvar]
         solution['asvars'] = sorted(set(solution['asvars']).union(self.param.ps_asvars))
@@ -1528,16 +1741,17 @@ class Search():
         solution['corvars'] = [var for var in solution['corvars'] if
                                var not in self.param.ps_bcvars and var in solution['asvars']]
         
+        return  solution
 
-        return solution
     # }
 
     def perturb_remove_asfeature(self, solution):
     # { # need to only remove asvars if no others
-        if len(solution['asvars']) >2:
+        if len(solution['asvars']) >1:
             rem_asvar = np.random.choice(solution['asvars'])    # Randomly choose one
-            
-            solution = self.remove_asvar(rem_asvar, solution)
+
+            #solution = self.remove_asvar(rem_asvar, solution)
+            solution['asvars'].remove(rem_asvar)
         return solution
     # }
 
@@ -1545,6 +1759,7 @@ class Search():
 
         solution['model_n'] = self.select_model_t()
         return solution
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Randomly selects an is variable, which is not    '''
@@ -1558,7 +1773,7 @@ class Search():
         #need to remove from asvars and isvars
         solution['asvars'] = [var for var in solution['asvars'] if var not in solution['isvars']]
         solution['randvars'] = {var: val for var, val in solution['randvars'].items() if var in solution['isvars']}
-
+        return solution
     # }
 
     def perturb_add_isfeature(self, solution):
@@ -1567,11 +1782,12 @@ class Search():
         if len(candidate) > 0:
         # {
             add_isvar = np.random.choice(candidate)
-            self.add_isvar(add_isvar, solution)
+            solution = self.add_isvar(add_isvar, solution)
 
             #print("ADD ISVAR!")
         # }
         return solution
+
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1581,19 +1797,41 @@ class Search():
     # {
         solution['isvars'] = [var for var in solution['isvars'] if var != rem_isvar]
         solution['isvars'] = sorted(list(set(solution['isvars']).union(self.param.ps_isvars)))
+        return  solution
     # }
 
     def perturb_remove_isfeature(self, solution):
     # {
         if solution['isvars']:
             rem_isvar = np.random.choice(solution['isvars'])
-            self.remove_isvar(rem_isvar, solution)
-        return solution
+            #solution = self.remove_isvar(rem_isvar, solution)
+            solution['isvars'].remove(rem_isvar)
+
+        return  solution
+
     # }
 
     def feasibility_constrain(self, solution):
         print('TODO implemente feasibility EG asvars randvars consistent')
         pass
+
+
+    def print_best_solution(self, solution, verbose_print_name = 'New Best Solution Found'):
+        """
+        Print the details of the current best solution, including its objectives
+        and summaries.
+        """
+        print(f"\n***** {verbose_print_name} *****")
+        print(f"Solution Number: {solution['sol_num']}")
+        print(f"Objective Values: {solution.concatenate_obj()}")
+
+        if solution['model']:
+            print("\nModel Summary:")
+            solution['model'].summarise()
+        else:
+            print("No model summary available.")
+        print("***********************************\n")
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
@@ -1783,7 +2021,7 @@ class Search():
         set_bcvars = set(solution['bcvars'])
         set_bcvars.add(new_bcvar)
         solution['bcvars'] = sorted(list(set_bcvars))
-
+        self.v_print('bcvar add')
         # if solution['class_params_spec'] is not None:
         # {
         #    class_params = list(np.concatenate(solution['class_params_spec']))
@@ -1943,14 +2181,21 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def perturb_asfeature(self, sol):
     # {
-        if np.random.rand() <= 0.5 or len(sol['asvars']) == 0:
+        try:
+            if sol['asvars'] is None or len(sol['asvars']) == 0:
+                self.perturb_add_asfeature(sol)
+        except Exception as e:
+            print('whyt')
+        if np.random.rand() <= 0.5:
+            if len(sol['asvars']) == len(self.param.asvarnames):
+                return self.perturb_remove_asfeature(sol)
             return self.perturb_add_asfeature(sol)  # Add asvar
         
         
-        elif len(sol['asvars']) >2:
+        elif len(sol['asvars']) >0:
             return self.perturb_remove_asfeature(sol)  # Remove asvar
         else:
-            self.perturb_randfeature(sol)
+            return self.perturb_randfeature(sol)
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Perturbation of isvars                           '''
@@ -2253,6 +2498,30 @@ class Search():
     # }
 
 
+    def solutions_equal(self, sol1, sol2):
+
+        """
+        Compare two solutions to check if they are effectively the same,
+        within a specified tolerance.
+        """
+        tolerance = 1e-1
+        if sol1 is None or sol2 is None:
+            return False  # If either solution is None, they are not equal
+
+            # Ensure both solutions have the 'obj' key
+        if 'obj' not in sol1.data or 'obj' not in sol2.data:
+            raise KeyError("One or both solutions are missing the 'obj' key.")
+
+        # Compare 'obj' values within tolerance
+        if self.nb_crit <=1:
+            diff = abs(sol1.data['obj'] - sol2.data['obj'])
+        else:
+            diff = np.max(abs(sol1.data['obj'] - sol2.data['obj']))
+        return diff <= tolerance
+
+
+
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Evaluates objective function for a given solution'''
@@ -2270,13 +2539,13 @@ class Search():
         if cont:
         # {
             as_vars, is_vars, rand_vars, bc_vars, corvars, asc_ind = self.get_components(sol)
-            all_vars = as_vars + is_vars
+            all_vars = is_vars + as_vars
 
             all_vars = [var for var in self.param.varnames if var in all_vars]
             # Estimate model if input variables are present in specification:
             if all_vars is not None:
             # {
-                aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged = self.evaluate_model(sol)
+                aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol= self.evaluate_model(sol)
 
                 #sol['evaluated'] = True  # MAYBE ADD THIS CODE
 
@@ -2288,10 +2557,17 @@ class Search():
                     sol['converged'] = True
                     sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
                     self.update_objectives(self.param.criterions, sol)
+                    # Compare with the best solution so far
+
+                    # Compare with the best solution so far
+                    if not hasattr(self, 'best_solution') or self.find_best_sol([sol, self.best_solution]) == sol:
+                        self.best_solution = sol
+                        # Check if the best solution is the same as the last printed solution
+                        if self.last_printed_solution is None or not self.solutions_equal(sol, self.last_printed_solution):
+                            self.print_best_solution(sol)
+                            self.last_printed_solution = sol  #
 
 
-
-                # }
                 else:
                 # {
                     self.not_converged += 1
@@ -2299,6 +2575,9 @@ class Search():
                 # }
             # }
         # }
+        if self.param.verbose:
+            print("** verbose: TRUE (param.verbose...) ** turn off if dont want to print")
+            self.print_best_solution(sol, "PRINTING SOLUTION")
         return (sol, sol['converged'])
     # }
 
@@ -2380,6 +2659,17 @@ class Search():
                 weights, avail, base_alt, maxiter, ftol, gtol):
     # {
         model = MultinomialLogit()
+
+
+
+        #print(fit_intercept)
+        if 'intercept' in isvars:
+            fit_intercept = True
+        else:
+            fit_intercept = False
+
+        isvars, varnames, fit_intercept = self.process_variables(isvars, varnames, None)
+
         model.setup(X=X, y=y, varnames=varnames, isvars=isvars, alts=alts,
             ids=ids, transvars=transvars, fit_intercept=fit_intercept, init_coeff=init_coeff,
             weights=weights, avail=avail, base_alt=base_alt, maxiter=maxiter, ftol=ftol, gtol=gtol)
@@ -2388,11 +2678,51 @@ class Search():
         return model
     # }
 
+
+    def process_variables(self, isvars, varnames, randvars):
+        """
+        Processes the variables by:
+        1. Checking for 'intercept' in isvars and setting fit_intercept.
+        2. Ensuring that variables in isvars and randvars are correctly added to varnames.
+        3. Removing variables in isvars that are already present in randvars.
+
+        Args:
+            isvars (list): List of independent variables (modifiable).
+            varnames (list): List of all variable names (modifiable).
+            randvars (dict): Dictionary of random variables.
+
+        Returns:
+            tuple: Updated isvars, varnames, and fit_intercept flag.
+        """
+        # Check if 'intercept' is in isvars
+        fit_intercept = 'intercept' in isvars
+
+        # Add variables from isvars to varnames if not already present
+        for i in isvars:
+            if i not in varnames and i != 'intercept':
+                varnames.append(i)
+
+        # Add variables from randvars.keys() to varnames if not already present
+        if randvars is not None:
+            for i in randvars.keys():
+                if i not in varnames:
+                    varnames.append(i)
+
+            # Remove variables in isvars that are already in randvars.keys()
+            isvars = [i for i in isvars if i not in randvars.keys()]
+
+        return isvars, varnames, fit_intercept
+
     def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars, corvars,
             fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params):
     # {
         model = MixedLogit()
         #subvarnames = varnames delete itemes in randvaras
+
+
+        # repair the model..
+        isvars, varnames, fit_intercept = self.process_variables(isvars, varnames, randvars)
+
         model.setup(X=X, y=y, varnames=varnames, isvars=isvars, alts=alts, transvars=transvars, ids=ids,
             randvars=randvars, panels=panels, fit_intercept=fit_intercept, correlated_vars=corvars, n_draws=n_draws,
             init_coeff=init_coeff, weights=weights, avail=avail,  base_alt=base_alt, maxiter=maxiter,
@@ -2401,6 +2731,14 @@ class Search():
         
         return model
     # }
+
+    def fit_nested(self, X, y, varnames, isvars, alts, ids, nests, lambdas, lambdas_mapping, fit_intercept):
+        #model = MuNestedLogit(X, y, varnames, isvars, alts, ids, nests, lambdas, fit_intercept)
+        model = MultiLayerNestedLogit(X, y, varnames, isvars, alts, ids, nests, lambdas,lambdas_mapping, fit_intercept)
+
+        model.setup(X, y, varnames, isvars, alts, ids, nests, lambdas, fit_intercept, gtol=1e-06,
+        return_grad = False)
+        model.fit()
 
 
     #def fit_random_regret(self, X=None, y=None, varnames = None, alts = None, isvars = None, transvars = None, ids =None, weights = None, panels = None, avail = None, base_alt = None, df,, **kwargs):
@@ -2468,7 +2806,7 @@ class Search():
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if getattr(self.param, 'verbose', False):
             model.summarise()
-        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged)
+        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
         return tuple
     # }
 
@@ -2547,9 +2885,120 @@ class Search():
 
         if getattr(self.param, 'verbose', False):
             model.summarise()
-        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged)
+        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
         return tuple
     # }
+
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Fit and Evaluate Nested Logit Model              '''
+    ''' ---------------------------------------------------------- '''
+
+
+    def evaluate_nested_logit(self, sol):
+        """Evaluates a Nested Logit model."""
+        # Extract relevant model parameters
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+
+        # Define nests and lambda values (adjust based on your data)
+        # TODO NEED TO FEED IN THE NESTS FROM params
+        nests = self.param.nests
+        lambdas = self.param.lambdas
+        lambdas_mapping = self.param.lambdas_mapping
+
+        # Filter the variables to include in the model
+        all_vars = as_vars + is_vars
+        if len(all_vars) == 0:
+            raise ValueError('need a variable: todo debug why')
+        all_vars = [var for var in self.param.varnames if var in all_vars]
+
+        # Prepare data for the nested logit model
+        X, y = self.param.df[all_vars].values, self.param.choices
+
+        # Fit the Nested Logit model
+        model = NestedLogit()
+        model.setup(X=X, y=y, varnames=all_vars, isvars=is_vars,
+                    alts=self.param.alt_var, ids=self.param.choice_id,
+                    nests=nests, lambdas=lambdas, fit_intercept=asc_ind, return_grad=False)
+
+        model.fit()
+
+        # Store the model and metrics in the solution
+        sol['model'] = model
+        sol['coeff'] = model.coeff_est
+        converged = model.converged
+        aic, bic, loglik = model.aic, model.bic, model.loglik
+        # Handle MAE if it's an objective
+        if self.mae_is_an_objective():
+            X_test = self.param.df_test[all_vars].values
+            y_test = self.param.test_choices
+            test_model = NestedLogit()
+            test_model.setup(X=X_test, y=y_test, varnames=all_vars, isvars=is_vars,
+                             alts=self.param.test_alt_var, ids=self.param.test_choice_id,
+                             nests=nests, lambdas=lambdas, fit_intercept=asc_ind,
+                             return_grad=False)
+            test_model.fit()
+            model.mae = self.compute_mae(test_model)
+
+        mae = model.mae
+        tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, {}, [], [], converged, sol)
+        return tuple_
+
+
+
+
+
+    def evaluate_nested_logit_ml(self, sol):
+        """Evaluates a Nested Logit model."""
+        # Extract relevant model parameters
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+
+        # Define nests and lambda values (adjust based on your data)
+        #TODO NEED TO FEED IN THE NESTS FROM params
+        nests = self.param.nests
+        lambdas = self.param.lambdas
+        lambdas_mapping = self.param.lambdas_mapping
+
+        # Filter the variables to include in the model
+        all_vars = as_vars + is_vars
+        if len(all_vars) ==0:
+            raise ValueError('need a variable: todo debug why')
+        all_vars = [var for var in self.param.varnames if var in all_vars]
+
+        # Prepare data for the nested logit model
+        X, y = self.param.df[all_vars].values, self.param.choices
+
+        # Fit the Nested Logit model
+        model = MultiLayerNestedLogit()
+        model.setup(X=X, y=y, varnames=all_vars, isvars=is_vars,
+                            alts=self.param.alt_var, ids=self.param.choice_id,
+                            nests=nests, lambdas=lambdas, lambdas_mapping = lambdas_mapping, fit_intercept=asc_ind,  return_grad=False)
+
+        model.fit()
+
+        # Store the model and metrics in the solution
+        sol['model'] = model
+        sol['coeff'] = model.coeff_est
+        converged = model.converged
+        aic, bic, loglik = model.aic, model.bic, model.loglik
+
+        # Handle MAE if it's an objective
+        if self.mae_is_an_objective():
+            X_test = self.param.df_test[all_vars].values
+            y_test = self.param.test_choices
+            test_model = MultiLayerNestedLogit()
+            test_model.setup(X=X_test, y=y_test, varnames=all_vars, isvars=is_vars,
+                                     alts=self.param.test_alt_var, ids=self.param.test_choice_id,
+                                     nests=nests, lambdas=lambdas, lambdas_mapping = lambdas_mapping, fit_intercept=asc_ind,  return_grad=False)
+            test_model.fit()
+            model.mae = self.compute_mae(test_model)
+
+        mae = model.mae
+        tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, {}, [], [], converged, sol)
+        return tuple_
+
+
+
 
     def evaluate_rrm(self, sol):
 
@@ -2586,7 +3035,7 @@ class Search():
         if getattr(self.param, 'verbose', False):
             model.summarise()
 
-        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged)
+        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
         return tuple
 
     def evaluate_ordered_logit(self,sol):
@@ -2623,12 +3072,13 @@ class Search():
             X_test, y_test = self.param.df_test[all_vars], self.param.choices
             test_model = self.fit_ordered_logit(X=X_test, y=y_test, ids = self.param.choice_id, varnames = all_vars)
             model.mae = self.compute_mae(test_model)
-        mae = model.mae
+        else:
+            mae = None
 
         if getattr(self.param, 'verbose', False):
             model.summarise()
 
-        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged)
+        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
         return tuple
 
 
@@ -2659,9 +3109,12 @@ class Search():
 
 
             tuple =  self.evaluate_rrm(sol)
+
+        elif sol['model_n'] == 'nested_logit':
+            tuple = self.evaluate_nested_logit(sol)
         elif sol['model_n'] == 'ordered_logit':
             tuple = self.evaluate_ordered_logit(sol)
-            print('cool')
+
 
         elif bool(sol['randvars']):
         # {
@@ -2675,6 +3128,8 @@ class Search():
 
         else:
         # {
+
+            sol = self.repair_solution(sol)
 
             tuple = self.evaluate_mnl(sol)
         # }

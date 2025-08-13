@@ -192,6 +192,34 @@ class MultinomialLogit(DiscreteChoiceModel):
         return Hinv
     # }
 
+    '''21/08/2025: new boxcox tranfromation so that we can apply it to nested Logit - '''
+    def apply_combined_transformation(self, X, lambdas):
+        """
+        Apply transformations to all variables in X.
+        Fixed variables remain unchanged, while transformed variables
+        undergo the Box-Cox transformation.
+        """
+        # Preallocate transformed matrix
+        X_transformed = np.zeros_like(X)
+
+        # Determine which variables to transform
+        fixed_idx = ~self.fxtransidx  # Indices of fixed variables
+        trans_idx = self.fxtransidx  # Indices of transformed variables
+
+        # Fixed variables: No transformation
+        X_transformed[:, :, fixed_idx] = X[:, :, fixed_idx]
+
+        # Transformed variables: Apply Box-Cox transformation
+        with np.errstate(divide='ignore', invalid='ignore'):  # Suppress warnings for log(0)
+            X_transformed[:, :, trans_idx] = np.where(
+                lambdas == 0,
+                np.log(X[:, :, trans_idx] + 1e-6),  # Log transform for lambda = 0
+                ((X[:, :, trans_idx] ** lambdas) - 1) / lambdas  # Box-Cox for lambda != 0
+            )
+
+        return X_transformed
+
+
     ''' -------------------------------------------------------------------- '''
     ''' Function.                                                            '''
     ''' -------------------------------------------------------------------- '''
@@ -268,7 +296,7 @@ class MultinomialLogit(DiscreteChoiceModel):
         expected_length = expected_length_betas + expected_length_lambdas #Add 
         if self.init_coeff is None:
             #self.betas = np.repeat(0.1, expected_length)# Remove 
-            self.betas = np.append((np.repeat(0.1, expected_length_betas)), np.repeat(1, expected_length_lambdas))# Add
+            self.betas = np.append((np.repeat(0.00, expected_length_betas)), np.repeat(0, expected_length_lambdas))# Add
         else: #{
             self.betas = self.init_coeff
 
@@ -296,6 +324,83 @@ class MultinomialLogit(DiscreteChoiceModel):
     # }
 
 
+    def predict_setup(self, X_new, varnames, est_coeff, avail_new=None, isvars = None, ids = None, transvars = None, alts =None, y = None, J = None, base_alt=None, fit_intercept=True):
+        """
+        Predict choice probabilities and compute logsums for new data using the fitted model.
+
+        Parameters:
+        ----------
+        X_new : numpy.ndarray
+            New input data for prediction. Shape: (n_observations, n_alternatives, n_variables).
+        avail_new : numpy.ndarray, optional
+            Availability indicators for alternatives. Shape: (n_observations, n_alternatives).
+            If None, assumes all alternatives are available.
+
+        Returns:
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            - Predicted choice probabilities for each alternative (shape: [n_observations, n_alternatives]).
+            - Logsums (shape: [n_observations]) representing the expected utility of the choice set.
+        """
+        transformation = 'boxcox'
+        if not hasattr(self, 'coeff_est'):
+            raise ValueError("Model must be trained before predicting.")
+        if y is None:
+            y = X_new.iloc[:, 0] ## dummy
+        if ids is None:
+            raise ValueError('need ids')
+        if varnames is None:
+            raise ValueError('need varnames')
+        if fit_intercept:
+            self.fit_intercept = True
+        X_new, y, varnames, alts, isvars, transvars, ids, weights, panels, avail_new = \
+            self.set_asarray(X_new, y, varnames, alts, isvars, transvars, ids, None, None, None)
+
+        self.pre_process(alts, varnames, isvars, transvars, base_alt, fit_intercept, transformation, panels = panels)
+
+        for var in self.asvars:  # {
+            is_transvar = var in self.transvars  # True or False state
+            self.fxidx.append(not is_transvar)
+            self.fxtransidx.append(is_transvar)
+            # }
+
+        if self.transformation == "boxcox":  # {
+            self.trans_func = boxcox_transformation
+            self.transform_deriv = boxcox_param_deriv
+            # }
+
+        self.fixedtransvars = self.transvars
+        self.X_new, self.Xnames = self.setup_design_matrix(X_new)
+        X_new = self.X_new
+        # Ensure X_new is 3D (N x J x K) and availability matrix is 2D (N x J)
+        if len(X_new.shape) != 3:
+            if J is not None:
+
+                self.J = J
+                print(f'new {J} alternative')
+            X_new = X_new.reshape((self.N, self.J, self.Kf))
+            print(f"X_new must be 3D (N x J x K), got shape {X_new.shape}. Reshaping..")
+        if avail_new is not None and len(avail_new.shape) != 2:
+            print(f"avail_new must be 2D (N x J), got shape {avail_new.shape}.")
+
+        # Update dimensions (N, J) for prediction
+        self.N, self.J, _ = X_new.shape
+
+        # Set default availability if none provided
+        if avail_new is None:
+            avail_new = np.ones((self.N, self.J))
+
+        # Use fitted coefficients and compute probabilities/logsums
+        betas = est_coeff
+        choice_probabilities, logsums = self.compute_probabilities(betas, X_new, avail_new, return_logsum=True)
+        #logsums is in (N, J, K) format, how to
+
+        return choice_probabilities, logsums
+
+
+
+
+
 
 
     ''' -------------------------------------------------------------------- '''
@@ -311,6 +416,7 @@ class MultinomialLogit(DiscreteChoiceModel):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Save predicted and observed probabilities to display in summary
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        #todo just overide latent class fit there
         if 'is_latent_class' not in result.keys(): # i.e., result['is_latent_class'] is not defined
         # {
             p = self.compute_probabilities(result['x'], self.X, self.avail)
@@ -334,8 +440,9 @@ class MultinomialLogit(DiscreteChoiceModel):
     # }
 
 
-    def compute_probabilities(self, betas, X, avail):
+    def compute_probabilities(self, betas, X, avail, return_logsum = False):
         """Compute choice probabilities for each alternative."""
+
         Xf = X[:, :, self.fxidx]
         X_trans = X[:, :, self.fxtransidx]
         XB = 0
@@ -354,14 +461,22 @@ class MultinomialLogit(DiscreteChoiceModel):
         XB[XB > max_exp_val] = max_exp_val  # avoiding infs
         XB[XB < -max_exp_val] = -max_exp_val  # avoiding infs
 
-        XB = XB.reshape(self.N, self.J)
 
+
+        XB = XB.reshape(self.N, self.J)
+        max_XB = np.max(XB, axis=1, keepdims=True)  # Max value per row
+        XB = XB - max_XB  # Subtract max value from each row
         eXB = np.exp(XB)
         if avail is not None:
             eXB = eXB*avail
 
         p = eXB / np.sum(eXB, axis=1, keepdims=True)
-
+        if return_logsum:
+            print('attempting to return logsum')
+            #which one is the logsums??
+            logsums = np.log(np.sum(eXB, axis=1)) + max_XB.flatten()
+            #logsums = np.log(np.sum(eXB, axis=1))
+            return p, logsums
         return p
 
 
@@ -417,7 +532,8 @@ class MultinomialLogit(DiscreteChoiceModel):
         if weights is not None:
             loglik = loglik * weights[:, 0]  # doesn't matter which column
         loglik = np.sum(loglik)         # Sum up the elements
-
+        if not self.return_grad:
+            return (-loglik, )
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Individual contribution to the gradient
         # and position of trans vars -  B_trans, lambdas, X_trans
@@ -428,40 +544,41 @@ class MultinomialLogit(DiscreteChoiceModel):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Compute grad
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        grad = np.einsum('nj,njk -> nk', ymp, X[:, :, self.fxidx]) if self.Kf > 0 else np.zeros((ymp.shape[0], 0))
+        if self.return_grad:
+            grad = np.einsum('nj,njk -> nk', ymp, X[:, :, self.fxidx]) if self.Kf > 0 else np.zeros((ymp.shape[0], 0))
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Compute individual contribution of trans to the gradient
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        if self.Kftrans > 0: # {
-            transpos = [self.varnames.tolist().index(i) for i in self.transvars]
-            X_trans = X[:, :, transpos]
-            X_trans = X_trans.reshape(self.N, len(self.alts), len(transpos))
-            lambdas = betas[Kmax:]  # Extract elements [Kmax+1:]
-            Xtrans_lmda = self.trans_func(X_trans, lambdas)
-            gtrans = np.einsum('nj,njk -> nk', ymp, Xtrans_lmda)
-            der_Xtrans_lmda = self.transform_deriv(X_trans, lambdas)
-            B_trans = betas[self.Kf:Kmax]  # Extract elements [Kf:Kmax]
-            der_XBtrans = np.einsum('njk,k -> njk', der_Xtrans_lmda, B_trans)
-            gtrans_lmda = np.einsum('nj,njk -> nk', ymp, der_XBtrans)
-            grad = np.concatenate((grad, gtrans, gtrans_lmda), axis=1) if grad.size \
-                else np.concatenate((gtrans, gtrans_lmda), axis=1)  # (N, K)
-        # }
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Compute individual contribution of trans to the gradient
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            if self.Kftrans > 0: # {
+                transpos = [self.varnames.tolist().index(i) for i in self.transvars]
+                X_trans = X[:, :, transpos]
+                X_trans = X_trans.reshape(self.N, len(self.alts), len(transpos))
+                lambdas = betas[Kmax:]  # Extract elements [Kmax+1:]
+                Xtrans_lmda = self.trans_func(X_trans, lambdas)
+                gtrans = np.einsum('nj,njk -> nk', ymp, Xtrans_lmda)
+                der_Xtrans_lmda = self.transform_deriv(X_trans, lambdas)
+                B_trans = betas[self.Kf:Kmax]  # Extract elements [Kf:Kmax]
+                der_XBtrans = np.einsum('njk,k -> njk', der_Xtrans_lmda, B_trans)
+                gtrans_lmda = np.einsum('nj,njk -> nk', ymp, der_XBtrans)
+                grad = np.concatenate((grad, gtrans, gtrans_lmda), axis=1) if grad.size \
+                    else np.concatenate((gtrans, gtrans_lmda), axis=1)  # (N, K)
+            # }
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Assuming grad.shape = (m, n) and weights.shape = (m, k)
-        if weights is not None:
-            # Compute grad = np.transpose(np.transpose(grad) * weights[:, 0])
-            # The code below takes the first column of the weights array and reshapes it into a column vector.
-            # The reshape converts weights_first_column into a 2d array with a single column.
-            weights_first_column = weights[:, 0] # Select first column for element-wise multiplication
-            grad *= weights_first_column.reshape(-1, 1) # Element-wise multiplication using broadcasting
-            # The "*=" operation multiplies each column of grad with weights_first_column
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Assuming grad.shape = (m, n) and weights.shape = (m, k)
+            if weights is not None:
+                # Compute grad = np.transpose(np.transpose(grad) * weights[:, 0])
+                # The code below takes the first column of the weights array and reshapes it into a column vector.
+                # The reshape converts weights_first_column into a 2d array with a single column.
+                weights_first_column = weights[:, 0] # Select first column for element-wise multiplication
+                grad *= weights_first_column.reshape(-1, 1) # Element-wise multiplication using broadcasting
+                # The "*=" operation multiplies each column of grad with weights_first_column
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-        self.Hinv = self.function_hessian(grad)  # Conditionally compute Hinv based upon return_hess flag
-        grad = np.sum(grad, axis=0)     # Compute grad_[i] = sum(j, grad[i][j])
-        self.gtol_res = np.linalg.norm(grad, ord=np.inf)  # Compute the norm of "grad"
+            self.Hinv = self.function_hessian(grad)  # Conditionally compute Hinv based upon return_hess flag
+            grad = np.sum(grad, axis=0)     # Compute grad_[i] = sum(j, grad[i][j])
+            self.gtol_res = np.linalg.norm(grad, ord=np.inf)  # Compute the norm of "grad"
 
         penalty = self.regularize_loglik(betas)
         loglik = loglik - penalty
@@ -492,10 +609,31 @@ class MultinomialLogit(DiscreteChoiceModel):
     # {
         args = (X, y, weights, avail)
         options = {'gtol': gtol, 'maxiter': maxiter, 'disp': False}
-        result = minimize(self.get_loglik_and_gradient, betas,
-                args=args, jac=jac, method=self.method, tol=ftol, options=options)
+        if self.method == 'L-BFGS-B':
+            result = minimize(self.get_loglik_and_gradient, betas,
+                              args=args, jac=jac, method=self.method, bounds=self.bounds, tol=ftol, options=options)
+        else:
+            result = minimize(self.get_loglik_and_gradient, betas,
+                              args=args, jac=jac, method=self.method, tol=ftol, options=options)
+
         return result
     # }
+
+    def bhhh_optimization(self, betas, X, y, weights, avail, maxiter, ftol, gtol, jac, bounds):
+        try:
+            from bhhh.minimize import minimize_bhhh
+        except:
+            from .bhhh.minimize import minimize_bhhh
+        args = (X, y, weights, avail)
+        if jac == 0:
+            raise ValueError('bhhh requires a gradient')
+
+
+        options = {'gtol': gtol, 'maxiter': maxiter, 'disp': False}
+        result = minimize_bhhh(self.get_loglik_and_gradient, betas,
+                          args=args, jac=jac, method=self.method, tol=ftol, options=options)
+        return result
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function. This code is an implementation of the            '''

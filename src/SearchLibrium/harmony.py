@@ -138,7 +138,7 @@ class HarmonySearch(Search):
         if self.param.nb_crit > 1:
             mem = self.non_dominant_sorting(mem)
         else:
-            mem = sorted(mem, key=lambda sol: sol.obj[0])
+            mem = sorted(mem, key=lambda sol: sol.obj(0))  # Call obj() with index 0
         return mem
     # }
 
@@ -175,53 +175,51 @@ class HarmonySearch(Search):
         else:
             opp_sol['bcvars'] = []
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
         self.revise_solution('class_params_spec', opp_sol, sol)
         self.revise_solution('member_params_spec', opp_sol, sol)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        opp_sol = self.repair_solution(opp_sol)
+        return opp_sol
     # }
 
     ''' ---------------------------------------------------------------- '''
     ''' Function. Initialization of harmony search memory                '''
     ''' ---------------------------------------------------------------- '''
+
+
     def initialize_memory(self, nb_sols):
-    # {
-        """ This function initializes the harmony memory and opposite
-        harmony memory with unique random solutions. The harmony memory
-        stores initial solutions, while the opposite harmony memory
-        stores solutions that include variables not included in the
-        harmony memory. If the generated solution converges, it's added
-        to the harmony memory. Otherwise, the function generates an
-        "opposite" solution and, if it converges, adds it to the
-        opposite harmony memory.
         """
-
-        mem, opp_mem = [], []
+        Initialize harmony memory and opposite harmony memory with unique random solutions.
+        """
+        mem, opp_mem = [], []  # Initialize memory and opposite memory
         for counter in range(30000):
-        # {
-            sol = self.generate_solution()  # Generated solution
+            sol = self.generate_solution()  # Generate a solution
             sol, converged = self.evaluate_solution(sol)
-            if converged: mem.append(sol) # Add new solution to list
 
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            # Create opposite solution that has non_included variables
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            opp_sol = self.create_opposite_solution(sol)
-            opp_sol, converged = self.evaluate_solution(opp_sol)
-            if converged: opp_mem.append(opp_sol)
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            if converged:
+                mem.append(sol)  # Add solution to harmony memory
 
-            mem += opp_mem    # Aggregate solutions
-            mem = get_unique(mem, 0)  # Keep unique solutions only - Compare by first objective
+            # Generate opposite solution only if the original solution is valid
+            if sol is not None:
+                opp_sol = self.create_opposite_solution(sol)
 
-            # QUERY: WHY NOT FILTER BY sol.obj[1] AS WELL?
+                if opp_sol is not None:  # Validate opposite solution before evaluating
+                    opp_sol, converged = self.evaluate_solution(opp_sol)
+                    if converged:
+                        opp_mem.append(opp_sol)  # Add opposite solution to opposite memory
 
-            mem = [sol for sol in mem if abs(sol.obj[0]) < BOUND] # Filter out poor solutions
+            mem += opp_mem  # Combine memory and opposite memory
+            mem = get_unique(mem, 0)  # Keep unique solutions only
+
+            # Filter memory to remove poor solutions based on the first objective
+            mem = [sol for sol in mem if abs(sol.obj(0)) < BOUND]  # Call obj(0) correctly
+
             if len(mem) >= nb_sols:
-                return mem[:nb_sols]  # Exit and return list of solutions
-        # }
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        return mem # Failed to generate required number of solutions
-    # }
+                return mem[:nb_sols]  # Return the initialized memory
+
+        return mem  # Return memory after exhausting attempts
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Build new solution using Harmony Memory          '''
@@ -299,30 +297,31 @@ class HarmonySearch(Search):
             new_sol['asc_ind'] = chosen_sol['asc_ind']
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            if chosen_sol['class_params_spec'] is not None:
-            # {
-                class_params_spec = copy.deepcopy(chosen_sol['class_params_spec'])
-                for ii, class_params in enumerate(class_params_spec):
+            if self.param.allow_latent_corvars:
+                if chosen_sol['class_params_spec'] is not None:
                 # {
-                    class_params_index = self.param.generator.choice(bin, size=len(class_params), p=prob)
-                    class_params_spec[ii] = np.array([i for (i, v) in zip(class_params, class_params_index) if v],
-                                                     dtype=class_params.dtype)
+                    class_params_spec = copy.deepcopy(chosen_sol['class_params_spec'])
+                    for ii, class_params in enumerate(class_params_spec):
+                    # {
+                        class_params_index = self.param.generator.choice(bin, size=len(class_params), p=prob)
+                        class_params_spec[ii] = np.array([i for (i, v) in zip(class_params, class_params_index) if v],
+                                                         dtype=class_params.dtype)
+                    # }
+                    new_sol['class_params_spec'] = class_params_spec
                 # }
-                new_sol['class_params_spec'] = class_params_spec
-            # }
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            if chosen_sol['member_params_spec'] is not None:
-            # {
-                member_params_spec = copy.deepcopy(chosen_sol['member_params_spec'])
-                for ii, member_params in enumerate(member_params_spec):
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                if chosen_sol['member_params_spec'] is not None:
                 # {
-                    member_params_index = self.param.generator.choice(bin, size=len(member_params), p=prob)
-                    member_params_spec[ii] = np.array([i for (i, v) in zip(member_params, member_params_index) if v],
-                                                      dtype=member_params.dtype)
+                    member_params_spec = copy.deepcopy(chosen_sol['member_params_spec'])
+                    for ii, member_params in enumerate(member_params_spec):
+                    # {
+                        member_params_index = self.param.generator.choice(bin, size=len(member_params), p=prob)
+                        member_params_spec[ii] = np.array([i for (i, v) in zip(member_params, member_params_index) if v],
+                                                          dtype=member_params.dtype)
+                    # }
+                    new_sol['member_params_spec'] = member_params_spec
                 # }
-                new_sol['member_params_spec'] = member_params_spec
             # }
-        # }
 
         return new_sol
     # }
@@ -330,22 +329,55 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
+
+
     def remove_non_unique_solutions(self):
-    # {
-        seen_tuple = set()  # Create an empty set
-        new_memory = list()  # Create an empty list
-        crit = self.param.criterions[:self.nb_crit]
+        """
+        Remove non-unique solutions from the harmony memory.
+        """
+        unique_solutions = set()
+        filtered_memory = []
+        crit = self.param.criterions[:self.nb_crit]  # Get the relevant criteria
+        crits = [i for i in crit]  # Ensure crits is iterable
+
         for sol in self.memory:
-        # {
-            sol_tuple = tuple([sol[crit[0]], sol[crit[1]]])
-            if sol_tuple not in seen_tuple:
-            # {
-                seen_tuple.add(sol_tuple)   # Revise what has been seen
-                new_memory.append(sol)      # Update list of unique solutions
-            # }
-        # }
-        self.memory = new_memory
-    # }
+            try:
+                # Debugging: Print sol and crit before accessing
+                print(f"sol: {sol}")
+                print(f"crit: {self.param.criterions}")
+
+                # Ensure all elements in the tuple are hashable
+                sol_tuple = tuple(
+                    tuple(sol[crits[i]]) if isinstance(sol[crits[i]], list) else sol[crits[i]]
+                    for i in range(len(crits))
+                )
+            except KeyError as e:
+                # Handle missing keys
+                print(f"KeyError: {e} - sol: {sol}, criteria: {crits}")
+                continue  # Skip this solution
+
+            # Add to unique solutions if not already present
+            if sol_tuple not in unique_solutions:
+                unique_solutions.add(sol_tuple)
+                filtered_memory.append(sol)
+
+        self.memory = filtered_memory
+
+
+    def remove_non_unique_solutions(self):
+        """
+        Remove non-unique solutions from the harmony memory.
+        """
+        unique_hashes = set()
+        filtered_memory = []
+
+        for sol in self.memory:
+            sol_hash = self.create_sol_hash(sol)  # Generate hash for the solution
+            if sol_hash not in unique_hashes:
+                unique_hashes.add(sol_hash)
+                filtered_memory.append(sol)
+
+        self.memory = filtered_memory
 
     ''' ------------------------------------------------------------ '''
     ''' Function. Insert solution and filter out non-unique solutions'''
@@ -374,18 +406,23 @@ class HarmonySearch(Search):
         # pitch adjustment: add|remove is variables
         if self.param.generator.rand() <= pitch: adj = self.perturb_isfeature(adj)
         # pitch adjustment: add|remove random variable
-        if self.param.generator.rand() <= pitch: adj = self.perturb_randfeature(adj)
+        if self.param.allow_random:
+            if self.param.generator.rand() <= pitch: adj = self.perturb_randfeature(adj)
 
-        if self.param.generator.rand() <= pitch: adj = self.change_distribution(adj)
+        if self.param.allow_random:
+            if self.param.generator.rand() <= pitch: adj = self.change_distribution(adj)
 
         # pitch adjustment: add|remove bc variables
-        if self.param.generator.rand() <= pitch: adj = self.perturb_bcfeature(adj, pitch)
+
+        if self.param.allow_bcvars:
+            if self.param.generator.rand() <= pitch: adj = self.perturb_bcfeature(adj, pitch)
         # Pitch adjustment: add|remove cor variables
-        if self.param.generator.rand() <= pitch: adj = self.perturb_corfeature(adj)
+        if self.param.allow_corvars:
+            if self.param.generator.rand() <= pitch: adj = self.perturb_corfeature(adj)
         # Pitch adjustment: add|remove class param variables
-        if self.param.generator.rand() <= pitch: adj = self.perturb_class_paramfeature(adj)
+        #if self.param.generator.rand() <= pitch: adj = self.perturb_class_paramfeature(adj)
         # Pitch adjustment: add|remove member param variables
-        if self.param.generator.rand() <= pitch: adj = self.perturb_member_paramfeature(adj)
+        #if self.param.generator.rand() <= pitch: adj = self.perturb_member_paramfeature(adj)
 
         adj, converged = self.evaluate_solution(adj)
         return adj, converged
