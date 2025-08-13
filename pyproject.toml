@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SearchLibrium"
-version = "0.0.20"
+version = "0.0.24"
 authors = [
 { name="Zeke Ahern", email="z.ahern@qut.edu.au" },
 ]
 description = "A wrapper for Searchlogit with extended functionality for ABM models."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 classifiers = [
 "Programming Language :: Python :: 3",
 "License :: OSI Approved :: MIT License",
@@ -20,12 +20,11 @@ dependencies = [
     'numpy>2.0.0',
     'pandas>=2.0.0',
     'scikit-learn>=1.3.1',
-    'statsmodels',  
-    'pyfiglit >= 1.0.0',
+    'statsmodels'
 ]
 
 [tool.setuptools.packages]
-find = { where = ["SearchLibrium"] }
+find = { where = ["src] }
 
 
 
@@ -41,14 +40,12 @@ realpython = "SearchLibrium.__main__:main"
 
 
 [tool.bumpver]
-current_version = "0.0.20"
+current_version = "0.0.24"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message  = "Bump version {old_version} -> {new_version}"
 commit          = true
 tag             = true
 push            = false
-
-]
 
 
 [tool.bumpver.file_patterns] 
