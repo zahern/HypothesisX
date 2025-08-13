@@ -58,7 +58,10 @@ class HaltonSequence:
         return draws
 
 import numpy as np
-from _device import device as dev
+try:
+    from _device import device as dev
+except ImportError as e:
+    from . import _device as dev
 import scipy.stats as ss
 
 class Halton:

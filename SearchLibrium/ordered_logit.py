@@ -128,10 +128,12 @@ def compute_inverse_cholesky(H):
         return None
 # }
 
-
-from multinomial_logit import MultinomialLogit
-from MixedLogit import MixedLogit
-
+try:
+    from multinomial_logit import MultinomialLogit
+    from MixedLogit import MixedLogit
+except ImportError as e:
+    from .multinomial_logit import MultinomialLogit
+    from .MixedLogit import MixedLogit
 
 
 

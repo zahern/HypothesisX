@@ -62,8 +62,9 @@ import random
 from typing import Callable
 import re
 
-from misc import list_of_zeros, make_list
+
 try:
+    from misc import list_of_zeros, make_list
     from MixedLogit import  MixedLogit
     from multinomial_logit import MultinomialLogit
     from _device import  device as dev
@@ -71,6 +72,7 @@ try:
     from ordered_logit import OrderedLogitLong
     import misc
 except ImportError:
+    from .misc import list_of_zeros, make_list
     from .MixedLogit import MixedLogit
     from .multinomial_logit import MultinomialLogit
     from ._device import device as dev

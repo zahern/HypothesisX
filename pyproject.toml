@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SearchLibrium"
-version = "0.0.6"
+version = "0.0.14"
 authors = [
 { name="Zeke Ahern", email="z.ahern@qut.edu.au" },
 ]
@@ -20,8 +20,12 @@ dependencies = [
     'numpy>2.0.0',
         'pandas>=2.0.0',
         'scikit-learn>=1.3.1',
-        'statsmodels',   
+        'statsmodels',   'pyfiglit'
 ]
+
+[tool.setuptools]
+packages = ["SearchLibrium"]
+package_dir = {"" = "src"}
 
 [project.optional-dependencies]
 dev = ["black", "bumpver", "isort", "pip-tools", "pytest"]
@@ -35,7 +39,7 @@ realpython = "SearchLibrium.__main__:main"
 
 
 [tool.bumpver]
-current_version = "0.0.6"
+current_version = "0.0.14"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message  = "Bump version {old_version} -> {new_version}"
 commit          = true
