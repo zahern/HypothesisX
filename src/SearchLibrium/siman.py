@@ -71,6 +71,195 @@ import re
 overall_best_solution = None  # PARSA: Reference to best solution
 lock = threading.Lock()  # PARSA: Mutex - synchronization primitive
 
+
+import copy, types
+
+def final_safe_deepcopy(obj, _memo=None):
+    """Deepcopy that skips modules, classmethods, functions, and abc internals."""
+    if _memo is None:
+        _memo = {}
+
+    # --- primitives ---
+    if isinstance(obj, (int, float, bool, str, bytes, type(None))):
+        return obj
+
+    # --- Known unpickleable types ---
+    uncopyable_types = (
+        types.ModuleType,
+        types.FunctionType,
+        types.BuiltinFunctionType,
+        types.LambdaType,
+        types.MethodType,
+        classmethod,
+        staticmethod,
+    )
+
+    # --- Skip any known unpickleable object ---
+    if isinstance(obj, uncopyable_types):
+        return None
+
+    # --- Skip common ABC and private impl objects ---
+    typename = type(obj).__name__
+    module = getattr(type(obj), "__module__", "")
+    if typename.startswith("_abc") or "abc." in module:
+        return None
+    if hasattr(obj, "_abc_impl") or hasattr(obj, "_abc_registry"):
+        return None
+
+    # --- NumPy arrays ---
+    if isinstance(obj, np.ndarray):
+        return np.copy(obj)
+
+    # --- Containers ---
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        copied = [final_safe_deepcopy(v, _memo) for v in obj]
+        return type(obj)(copied)
+
+    if isinstance(obj, dict):
+        new_dict = {}
+        for k, v in obj.items():
+            if isinstance(k, uncopyable_types) or isinstance(v, uncopyable_types):
+                continue
+            new_dict[final_safe_deepcopy(k, _memo)] = final_safe_deepcopy(v, _memo)
+        return new_dict
+
+    # --- Custom objects ---
+    if hasattr(obj, "__dict__"):
+        # guard circular refs
+        if id(obj) in _memo:
+            return _memo[id(obj)]
+        new_obj = copy.copy(obj)
+        _memo[id(obj)] = new_obj
+        for key, val in list(vars(new_obj).items()):
+            # skip private, callable, or ABC internals
+            if (key.startswith("_abc") or isinstance(val, uncopyable_types)
+                or (hasattr(val, "_abc_impl") or hasattr(val, "_abc_registry"))
+                or type(val).__name__.startswith("_abc")):
+                setattr(new_obj, key, None)
+            else:
+                setattr(new_obj, key, final_safe_deepcopy(val, _memo))
+        return new_obj
+
+    # --- Fallback safe copy ---
+
+    return copy.deepcopy(obj, memo=_memo)
+def ultra_safe_deepcopy(obj, _memo=None):
+    """Deepcopy that skips modules, functions, methods, and classmethods."""
+    if _memo is None:
+        _memo = {}
+
+    # --- primitives ---
+    if isinstance(obj, (int, float, bool, str, bytes, type(None))):
+        return obj
+
+    # --- skip dangerous callable/class references ---
+    uncopyable_types = (
+        types.ModuleType,
+        types.FunctionType,
+        types.BuiltinFunctionType,
+        types.LambdaType,
+        types.MethodType,
+        classmethod,
+        staticmethod,
+    )
+    if isinstance(obj, uncopyable_types):
+        return None
+
+    # --- numpy arrays ---
+    if isinstance(obj, np.ndarray):
+        return np.copy(obj)
+
+    # --- containers ---
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        copied = [ultra_safe_deepcopy(v, _memo) for v in obj]
+        return type(obj)(copied)
+
+    if isinstance(obj, dict):
+        new_dict = {}
+        for k, v in obj.items():
+            if isinstance(k, uncopyable_types) or isinstance(v, uncopyable_types):
+                continue
+            new_dict[ultra_safe_deepcopy(k, _memo)] = ultra_safe_deepcopy(v, _memo)
+        return new_dict
+
+    # --- custom objects ---
+    if hasattr(obj, "__dict__"):
+        # guard circular
+        if id(obj) in _memo:
+            return _memo[id(obj)]
+        new_obj = copy.copy(obj)
+        _memo[id(obj)] = new_obj
+        for key, val in list(vars(new_obj).items()):
+            if isinstance(val, uncopyable_types):
+                setattr(new_obj, key, None)
+            else:
+                setattr(new_obj, key, ultra_safe_deepcopy(val, _memo))
+        return new_obj
+
+    # --- fallback ---
+
+    return copy.deepcopy(obj, memo=_memo)
+def really_safe_deepcopy(obj, _memo=None):
+    """Deep‑copy any object while skipping module and function references."""
+    if _memo is None:
+        _memo = {}
+
+    # --- primitives ---
+    if isinstance(obj, (int, float, bool, str, bytes, type(None))):
+        return obj
+
+    # --- skip modules & internal functions outright ---
+    if isinstance(obj, types.ModuleType):
+        return None
+    if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType, types.LambdaType)):
+        return None
+
+    # --- containers ---
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        copied = [really_safe_deepcopy(v, _memo) for v in obj]
+        return type(obj)(copied)
+
+    if isinstance(obj, dict):
+        new_dict = {}
+        for k, v in obj.items():
+            if isinstance(k, types.ModuleType) or isinstance(v, types.ModuleType):
+                continue
+            new_dict[really_safe_deepcopy(k, _memo)] = really_safe_deepcopy(v, _memo)
+        return new_dict
+
+    # --- custom objects ---
+    if hasattr(obj, "__dict__"):
+        # guard against circular refs
+        if id(obj) in _memo:
+            return _memo[id(obj)]
+        new_obj = copy.copy(obj)
+        _memo[id(obj)] = new_obj
+        for key, val in list(vars(new_obj).items()):
+            # replace any module/function with None
+            if isinstance(val, (types.ModuleType, types.FunctionType, types.BuiltinFunctionType)):
+                setattr(new_obj, key, None)
+            else:
+                setattr(new_obj, key, really_safe_deepcopy(val, _memo))
+        return new_obj
+
+    # --- everything else ---
+
+    return copy.deepcopy(obj, memo=_memo)
+
+def safe_deepcopy(obj):
+    if isinstance(obj, dict):
+        return {k: safe_deepcopy(v) for k, v in obj.items() if not isinstance(v, types.ModuleType)}
+    if isinstance(obj, (list, tuple, set)):
+        return type(obj)(safe_deepcopy(v) for v in obj)
+    if hasattr(obj, "__dict__"):
+        # Temporarily strip out modules from object
+        new_obj = copy.copy(obj)
+        for key, val in list(new_obj.__dict__.items()):
+            if isinstance(val, types.ModuleType):
+                setattr(new_obj, key, None)
+        return copy.deepcopy(new_obj)
+    return copy.deepcopy(obj)
+
 '''Function for Fancy Printing'''
 def star(func):
     def inner(*args, **kwargs):
@@ -252,52 +441,46 @@ class SA(Search):
         delta_Es_all = []  # Store all ΔE values across trials for final averaging
         temperatures = []  # Store tI values for each generated solution
 
-        for trial in range(N_trials):
-            print(f"SA[{str(self.idnum)}]. Trial {trial + 1}/{N_trials}: Generating a new solution")
 
-            # Generate a new independent starting solution
-            sol = self.generate_solution()
-            sol = self.repair_solution_for_clarity(sol)
-            sol, converged = self.evaluate(sol)
 
-            if not converged:
-                print(f"Trial {trial + 1}: Generated solution did not converge, skipping.")
+        # Generate a new independent starting solution
+        sol = self.generate_solution()
+        sol = self.repair_solution_for_clarity(sol)
+        sol, converged = self.evaluate(sol)
+
+
+        delta_Es = []
+        # Perform perturbations for the current solution
+        for _ in range(N_trials):
+            perturbed_sol = self.copy_solution(sol)
+            #perturbed_sol = self.perturb_solution(perturbed_sol)
+            #perturbed_sol, converged_ = self.evaluate(perturbed_sol)
+            perturbed_sol_ = self.generate_solution()
+            perturbed_sol_ = self.repair_solution_for_clarity(perturbed_sol_)
+            sol, converged_ = self.evaluate(perturbed_sol_)
+
+            if not converged_:
+                print(f"Trial {_ + 1}: Perturbed solution did not converge, skipping perturbation.")
                 continue
 
-            # Store ΔE values for this specific solution
-            delta_Es = []
+            # Calculate objective function differences
+            before = [sol.obj(i) for i in range(self.nb_crit)]
+            after = [perturbed_sol.obj(i) for i in range(self.nb_crit)]
 
-            # Perform perturbations for the current solution
-            for _ in range(N_trials):
-                #perturbed_sol = self.copy_solution(sol)
-                #perturbed_sol = self.perturb_solution(perturbed_sol)
-                #perturbed_sol, converged_ = self.evaluate(perturbed_sol)
-                perturbed_sol = self.generate_solution()
-                perturbed_sol = self.repair_solution_for_clarity(perturbed_sol)
-                sol, converged_ = self.evaluate(perturbed_sol)
+            # Calculate ΔE for the first criterion (or extend for multi-objective)
+            delta_E = after[0] - before[0]
+            if delta_E > 0:  # Only consider "worse" solutions
+                delta_Es.append(delta_E)
 
-                if not converged_:
-                    print(f"Trial {trial + 1}: Perturbed solution did not converge, skipping perturbation.")
-                    continue
-
-                # Calculate objective function differences
-                before = [sol.obj(i) for i in range(self.nb_crit)]
-                after = [perturbed_sol.obj(i) for i in range(self.nb_crit)]
-
-                # Calculate ΔE for the first criterion (or extend for multi-objective)
-                delta_E = after[0] - before[0]
-                if delta_E > 0:  # Only consider "worse" solutions
-                    delta_Es.append(delta_E)
-
-            if delta_Es:
-                # Calculate temperature for this solution
-                avg_delta_E = np.mean(delta_Es)
-                tI = -avg_delta_E / np.log(0.5)
-                temperatures.append(tI)
-                delta_Es_all.extend(delta_Es)  # Accumulate ΔE values across trials
-                print(f"Trial {trial + 1}: Calculated temperature tI = {tI}")
-            else:
-                print(f"Trial {trial + 1}: No worse solutions found, skipping temperature calculation.")
+        if delta_Es:
+            # Calculate temperature for this solution
+            avg_delta_E = np.mean(delta_Es)
+            tI = -avg_delta_E / np.log(0.5)
+            temperatures.append(tI)
+            delta_Es_all.extend(delta_Es)  # Accumulate ΔE values across trials
+            print(f"Trial {_ + 1}: Calculated temperature tI = {tI}")
+        else:
+            print(f"Trial {_ + 1}: No worse solutions found, skipping temperature calculation.")
 
         if not temperatures:
             # Fallback if no temperatures were calculated
@@ -355,12 +538,16 @@ class SA(Search):
         return sol, converged
     # }
 
+
+
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Prepare to run the algorithm                     '''
     ''' ---------------------------------------------------------- '''
     def copy_solution(self, sol):
     # {
-        copy_sol = copy.deepcopy(sol)
+        logging.info('normal copy')
+        copy_sol = sol.copy()
         return copy_sol
     # }
 

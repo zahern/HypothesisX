@@ -1,0 +1,15 @@
+SA[None]. Progress @ Step=0; Curr=[19806.312]; Best=[19806.312]; Elapsed Time=21.9
+SA[None]. Progress @ Step=1; Curr=[20069.6989]; Best=[20069.6989]; Elapsed Time=31.66
+SA[None]. Progress @ Step=2; Curr=[17723.7327]; Best=[17723.7327]; Elapsed Time=41.89
+SA[None]. Progress @ Step=3; Curr=[16902.8208]; Best=[16902.8208]; Elapsed Time=51.51
+SA[None]. Progress @ Step=4; Curr=[17909.9664]; Best=[17909.9664]; Elapsed Time=60.47
+SA[None]. Progress @ Step=5; Curr=[21368.8807]; Best=[21368.8807]; Elapsed Time=69.69
+SA[None]. Progress @ Step=6; Curr=[16993.7829]; Best=[16993.7829]; Elapsed Time=78.12
+SA[None]. Progress @ Step=7; Curr=[17744.0992]; Best=[17744.0992]; Elapsed Time=87.15
+SA[None]. Progress @ Step=8; Curr=[17391.4345]; Best=[17391.4345]; Elapsed Time=94.94
+SA[None]. Progress @ Step=9; Curr=[17196.4862]; Best=[17196.4862]; Elapsed Time=103.54
+SA[None]. Progress @ Step=10; Curr=[18018.0737]; Best=[18018.0737]; Elapsed Time=111.95
+SA[None]. Progress @ Step=11; Curr=[21229.4766]; Best=[21229.4766]; Elapsed Time=119.28
+SA[None]. Progress @ Step=12; Curr=[21360.5371]; Best=[21360.5371]; Elapsed Time=127.9
+SA[None]. Progress @ Step=13; Curr=[17704.132]; Best=[17704.132]; Elapsed Time=136.39
+SA[None]. Progress @ Step=14; Curr=[20645.8427]; Best=[20645.8427]; Elapsed Time=144.09

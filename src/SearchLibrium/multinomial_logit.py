@@ -3,6 +3,7 @@ IMPLEMENTATION: MULTINOMIAL AND CONDITIONAL LOGIT MODEL
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 from sklearn.preprocessing import RobustScaler
 from sympy import false
+from addicty import  Dict
 from sympy.physics.units import length
 
 """
@@ -661,7 +662,7 @@ class MultinomialLogit(DiscreteChoiceModel):
                               args=args, jac=self.compute_gradient_opg, hess=self.compute_hessian_opg, method=self.method, tol=ftol, options=options)
             '''
 
-            betas_s = result.x
+            #betas_s = result.x
 
 
 

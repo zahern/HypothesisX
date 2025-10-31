@@ -6,6 +6,7 @@ except ImportError:
     from multinomial_nested import NestedLogit
 
 import numpy as np
+from addicty import Dict
 class MixedNested(MixedLogit, NestedLogit):
     """
     Mixed Nested Logit Model:

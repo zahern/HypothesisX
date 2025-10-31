@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SearchLibrium"
-version = "0.0.64"
+version = "0.0.66"
 authors = [
 { name="Zeke Ahern", email="z.ahern@qut.edu.au" },
 ]
@@ -20,7 +20,7 @@ dependencies = [
     'numpy',
     'pandas>=2.0.0',
     'scikit-learn>=1.3.1',
-    'statsmodels', 'pyfiglet', 'addicty', 'matplotlib',
+    'statsmodels', 'pyfiglet', 'addicty', 'matplotlib', jax, sympy, colorama
 ]
 
 [tool.setuptools.packages]
@@ -40,7 +40,7 @@ realpython = "SearchLibrium.__main__:main"
 
 
 [tool.bumpver]
-current_version = "0.0.64"
+current_version = "0.0.66"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message  = "Bump version {old_version} -> {new_version}"
 commit          = true

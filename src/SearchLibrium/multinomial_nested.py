@@ -5,7 +5,7 @@ try:
 except ImportError:
     from .multinomial_logit import *
 
-
+from addicty import Dict
 class NestedLogit(MultinomialLogit):
     """
     Nested Logit Model (inherits from MultinomialLogit).
@@ -38,6 +38,50 @@ class NestedLogit(MultinomialLogit):
             import numpy as np
             from scipy.optimize import minimize
             self.np = np  # Assign standard NumPy
+            self.minimize = minimize
+
+    def __getstate__(self):
+        """Define what is pickled/deepcopied."""
+        state = self.__dict__.copy()
+        # ❌ Remove unpickleable runtime JAX/Numpy attributes
+        for key in [
+            "np",
+            "jaxgrad",
+            "vmap",
+            "lax",
+            "jacfwd",
+            "jit",
+            "jaxoptmin",
+            "minimize",
+        ]:
+            state.pop(key, None)
+        return state
+
+    def __setstate__(self, state):
+        """Restore normal state and reinitialize backend."""
+        self.__dict__.update(state)
+        # Re-import the right modules based on _jax flag
+        if getattr(self, "_jax", False):
+            import jax
+            jax.config.update("jax_enable_x64", True)
+            import jax.numpy as jnp
+            from jax import grad, jacfwd, jit, lax, vmap
+            from jaxopt import ScipyMinimize
+            from scipy.optimize import minimize
+
+            self.np = jnp
+            self.jaxgrad = grad
+            self.vmap = vmap
+            self.lax = lax
+            self.jacfwd = jacfwd
+            self.jit = jit
+            self.jaxoptmin = ScipyMinimize
+            self.minimize = minimize
+        else:
+            import numpy as np
+            from scipy.optimize import minimize
+
+            self.np = np
             self.minimize = minimize
 
     def setup(self, X, y, varnames=None, isvars=None, alts=None, ids=None,
@@ -1065,6 +1109,8 @@ class NestedLogit(MultinomialLogit):
         objective = lambda betas: self.loglik_fn(betas, X, y, weights, avail)
 
         # Compute gradients using JAX's autodiff
+        '''
+        #removing
         grad_fn = self.jaxgrad(objective)
         with timer('Trad solver'):
             # Use JAX's minimize function
@@ -1074,13 +1120,26 @@ class NestedLogit(MultinomialLogit):
                 jac=grad_fn,  # Gradient function
                 method=method  # Optimization method
             )
+        '''
 
         with timer('Jax Solver'):
             solver = self.jaxoptmin(fun=objective,  # Objective function
 
 
                 method=method) # Optimization metho)
-            params, state = solver.run(betas_init)
+            opt_step= solver.run(betas_init)
+            params, info = opt_step.params, opt_step.state
+            result = Dict({
+                "x": params,
+                "fun": info.fun_val,
+                "hess_inv": info.hess_inv,
+                "nit": int(info.iter_num),
+                "nfev": int(info.num_fun_eval),
+                "njev": int(info.num_jac_eval),
+                "status": int(info.status),
+                "success": bool(info.success),
+            })
+
 
 
 
