@@ -2,7 +2,7 @@
 IMPLEMENTATION: BASE CLASS FOR DISCRETE CHOICE MODEL SELECTION
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 import math
-
+import logging
 
 
 #from akshay_test import member_params_spec
@@ -584,7 +584,7 @@ class Parameters:
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
 
-        intercept_opts=None, base_alt=None, val_share=0.25,  *args, **kwargs):
+        intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
 
         
         if models is None:
@@ -592,6 +592,10 @@ class Parameters:
         else:
             potential = ModelRegistry().get_models()
             self.models_avail =  [model for model in models if model in potential]
+
+        logging.info('Gradient and Hessian, Inspection, TODO Appy options for all models')
+        self.grad = grad
+        self.hess = hess
 
         if "nested_logit" in self.models_avail:
             self.nests = kwargs.get('nests', None)
@@ -601,8 +605,8 @@ class Parameters:
                 raise ValueError('nests must be initialised')
             elif self.lambdas is None:
                 raise ValueError('lambdas must be initialised')
-            elif self.lambdas_mapping is None:
-                raise ValueError('lambdas mapping must be intiialized')
+            #elif self.lambdas_mapping is None:
+             #   raise ValueError('lambdas mapping must be intialized')
 
         else:
             # If nested_logit is not in models, set nests and lambdas to None
@@ -613,9 +617,10 @@ class Parameters:
         self.generator = np.random
 
         if kwargs.get('fill_na', True):
-            print('filling na with 0: turn param fill_na false if custom na handiling')
+            logging.info('filling na with 0: turn param fill_na false if custom na handiling')
             df = df.fillna(0)
-            df_test = df_test.fillna(0)
+            if df_test is not None:
+                df_test = df_test.fillna(0)
 
         self.df, self.df_test = df, df_test
         self.varnames = varnames
@@ -633,14 +638,15 @@ class Parameters:
             raise ValueError('choice set must be defined and in list format')
         self.verbose = kwargs.get('verbose', True)
         if self.verbose:
-            print('verbose = TRUE, Will print all solutions. SET verbose = False in paramaters')
+            logging.info('verbose = TRUE, Will print all solutions. SET verbose = False in parameters')
         self.test_choices = test_choices
         self.alt_var, self.test_alt_var = alt_var, test_alt_var
         self.choice_id, self.test_choice_id = choice_id, test_choice_id
         self.ind_id, self.test_ind_id = ind_id, test_ind_id
         self.isvarnames, self.asvarnames = isvarnames, asvarnames
         if asvarnames is None and isvarnames is None:
-            raise ValueError('require as varnames or isvarname please define one..')
+            logging.info('Warning: asvarnames and isvarnames is None. Setting asvarnames as varnames')
+            self.asvarnames = varnames
         self.trans_asvars = trans_asvars
         self.ftol, self.gtol = ftol, gtol
         self.gtol_membership_func = gtol_membership_func
@@ -749,7 +755,7 @@ class Parameters:
             pass
 
         # TODO I Think we could initialise it this way more effictively
-        acceptable_keys = ['LCR', 'verbose', 'asc_ind', 'nests', 'lambdas']
+        acceptable_keys = ['LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest', '_jax']
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
         for key, value in kwargs.items():
@@ -2904,22 +2910,23 @@ class Search():
         # TODO NEED TO FEED IN THE NESTS FROM params
         nests = self.param.nests
         lambdas = self.param.lambdas
-        lambdas_mapping = self.param.lambdas_mapping
+        #lambdas_mapping = self.param.lambdas_mapping
 
         # Filter the variables to include in the model
         all_vars = as_vars + is_vars
         if len(all_vars) == 0:
             raise ValueError('need a variable: todo debug why')
         all_vars = [var for var in self.param.varnames if var in all_vars]
-
+        nest_vars = [var for var in self.param.varnest if var in all_vars]
         # Prepare data for the nested logit model
         X, y = self.param.df[all_vars].values, self.param.choices
+        X_nest = self.param.df[nest_vars]
 
         # Fit the Nested Logit model
-        model = NestedLogit()
-        model.setup(X=X, y=y, varnames=all_vars, isvars=is_vars,
+        model = NestedLogit(_jax=self.param._jax)
+        model.setup(X=X, X_nest = X_nest, y=y, varnames=all_vars, isvars=is_vars,
                     alts=self.param.alt_var, ids=self.param.choice_id,
-                    nests=nests, lambdas=lambdas, fit_intercept=asc_ind, return_grad=False)
+                    nests=nests, lambdas=lambdas, fit_intercept=asc_ind, return_grad=self.param.grad, return_hess=self.param.hess)
 
         model.fit()
 

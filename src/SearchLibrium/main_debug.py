@@ -5,13 +5,14 @@ import pyfiglet
 from colorama import  Fore
 import argparse
 import pandas as pd
+import logging
 import os
 #RESOURCE FILES##
 
 
 from addicty import Dict
 
-from src.SearchLibrium.call_meta import call_harmony
+
 
 problem_set = Dict()
 problem_set.electricity = 'https://raw.githubusercontent.com/zahern/HypothesisX/refs/heads/main/data/electricity.csv'
@@ -371,9 +372,171 @@ def mario_nest():
     search = call_siman(parameters, init_sol)
 
 
+def mario_nest_f():
+    np.random.seed(42)
+    df = pd.read_csv(
+        "../../data/FER_NEST4.csv")
+
+    varnames_new = [
+        "var1_1", "var1_2", "var1_3",
+        "var2_1", "var2_2", "var2_3",
+        "var3_1", "var3_2", "var3_3",
+
+        "var11", "var21", "var31",
+        "var12", "var22", "var32",
+        "var13", "var23", "var33",
+        "var14", "var24", "var34"
+    ]
+
+    nests = {
+        "NMT": [0, 1, 2],
+
+        "IPT": [3, 4, 5],
+
+        "PV": [6, 7, 8],
+
+        "BUS": [9, 10, 11]
+
+    }
+
+    lambdas = {
+        "NMT": 1,
+        "IPT": 1,
+        "PV": 1,
+        "BUS": 1
+    }
+    from multinomial_nested import NestedLogit
+
+    model = NestedLogit()
+    model.setup(
+        X=df[varnames_new],
+        y=df['choice'],
+        isvars=[],
+        varnames=varnames_new,
+        fit_intercept=False,
+        alts=df['alternative'],
+        ids=df['individual'],
+        avail=None,
+        nests=nests,
+        lambdas=lambdas,
+        return_grad=True,
+        return_hess = True
+    )
+
+    model.fit()
+
+    model.summarise()
+
+def super_mario_nest():
+    from multinomial_nested import NestedLogit
+    from call_meta import call_siman
+    from search import Parameters
+
+
+
+    df = pd.read_csv('../../data/DATA_SYNTHE_ASC.csv')
+    varnames_all = [
+        # Alternative_level
+        "var_ICT_1", "var_ICT_2", "var_ICT_3", "var_ICT_4",
+        "var_NICT_1", "var_NICT_2", "var_NICT_3", "var_NICT_4",
+        "var_NA_1", "var_NA_2", "var_NA_3", "var_NA_4",
+        # Nest_level
+        "var_NMT_1", "var_NMT_2", "var_NMT_3", "var_NMT_4", "var_NMT_5",
+        "var_IPT_1", "var_IPT_2", "var_IPT_3", "var_IPT_4", "var_IPT_5",
+        "var_PV_1", "var_PV_2", "var_PV_3", "var_PV_4", "var_PV_5",
+        "var_BUS_1", "var_BUS_2", "var_BUS_3", "var_BUS_4", "var_BUS_5"
+
+    ]
+
+    # SIGNIFICANT VARIABLES (Variables 4 and 5 are Non-Significant at the Nest-level and variable 4 are Non-Significant at the alternative-level, then are dropped)
+
+    varnames = [
+        # Alternative_level
+        "var_ICT_1", "var_ICT_2", "var_ICT_3",
+        "var_NICT_1", "var_NICT_2", "var_NICT_3",
+        "var_NA_1", "var_NA_2", "var_NA_3",
+        # Nest_level
+        "var_NMT_1", "var_NMT_2", "var_NMT_3",
+        "var_IPT_1", "var_IPT_2", "var_IPT_3",
+        "var_PV_1", "var_PV_2", "var_PV_3",
+        "var_BUS_1", "var_BUS_2", "var_BUS_3"
+    ]
+
+    # ALL VARIABLES (Nest-level)
+    varnest_all = [
+        # Nest_level
+        "var_NMT_1", "var_NMT_2", "var_NMT_3", "var_NMT_4", "var_NMT_5",
+        "var_IPT_1", "var_IPT_2", "var_IPT_3", "var_IPT_4", "var_IPT_5",
+        "var_PV_1", "var_PV_2", "var_PV_3", "var_PV_4", "var_PV_5",
+        "var_BUS_1", "var_BUS_2", "var_BUS_3", "var_BUS_4", "var_BUS_5"
+    ]
+
+    # SIGNIFICANT VARIABLES (Nest-level)
+    varnest = [
+        # Nest_level
+        "var_NMT_1", "var_NMT_2", "var_NMT_3",
+        "var_IPT_1", "var_IPT_2", "var_IPT_3",
+        "var_PV_1", "var_PV_2", "var_PV_3",
+        "var_BUS_1", "var_BUS_2", "var_BUS_3"
+    ]
+
+    nests = {
+        "NMT": [0, 1, 2],
+        "IPT": [3, 4, 5],
+        "PV": [6, 7, 8],
+        "BUS": [9, 10, 11]
+    }
+
+    lambdas = {
+        "NMT": 1,
+        "IPT": 1,
+        "PV": 1,
+        "BUS": 1
+    }
+
+    model = NestedLogit(_jax=True)
+    model.setup(
+        X=df[varnames],
+        X_nest=df[varnest],
+        y=df['choice'],
+        isvars=[],
+        varnames=varnames,
+        fit_intercept=True,
+        alts=df['alternative'],
+        ids=df['individual'],
+        avail=None,
+        nests=nests,
+        lambdas=lambdas
+
+    )
+
+    model.fit()
+    model.summarise()
+
+    logging.info('Testh')
+    criterions = [['bic', -1]]
+
+    ind_id = df['individual']
+
+
+    choice_set = list(set(df['choice'].unique()))  # list of alternatives in the choice set as string
+    choices = df['choice']  # the df column name containing the choice variable
+    alt_var = df['alternative']  # the df column name containing the alternative variable
+    av = None  # the df column name containing the alternatives' availability
+    parameters = Parameters(criterions=criterions, df=df, choice_set=choice_set, choice_id=df,
+                            alt_var=alt_var, varnames=varnames_all, isvarnames=None, asvarnames=None,
+                            choices=choices,
+                            ind_id=ind_id, base_alt=None, allow_random=False, allow_corvars=False,
+                            allow_bcvars=True, lambdas=lambdas, nests=nests, varnest=varnest_all, models=['nested_logit'], avail=av, _jax = True)
+    init_sol = None
+    search = call_siman(parameters, init_sol)
+
+
 # Main function
 if __name__ == "__main__":
-    mario_nest()
+    super_mario_nest()
+    #mario_nest_f()
+    #mario_nest()
     #fit_green_bridge()
     parser = argparse.ArgumentParser(description="Control which functions run.")
 

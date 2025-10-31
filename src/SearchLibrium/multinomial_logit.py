@@ -1,6 +1,9 @@
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 IMPLEMENTATION: MULTINOMIAL AND CONDITIONAL LOGIT MODEL 
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+from sklearn.preprocessing import RobustScaler
+from sympy import false
+from sympy.physics.units import length
 
 """
 BACKGROUND - MULTINOMIAL LOGIT
@@ -78,6 +81,9 @@ to allow for more flexible choice behavior.
 ''' ---------------------------------------------------------- '''
 ''' LIBRARIES                                                  '''
 ''' ---------------------------------------------------------- '''
+
+
+
 import numpy as np
 from scipy.optimize import minimize
 from typing import Callable, Tuple
@@ -92,6 +98,20 @@ except ImportError:
     from boxcox_functions import truncate
     from boxcox_functions import boxcox_param_deriv, boxcox_transformation, truncate_lower
 
+
+
+from contextlib import contextmanager
+import time
+
+@contextmanager
+def timer(name="Code block"):
+    """
+    A context manager to measure execution time of a block of code.
+    """
+    start_time = time.time()
+    yield  # Run the block of code inside the context
+    end_time = time.time()
+    print(f"{name} executed in {end_time - start_time:.4f} seconds")
 
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS - BOUNDS ON NUMERICAL VALUES                     '''
@@ -160,8 +180,8 @@ class MultinomialLogit(DiscreteChoiceModel):
     ''' --------------------------------- '''
     ''' Function. Constructor             '''
     ''' --------------------------------- '''
-    def __init__(self): # {
-        super(MultinomialLogit, self).__init__()  # Base class initialisations
+    def __init__(self, _jax = False): # {
+        super(MultinomialLogit, self).__init__(_jax)  # Base class initialisations
         self.descr = "MNL"
     # }
 
@@ -226,7 +246,7 @@ class MultinomialLogit(DiscreteChoiceModel):
     def setup(self, X, y, varnames=None, alts=None, isvars=None, transvars=None,
         transformation="boxcox", ids=None, weights=None, avail=None,
         base_alt=None, fit_intercept=False, init_coeff=None, maxiter=2000,
-        ftol=1e-5, gtol=1e-5, return_grad=True, return_hess=True,
+        ftol=1e-6, gtol=1e-6, return_grad=True, return_hess=True,
         method="bfgs", scipy_optimisation=True):
     # {
 
@@ -605,34 +625,135 @@ class MultinomialLogit(DiscreteChoiceModel):
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def scipy_bfgs_optimization(self, betas, X, y, weights, avail, maxiter, ftol, gtol, jac):
+    def scipy_bfgs_optimization(self, betas, X, y, weights, avail, maxiter, ftol, gtol, jac, return_opg, sklearn=None):
     # {
+        
+
+        
         args = (X, y, weights, avail)
         options = {'gtol': gtol, 'maxiter': maxiter, 'disp': False}
         if self.method == 'L-BFGS-B':
             result = minimize(self.get_loglik_and_gradient, betas,
                               args=args, jac=jac, method=self.method, bounds=self.bounds, tol=ftol, options=options)
+
+
+
         else:
-            result = minimize(self.get_loglik_and_gradient, betas,
-                              args=args, jac=jac, method=self.method, tol=ftol, options=options)
+            if not self._jax:
+                with timer("Minimization"):
+                    self.return_grad = True
+                    jac = True
+                    self.robust = false
+                    result = minimize(self.get_loglik_and_gradient, betas,
+                                 args=args, jac=jac,
+                                 method=self.method, tol=ftol, options=options)
+
+            else:
+                with timer("Minimization"):
+                    result = self.optimize(betas, X, y, weights, avail)
+                    print(result.fun)
+                    self.robust = false
+                #result = jax.scipy.optimize.minimize(self.get_loglik_and_gradient, betas, args=args, method = 'BFGS')
+                #print(result.fun)
+
+            '''
+            result = minimize(self.compute_log_lik, betas,
+                              args=args, jac=self.compute_gradient_opg, hess=self.compute_hessian_opg, method=self.method, tol=ftol, options=options)
+            '''
+
+            betas_s = result.x
+
+
+
+            if self.robust:
+
+                # 1 Get gradient per observation and OPG (meat)
+                loglik, grad, opg = self.get_loglik_and_gradient(result.x, X, y, weights, avail, return_opg=True)
+
+
+
+                bread= result.hess_inv + np.eye(result.hess_inv.shape[0]) * 1e-6
+                # Bread: inverse of negative Hessian
+                #bread = np.linalg.inv(H_loglik)
+
+                # 32 Sandwich formula: robust variance-covariance
+                robust_varcov = bread @ opg @ bread
+                #robust_varcov = bread@ self.gradients_per_obs@bread
+                # 4️ Robust standard errors
+                robust_se = np.sqrt(np.diag(robust_varcov))
+                alt = np.sqrt(np.diag(np.linalg.pinv(opg)))
+                self.robust_se = robust_se
+
+                # 5️ Optional: robust correlation matrix
+                self.robust_corr = robust_varcov / np.outer(robust_se, robust_se)
+
+                self.bootstrap_se = self._calculate_bootstrap_se(
+                    num_bootstrap=1000,
+                    X=X,
+                    y=y,
+                    weights=weights,
+                    avail=avail,
+                    betas=betas
+                )
+
+
 
         return result
     # }
 
-    def bhhh_optimization(self, betas, X, y, weights, avail, maxiter, ftol, gtol, jac, bounds):
-        try:
-            from bhhh.minimize import minimize_bhhh
-        except:
-            from .bhhh.minimize import minimize_bhhh
-        args = (X, y, weights, avail)
-        if jac == 0:
-            raise ValueError('bhhh requires a gradient')
+
+    def _calculate_bootstrap_se(self, num_bootstrap, X, y, weights, avail, betas):
+        """
+        Calculate bootstrap standard errors for a 3D input X.
+
+        Parameters:
+        - num_bootstrap: Number of bootstrap replicates.
+        - X: A 3D array (n, p, k), where:
+            - n: Number of observations.
+            - p: Number of predictors.
+            - k: Additional dimension (e.g., time steps, channels).
+        - y: Outcome data (1D array).
+        - weights: Optional weights for the observations.
+        - avail: Optional availability mask for the observations.
+        - betas: Initial parameter estimates.
+
+        Returns:
+        - bootstrap_se: Bootstrap standard errors for the parameters (shape: (p, k)).
+        """
+        # Get dimensions of X
+        n, p, k = X.shape  # n: observations, p: predictors, k: additional dimension
+
+        # Store bootstrap parameter estimates for each replicate
+        bootstrap_params = np.zeros((num_bootstrap, len(betas)))
+
+        for i in range(num_bootstrap):
+            # 1️⃣ Resample indices with replacement
+            bootstrap_indices = np.random.choice(n, size=n, replace=True)
+            X_bootstrap = X[bootstrap_indices, :, :]  # Resample along the first dimension
+            y_bootstrap = y[bootstrap_indices]
+            weights_bootstrap = weights[bootstrap_indices] if weights is not None else None
+            avail_bootstrap = avail[bootstrap_indices] if avail is not None else None
+
+            # 2️⃣ Refit the model for the bootstrap sample
+            result = minimize(
+                self.get_loglik_and_gradient,
+                betas,
+                args=(X_bootstrap, y_bootstrap, weights_bootstrap, avail_bootstrap),
+                jac=True,
+                method=self.method,
+                tol=1e-6,
+                options={'maxiter': 1000}
+            )
+
+            # 3️⃣ Store the parameter estimates for this bootstrap replicate
+            bootstrap_params[i, :] = result.x
+
+        # 4️⃣ Calculate the standard errors as the standard deviation of the parameter estimates
+        bootstrap_se = np.std(bootstrap_params, axis=0)  # Shape: (p, k)
+
+        return bootstrap_se
 
 
-        options = {'gtol': gtol, 'maxiter': maxiter, 'disp': False}
-        result = minimize_bhhh(self.get_loglik_and_gradient, betas,
-                          args=args, jac=jac, method=self.method, tol=ftol, options=options)
-        return result
 
 
     ''' ---------------------------------------------------------- '''

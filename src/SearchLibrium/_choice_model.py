@@ -48,8 +48,10 @@ from time import time
 import numpy as np
 import pandas as pd
 import scipy.stats as ss
+import jax.numpy as jnp
 
-            
+
+
 
 try:
     from .boxcox_functions import boxcox_param_deriv, boxcox_transformation, truncate, truncate_lower
@@ -62,6 +64,26 @@ except ImportError:
 
 #library for keeping track of variables
 #from watchpoints import watch
+
+# A dictionary to manage backends
+BACKENDS = {
+    "numpy": np,
+    "jax": jnp,
+}
+
+# Utility function to select the backend
+def get_backend(jax=True):
+    """
+    Return the appropriate backend (jax.numpy or numpy).
+
+    Args:
+        jax (bool): If True, use JAX. Otherwise, use NumPy.
+
+    Returns:
+        module: The selected backend module.
+    """
+    return BACKENDS["jax"] if jax else BACKENDS["numpy"]
+
 
 ''' ---------------------------------------------------------- '''
 ''' CLASS FOR ESTIMATION OF DISCRETE CHOICE MODEL              '''
@@ -118,7 +140,7 @@ class DiscreteChoiceModel(ABC):
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self):
+    def __init__(self, jax = False):
     # {
 
         self.reset_attributes()
@@ -156,7 +178,8 @@ class DiscreteChoiceModel(ABC):
         self.X_original, self.y_original = [], []
         self.weights, self.avail = [], []
         self.init_coeff = []
-
+        self._jax = jax
+        self.backend = get_backend(jax)
         self.descr = ""
     # }
 
@@ -274,10 +297,10 @@ class DiscreteChoiceModel(ABC):
     ''' ---------------------------------------------------------- '''
     def post_process(self, result, coeff_names, sample_size, hess_inv=None):
     # {
-        self.converged = result['success']
-        self.coeff_est = result['x']
-        self.loglik = -result['fun']
-        self.total_iter = result['nit']
+        self.converged = result.success
+        self.coeff_est = result.x
+        self.loglik = -result.fun
+        self.total_iter = result.nit
 
         self.estim_time_sec = time() - self.fit_start_time
         self.sample_size = sample_size
@@ -330,7 +353,7 @@ class DiscreteChoiceModel(ABC):
         if not std_err_estimated:
         # {
             if self.method == "bfgs":
-                self.stderr = np.sqrt(np.abs(np.diag(result['hess_inv'])))
+                self.stderr = np.sqrt(np.abs(np.diag(result.hess_inv)))
 
             if self.method == "l-bfgs-b":
                 hess = result['hess_inv'].todense()
