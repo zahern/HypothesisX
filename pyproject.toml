@@ -20,7 +20,7 @@ dependencies = [
     'numpy',
     'pandas>=2.0.0',
     'scikit-learn>=1.3.1',
-    'statsmodels', 'pyfiglet', 'addicty', 'matplotlib', jax, sympy, colorama
+    'statsmodels', 'pyfiglet', 'addicty', 'matplotlib', 'jax', 'sympy', 'colorama'
 ]
 
 [tool.setuptools.packages]
