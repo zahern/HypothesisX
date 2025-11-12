@@ -5,6 +5,9 @@ statsmodels
 pyfiglet
 addicty
 matplotlib
+jax
+sympy
+colorama
 
 [dev]
 black

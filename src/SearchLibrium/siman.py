@@ -515,7 +515,7 @@ class SA(Search):
         #make sure i is consistent with the asvars and isvars
         if solution.data['model_n'] == 'nested_logit':
             while len(solution.data['isvars']) +len(solution.data['asvars']) == 0:
-                print('perturbation too strong fix')
+                print('perturbation too, heuristic fixing')
                 if random.random() > .5:
                     self.perturb_add_asfeature(solution)
                 else:
@@ -774,6 +774,7 @@ class SA(Search):
 
     def perturb_solution(self, sol):
     # {
+        b = self.setup_signature(sol)
         curr_score = [sol.obj(i) for i in range(self.nb_crit)]
         new_sol = self.copy_solution(sol)
 
@@ -866,13 +867,20 @@ class SA(Search):
                 print('perturbation choice is none:', choice.__name__)
                 return sol
             # print('perturbation choice is fine:', choice.__name__)
+            new_sol = self.apply_constraints(new_sol)
             new_sol = self.repair_solution_for_clarity(new_sol)
+            a = self.setup_signature(new_sol)
+            if a == b:
+                logging.info('no change')
+            else:
+                logging.info('found')
+                break
             if new_sol != sol:
                 #print('found a sol')
                 break
 
-        if new_sol == sol:
-            print('why')
+        if a == b:
+            print('still sane skipping')
             return sol
         #if new solution is the same as old pertunrb aggain.
 

@@ -3,7 +3,8 @@ IMPLEMENTATION: BASE CLASS FOR DISCRETE CHOICE MODEL SELECTION
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 import math
 import logging
-
+import hashlib
+import json
 
 #from akshay_test import member_params_spec
 
@@ -74,6 +75,7 @@ try:
     from ordered_logit import OrderedLogitLong
     from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     import misc
+    from addicty import Dict
 except ImportError:
     from .misc import list_of_zeros, make_list
     from .MixedLogit import MixedLogit
@@ -580,7 +582,7 @@ class Parameters:
         weights=None, choice_set=None, choices=None,
         test_choices=None, alt_var=None, test_alt_var=None, choice_id=None, test_choice_id=None,
         ind_id=None, test_ind_id=None, isvarnames=None, asvarnames=None, trans_asvars=None,
-        ftol=1e-6, gtol=1e-6, gtol_membership_func=1e-5,
+        ftol=1e-6, gtol=1e-6, gtol_membership_func=1e-5, pre_spec_constraints = None,
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
 
@@ -740,7 +742,8 @@ class Parameters:
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # FURTHER PRE-PROCESSING AND SETUPS
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
+        logging.info('adding in alterantive pre_spec')
+        self.pres_spec_constr = pre_spec_constraints
         self.setup_prerequisites(**kwargs)
         self.define_precified_features()
         self.get_available_features()  # Extract: avail_asvars, avail_isvars, ..., avail_corvars
@@ -925,6 +928,12 @@ class Solution(UserDict):
         self.data.setdefault('converged', False)
         # need to get the coefficients.
         self.data.setdefault('coeff', [])
+
+
+        self.data.setdefault('nests', {})  # dictionary of nest→indices/variables
+        self.data.setdefault('lambdas', {})  # lambda parameter mapping
+        self.data.setdefault('nest_vars', [])
+        self.data.setdefault('state', {})
         # Update solution counter and solution number
         self.data['sol_num'] = Solution.sol_counter
         Solution.sol_counter += 1
@@ -1401,16 +1410,43 @@ class Search():
         bcvars, bctrans = self.select_bcvars(asvars)
         cor, corvars = self.select_corvars(randvars, bcvars)
         model_n = self.select_model_t()
-        
+        if model_n == 'nested_logit':
+            all_vars = list(set(asvars+isvars))
+            logging.info('prereqs')
+            if 'ps_alt_vars' in self.param.pres_spec_constr:
+                ps_alt_vars = self.param.pres_spec_constr['ps_alt_vars']
+            else:
+                ps_alt_vars = None
+            if 'ps_nest_vars' in self.param.pres_spec_constr:
+                ps_nest_vars = self.param.pres_spec_constr['ps_nest_vars']
+            else:
+                ps_nest_vars = None
+            state = Dict({'all_vars': all_vars,
+                'alt_vars': asvars,
+                'nest_vars': isvars,
+                'ps_nest_vars': ps_alt_vars,
+                'ps_alt_vars': ps_nest_vars}
+            )
+        else:
+            state = None
        
         solution = Solution(self.nb_crit, asvars=asvars, isvars=isvars, bcvars=bcvars, corvars=corvars,
-            bctrans=bctrans, cor=cor, randvars=randvars, model_n = model_n,
+            bctrans=bctrans, cor=cor, randvars=randvars, model_n = model_n, state = state,
              asc_ind=asc_ind)
 
 
         return solution
     # }
 
+    def apply_constraints(self, solution) -> Solution:
+        '''edits solution to enforce constraints'''
+        state = solution['state']
+        nest = state.ps_nest_vars
+        alt_var = state.ps_alt_vars
+        solution['asvars'] = list(set(alt_var+ solution['asvars']+nest))
+        '''-->'''
+        #solution['isvars'] = set(list(nest+solution['asvars']))
+        return solution
 
     def repair_solution(self, solution, min_length=1):
         """
@@ -1426,6 +1462,8 @@ class Search():
         """
         asvars = solution.data['asvars']
         isvars = solution.data['isvars']
+
+
 
         # Check if the combined length is below the threshold
         while (len(asvars) + len(isvars)) < min_length:
@@ -1443,6 +1481,10 @@ class Search():
         cor, corvars = self.select_corvars(randvars, bcvars)
         model_n = self.select_model_t()
 
+        if solution.data['model_t'] == 'nested_logit':
+            state = Dict('test')
+        else: state = None
+
         # Create a repaired solution object
         repaired_solution = Solution(
             self.nb_crit,
@@ -1452,6 +1494,7 @@ class Search():
             corvars=corvars,
             bctrans=bctrans,
             cor=cor,
+            state = state,
             randvars=randvars,
             model_n=model_n,
             asc_ind=solution.data['asc_ind']  # Retain original intercept setting
@@ -2685,6 +2728,33 @@ class Search():
     # }
 
 
+
+
+
+    def setup_signature(self, sol):
+        """Return a lightweight hash of the components that define the model setup."""
+        as_vars = sol['asvars']
+        is_vars = sol['isvars']
+        asc_ind = sol['asc_ind']
+        nests = tuple(self.param.nests)
+        lambdas = tuple(self.param.lambdas)
+
+        # Only include variables that affect the model’s design matrix
+        sig_dict = {
+            "as_vars": as_vars,
+            "is_vars": is_vars,
+            "asc_ind": asc_ind,
+            "nests": nests,
+            "lambdas": lambdas,
+            # If state or other structural flags matter include them too:
+            "state": sol.get("state", {}),
+        }
+
+        # sorted keys for consistency
+        sig_json = json.dumps(sig_dict, sort_keys=True)
+        return hashlib.sha256(sig_json.encode()).hexdigest()
+
+
     def process_variables(self, isvars, varnames, randvars):
         """
         Processes the variables by:
@@ -2904,8 +2974,14 @@ class Search():
     def evaluate_nested_logit(self, sol):
         """Evaluates a Nested Logit model."""
         # Extract relevant model parameters
+        sol =self.apply_constraints(sol)
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        logging.info('testing state')
+        state = sol['state']
 
+        #state['nest_vars']
+        #sol = self.apply_constraints(sol)
+        #sol = self.repair_solution(sol)
         # Define nests and lambda values (adjust based on your data)
         # TODO NEED TO FEED IN THE NESTS FROM params
         nests = self.param.nests
@@ -2918,6 +2994,10 @@ class Search():
             raise ValueError('need a variable: todo debug why')
         all_vars = [var for var in self.param.varnames if var in all_vars]
         nest_vars = [var for var in self.param.varnest if var in all_vars]
+
+        #to do if nest_vars is None repair
+        # if nest vars)not in all_var repair
+
         # Prepare data for the nested logit model
         X, y = self.param.df[all_vars].values, self.param.choices
         X_nest = self.param.df[nest_vars]

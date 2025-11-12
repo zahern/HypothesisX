@@ -32,6 +32,7 @@ class NestedLogit(MultinomialLogit):
             self.jacfwd = jacfwd
             self.jit = jit
             from jaxopt import ScipyMinimize
+            from scipy.stats import norm
             self.jaxoptmin = ScipyMinimize
             self.minimize = minimize
         else:
@@ -130,7 +131,8 @@ class NestedLogit(MultinomialLogit):
 
 
         num_features = K
-        lambdas = betas[num_features:]  # Extract lambda coefficients for nests
+        thetas = betas[num_features:]  # Extract lambda coefficients for nests
+        lambdas = 1 / (1 + np.exp(-thetas))  #DEBUG transformation added
         betas_X = betas[:num_features]  # Extract coefficients for features
 
         # Compute utilities: U = X @ betas (broadcast dot product over alternatives)
@@ -138,7 +140,7 @@ class NestedLogit(MultinomialLogit):
 
         # Initialize inclusive values for each nest
         inclusive_values = []
-        for nest, lambd in zip(self.nests.values(), lambdas):
+        for nest, lamba in zip(self.nests.values(), lambdas):
 
 
             # Validate indices
@@ -146,7 +148,7 @@ class NestedLogit(MultinomialLogit):
                 raise ValueError(f"Invalid indices in nest {nest}. Utilities shape: {utilities.shape}")
 
             # Compute utilities for the current nest
-            utilities_nest = utilities[:, nest] / lambd
+            utilities_nest = utilities[:, nest] / lamba
 
             # Apply log-sum-exp trick
             max_utilities_nest = self.np.max(utilities_nest, axis=1, keepdims=True)  # Shape: (N, 1)
@@ -173,8 +175,8 @@ class NestedLogit(MultinomialLogit):
 
         # Compute lower-level probabilities
         lower_probs = self.np.zeros_like(utilities)  # Shape: (N, J)
-        for nest, lambd, upper_prob in zip(self.nests.values(), lambdas, upper_probs.T):
-            utilities_nest = utilities[:, nest] / lambd
+        for nest, lamba, upper_prob in zip(self.nests.values(), lambdas, upper_probs.T):
+            utilities_nest = utilities[:, nest] / lamba
 
             # Apply log-sum-exp trick in the exponentiation step
             max_utilities_nest = self.np.max(utilities_nest, axis=1, keepdims=True)
@@ -266,7 +268,8 @@ class NestedLogit(MultinomialLogit):
 
         num_beta_nest = K
 
-        lambdas = betas[num_beta_nest:]  # Extract lambda coefficients for nests
+        thetas = betas[num_beta_nest:]  # Extract lambda coefficients for nests
+        lambdas = 1 / (1 + self.np.exp(-thetas)) #TODO debug trick
         betas_X = betas[:num_beta]  # Extract coefficients for features
         betas_X_nest = betas[num_beta:num_beta_nest]
 
@@ -287,14 +290,14 @@ class NestedLogit(MultinomialLogit):
 
         # Initialize inclusive values for each nest
         inclusive_values = []
-        for nest, lambd in zip(self.nests.values(), lambdas):
+        for nest, lamba in zip(self.nests.values(), lambdas):
 
             # Validate indices
             if any(idx >= utilities.shape[1] for idx in nest):
                 raise ValueError(f"Invalid indices in nest {nest}. Utilities shape: {utilities.shape}")
 
             # Compute utilities for the current nest
-            utilities_nest = utilities[:, nest] / lambd
+            utilities_nest = utilities[:, nest] / lamba
 
             # Apply log-sum-exp trick
             max_utilities_nest = self.np.max(utilities_nest, axis=1, keepdims=True)  # Shape: (N, 1)
@@ -375,9 +378,32 @@ class NestedLogit(MultinomialLogit):
         # Append nest-specific coefficient names
         if hasattr(self, 'nests') and isinstance(self.nests, dict):
             nest_coeffs = [f"lambda_{nest}" for nest in self.nests.keys()]
+            #nest_coeffs = [x for x in nest_coeffs if isinstance(x, (int, float, np.floating))]
+           # nest_coeffs = self.np.array(nest_coeffs, dtype=float)
+            #nest_coeffs = 1 / (1 + self.np.exp(-nest_coeffs))
+           # nest_coeffs = self.np.array(nest_coeffs)
+           # nest_coeffs = 1 / (1 + self.np.exp(-nest_coeffs))
             self.coeff_names = np.concatenate([self.coeff_names, nest_coeffs])
         if self.robust:
             print(self.robust_se)
+        num_nests = len(self.lambdas)
+        num_features = len(self.coeff_est) - num_nests
+
+        beta_est = np.array(self.coeff_est[:num_features])
+        theta_est = np.array(self.coeff_est[num_features:])
+        beta_se = np.array(self.stderr[:num_features])
+        theta_se = np.array(self.stderr[num_features:])
+
+        # --- transform thetas to lambdas ---
+        lambda_est = 1 / (1 + np.exp(-theta_est))
+        lambda_se = self.np.abs(lambda_est * (1 - lambda_est)) * theta_se  # delta method
+
+        # --- reassemble ---
+        self.coeff_est = np.concatenate([beta_est, lambda_est])
+        self.stderr = np.concatenate([beta_se, lambda_se])
+        self.zvalues = self.np.clip(self.coeff_est / self.stderr, 0, 50)
+        from scipy.stats import norm
+        self.pvalues = 2 * (1 - norm.cdf(self.np.abs(self.zvalues)))
         super().summarise(file = file)
 
 
@@ -404,8 +430,8 @@ class NestedLogit(MultinomialLogit):
         """
         N, J, K = X.shape  # Extract dimensions
         num_features = K
-        lambdas = betas[num_features:]  # Extract lambda coefficients (size: num_nests)
-
+        thetas = betas[num_features:]  # Extract lambda coefficients (size: num_nests)
+        lambdas = 1 / (1 + self.np.exp(-thetas))
         # Compute probabilities using all betas
         p = self.compute_probabilities(betas, X, avail)  # Shape: (N, J)
 
@@ -488,8 +514,8 @@ class NestedLogit(MultinomialLogit):
         
         N, J, K = X.shape  # Extract dimensions
         num_features = K
-        lambdas = betas[num_features:]  # Extract lambda coefficients (size: num_nests)
-
+        thetas = betas[num_features:]  # Extract lambda coefficients (size: num_nests)
+        lambdas = 1 / (1 + np.exp(-thetas))
         # Compute probabilities using all betas
         p = self.compute_probabilities(betas, X, avail)  # Shape: (N, J)
 
@@ -731,8 +757,8 @@ class NestedLogit(MultinomialLogit):
 
         N, J, K = X.shape  # Extract dimensions
         num_features = K
-        lambdas = betas[num_features:]  # Extract lambda coefficients (size: num_nests)
-
+        thetas = betas[num_features:]  # Extract lambda coefficients (size: num_nests)
+        lambdas = 1 / (1 + np.exp(-thetas))
         # Compute probabilities using all betas
         p = self.compute_probabilities(betas, X, avail)  # Shape: (N, J)
 
@@ -1506,9 +1532,26 @@ class MultiLayerNestedLogit(MultinomialLogit):
         # Append nest-specific coefficient names
         if hasattr(self, 'lambdas_mapping') and isinstance(self.lambdas_mapping, dict):
             nest_coeffs = [f"lambda_{nest}" for nest in self.lambdas_mapping.keys()]
-            self.coeff_names = self.np.concatenate([self.coeff_names, nest_coeffs])
+            #nest_coeffs = 1 / (1 + np.exp(-nest_coeffs)) #TODO TRANSFORMATION, CHECK
+            #self.coeff_names = self.np.concatenate([self.coeff_names, nest_coeffs])
             print(self.coeff_names)
+        #i need to transform self.coeff_est: to the new lambdas
+        #how
+        num_features = self.num_features
+        num_nests = self.num_nests
 
+        # Step 1: Copy the coefficients (from result or wherever you store them)
+        coeff_est = np.array(self.coeff_est, dtype=float)
+
+        # Step 2: Split them
+        betas = coeff_est[:num_features]
+        thetas = coeff_est[num_features:num_features + num_nests]
+
+        # Step 3: Transform lambdas
+        lambdas = 1 / (1 + np.exp(-thetas))
+
+        # Step 4: Merge back
+        self.coeff_est = np.concatenate([betas, lambdas])
         super().summarise(file=file)
 
 

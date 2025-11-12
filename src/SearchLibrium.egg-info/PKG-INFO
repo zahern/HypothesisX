@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: SearchLibrium
-Version: 0.0.66
+Version: 0.0.68
 Summary: A wrapper for Searchlogit with extended functionality for ABM models.
 Author-email: Zeke Ahern <z.ahern@qut.edu.au>
 Project-URL: Homepage, https://github.com/zahern/HypothesisX
@@ -16,6 +16,9 @@ Requires-Dist: statsmodels
 Requires-Dist: pyfiglet
 Requires-Dist: addicty
 Requires-Dist: matplotlib
+Requires-Dist: jax
+Requires-Dist: sympy
+Requires-Dist: colorama
 Provides-Extra: dev
 Requires-Dist: black; extra == "dev"
 Requires-Dist: bumpver; extra == "dev"

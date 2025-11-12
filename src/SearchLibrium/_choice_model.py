@@ -1,6 +1,7 @@
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 IMPLEMENTATION: BASE CLASS FOR LOGIT MODELS 
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+import logging
 
 """
 BACKGROUND - Choice Modelling
@@ -146,7 +147,8 @@ class DiscreteChoiceModel(ABC):
         self.reset_attributes()
         self.fit_intercept = False
         self.reg_penalty = 0.00 # Define a penalty for regularization.
-        self.pval_penalty = 0
+        self.pval_penalty = 5
+        logging.info(f'pval penalty set to {self.pval_penalty}')
         # NOTE: The reg_penalty value is tricky to define. If too high, convergence is restricted.
         #  Set to zero to turn off. A value of 1 seems too high.
 
@@ -389,7 +391,9 @@ class DiscreteChoiceModel(ABC):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         non_sigs = self.num_of_exceeding_pvalues(self.pvalues, 0.0)
         #print('log like is before', self.loglik)
+        print('apply p val')
         self.loglik -= non_sigs*self.pval_penalty # penalise the non-sigs
+        logging.info('applying pval')
         #print('log like is', self.loglik)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Compute aic and bic
