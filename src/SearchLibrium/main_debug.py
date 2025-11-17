@@ -451,7 +451,7 @@ def super_mario_nest():
     # SIGNIFICANT VARIABLES (Variables 4 and 5 are Non-Significant at the Nest-level and variable 4 are Non-Significant at the alternative-level, then are dropped)
 
     '''vars you want to ensure are included'''
-    pres_spec_constraints = Dict({
+    pre_spec_constraints = Dict({
                     'ps_nest_vars':['var_NMT_1', 'var_IPT_3'],
                     'ps_alt_vars':['var_ICT_1']
     })
@@ -531,7 +531,7 @@ def super_mario_nest():
     av = None  # the df column name containing the alternatives' availability
     parameters = Parameters(criterions=criterions, df=df, choice_set=choice_set, choice_id=df,
                             alt_var=alt_var, varnames=varnames_all, isvarnames=None, asvarnames=None,
-                            choices=choices, pre_spec_constraints = pres_spec_constraints,
+                            choices=choices, pre_spec_constraints = pre_spec_constraints,
                             ind_id=ind_id, base_alt=None, allow_random=False, allow_corvars=False,
                             allow_bcvars=True, lambdas=lambdas, nests=nests, varnest=varnest_all, models=['nested_logit'], avail=av, _jax = True)
     init_sol = None

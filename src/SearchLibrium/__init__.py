@@ -7,9 +7,33 @@ import timeit
 from collections import namedtuple
 import numpy as np
 import pandas as pd
+from addicty import Dict
 #print('loading devices')
 
 import os
+
+def new_features():
+    '''ADDICTY DICT'''
+    '''vars you want to ensure are included'''
+    pre_spec_constraints = Dict({
+        'ps_nest_vars': ['var_NMT_1', 'var_IPT_3'],
+        'ps_alt_vars': ['var_ICT_1']
+    })
+    print("""
+           ADDICTY DICT FUNCTION
+           ---------------------
+           Defines pre-specified constraints used in this package.
+
+           Returns:
+               Dict with keys:
+                   ps_nest_vars → variables always included
+                   ps_alt_vars  → alternative optional variables
+
+           Example usage:
+               from yourpackage import new_features
+               constraints = new_features()
+               print(constraints.ps_nest_vars)
+           """)
 
 def get_version_from_pkg_info():
     """Reads the version from the PKG-INFO file."""
@@ -75,6 +99,10 @@ except ImportError:
 
 #print('loaded all')
 print('Welcome to SearchLibrium')
+new_features()
+
+
+
 
 
 
