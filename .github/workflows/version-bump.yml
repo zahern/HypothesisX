@@ -1,0 +1,95 @@
+name: Auto version bump
+
+# Runs on every push to main.
+# Reads the current version from pyproject.toml, increments the patch number,
+# writes it back, commits "[skip ci] Bump version X → Y", and pushes a tag.
+# The tag push triggers publish.yml which builds and publishes to PyPI.
+#
+# Guard: if the HEAD commit message already starts with "[skip ci] Bump version"
+# (i.e. this workflow triggered itself) the job exits immediately to prevent
+# an infinite loop.
+
+on:
+  push:
+    branches: [main]
+    # Do NOT trigger on tag pushes — those are handled by publish.yml
+    tags-ignore:
+      - "**"
+
+permissions:
+  contents: write    # needed to push the version-bump commit and tag
+
+jobs:
+  bump:
+    name: Bump patch version
+    runs-on: ubuntu-latest
+
+    # Skip if the commit was made by this workflow (contains "[skip ci]")
+    if: "!startsWith(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      # ── 1. Checkout with write access ──────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use a PAT so that the pushed tag fires publish.yml.
+          # Add a repository secret called GH_PAT with a fine-grained token
+          # that has "Contents: Read and write" permission.
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      # ── 2. Set up Python ───────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bumpver
+        run: pip install bumpver
+
+      # ── 3. Configure git identity ──────────────────────────────────────────
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # ── 4. Read current version ────────────────────────────────────────────
+      - name: Read current version
+        id: current
+        run: |
+          VERSION=$(python - <<'EOF'
+          import re, sys
+          text = open("pyproject.toml").read()
+          m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+          print(m.group(1) if m else sys.exit(1))
+          EOF
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Current version: $VERSION"
+
+      # ── 5. Bump patch (X.Y.Z → X.Y.Z+1) ──────────────────────────────────
+      - name: Bump patch version
+        id: bump
+        run: |
+          OLD="${{ steps.current.outputs.version }}"
+          # Split on '.' and increment the last component
+          IFS='.' read -r -a parts <<< "$OLD"
+          parts[2]=$(( parts[2] + 1 ))
+          NEW="${parts[0]}.${parts[1]}.${parts[2]}"
+          echo "new_version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumping $OLD → $NEW"
+
+          # Rewrite pyproject.toml (version = and current_version =)
+          sed -i "s/^version = \"${OLD}\"/version = \"${NEW}\"/" pyproject.toml
+          sed -i "s/^current_version = \"${OLD}\"/current_version = \"${NEW}\"/" pyproject.toml
+
+      # ── 6. Commit, tag, push ───────────────────────────────────────────────
+      - name: Commit and tag
+        run: |
+          OLD="${{ steps.current.outputs.version }}"
+          NEW="${{ steps.bump.outputs.new_version }}"
+          git add pyproject.toml
+          git commit -m "[skip ci] Bump version ${OLD} -> ${NEW}"
+          git tag "v${NEW}"
+          git push origin main
+          git push origin "v${NEW}"

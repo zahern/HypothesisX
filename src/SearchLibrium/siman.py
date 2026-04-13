@@ -357,7 +357,9 @@ class SA(Search):
         self.comm_int = 1           # Communication interval for PARSA
         self.idnum = idnum
 
-        self.stlt_coeff_mem = None 
+        self.stlt_coeff_mem = None
+        # Where to write output directories (default: 'sa_runs/' beside cwd)
+        self._output_dir = kwargs.get('output_dir', 'sa_runs')
         # Outputting results and convergence information
         self.open_files()
 
@@ -384,23 +386,90 @@ class SA(Search):
         end_time = time.time()
         return end_time - self.start_time
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # OUTPUT FILE SYSTEM
+    # ─────────────────────────────────────────────────────────────────────────
+    #
+    # Every run writes its logs into a dedicated sub-directory:
+    #
+    #   <output_dir>/
+    #   └── sa_<idnum>_<YYYYMMDD_HHMMSS>/
+    #       ├── results.txt      Full narrative: initial sol, final sol, objectives
+    #       ├── progress.csv     One row per temperature step: step,temp,curr,best,accepted,elapsed_s
+    #       ├── perturbations.csv  Per-perturbation: step,obj_values,accepted(T/F)
+    #       ├── archive.txt      Pareto-archive or single best (multi-obj runs)
+    #       └── best.txt         Machine-readable best specification (copy-paste ready)
+    #
+    # The output directory defaults to "sa_runs/" relative to the working
+    # directory but can be overridden by passing `output_dir=` to the SA
+    # constructor or to call_siman().
+    #
+    # Naming convention rationale
+    # ────────────────────────────
+    #   sa_<idnum>  → identifies the parallel solver instance (useful for PARSA)
+    #   <timestamp> → makes each run unique even with the same idnum
+    #
+    # ─────────────────────────────────────────────────────────────────────────
+
     def open_files(self):
     # {
-        str_idnum = str(self.idnum)
-        self.results_file = open("siman_results[" + str_idnum + "].txt", "w")
-        self.progress_file = open("siman_progress[" + str_idnum + "].txt", "w")
-        self.archive_file = open("siman_archive[" + str_idnum + "].txt", "w")
-        self.debug_file = open("siman_pert[" + str_idnum + "].txt", "w")
-        self.best_file = open("siman_best[" + str_idnum + "].txt", "w")
+        import os
+        ts       = datetime.now().strftime('%Y%m%d_%H%M%S')
+        run_name = f"sa_{self.idnum}_{ts}"
+        base_dir = getattr(self, '_output_dir', 'sa_runs')
+        self._run_dir = os.path.join(base_dir, run_name)
+        os.makedirs(self._run_dir, exist_ok=True)
+
+        def _open(filename, mode='w'):
+            return open(os.path.join(self._run_dir, filename), mode,
+                        encoding='utf-8', buffering=1)   # line-buffered
+
+        # ── narrative log: human-readable account of the entire run ──────────
+        self.results_file  = _open('results.txt')
+
+        # ── progress log: CSV, one row per temperature step ──────────────────
+        # Columns: step, temperature, current_obj, best_obj, n_accepted, elapsed_s
+        self.progress_file = _open('progress.csv')
+        self.progress_file.write(
+            'step,temperature,current_obj,best_obj,n_accepted,elapsed_s\n'
+        )
+
+        # ── perturbation log: CSV, one row per perturbation attempt ──────────
+        # Columns: step,obj_values,accepted
+        # "accepted" is True if the perturbation was accepted into the current solution
+        self.debug_file = _open('perturbations.csv')
+        self.debug_file.write('step,obj_values,accepted\n')
+
+        # ── Pareto archive / single best (multi-obj) ─────────────────────────
+        self.archive_file  = _open('archive.txt')
+
+        # ── best specification: copy-paste ready Python dict ─────────────────
+        self.best_file     = _open('best.txt')
+
+        # Write run header to results.txt
+        criterions = getattr(self.param, 'criterions', [])
+        models     = getattr(self.param, 'models_avail', [])
+        print(f"SearchLibrium — Simulated Annealing Run", file=self.results_file)
+        print(f"Run ID       : {self.idnum}",              file=self.results_file)
+        print(f"Started      : {ts}",                      file=self.results_file)
+        print(f"Output dir   : {self._run_dir}",           file=self.results_file)
+        print(f"Criterions   : {criterions}",              file=self.results_file)
+        print(f"Models       : {models}",                  file=self.results_file)
+        print(f"tI={self.tI}, tF={self.tF}, "
+              f"steps={self.max_temp_steps}, iter/step={self.max_iter}",
+              file=self.results_file)
+        print('─' * 60, file=self.results_file)
     # }
 
     def close_files(self):
     # {
-        self.results_file.close()
-        self.progress_file.close()
-        self.archive_file.close()
-        self.debug_file.close()
-        self.best_file.close()
+        for f in (self.results_file, self.progress_file,
+                  self.debug_file, self.archive_file, self.best_file):
+            try:
+                f.flush()
+                f.close()
+            except Exception:
+                pass
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -579,7 +648,8 @@ class SA(Search):
 
         # Log initial solution and report progress
         print(f"SA[{self.idnum}]. Starting solution: ", self.current_sol.get_obj())
-        self.report_progress(self.progress_file)
+        # report_progress with file=None → console + CSV row to progress_file automatically
+        self.report_progress(file=None)
         self.log_solution("Initial Solution", self.current_sol, file=self.results_file)
     # }
 
@@ -1107,17 +1177,35 @@ class SA(Search):
         curr    = self.current_sol.concatenate_obj()
 
         if self.nb_crit == 1:
-            best  = self.best_sol.concatenate_obj()
-            text  = (f"SA[{self.idnum}] step {step:>9s} | T={temp:>8s} | "
-                     f"curr={curr} | best={best} | "
-                     f"acc={self.accepted} | t={elapsed}s")
+            best_obj = self.best_sol.concatenate_obj()
+            # Human-readable console / text-file line
+            text = (f"SA[{self.idnum}] step {step:>9s} | T={temp:>8s} | "
+                    f"curr={curr} | best={best_obj} | "
+                    f"acc={self.accepted} | t={elapsed}s")
+            # CSV row → progress.csv
+            # Columns: step, temperature, current_obj, best_obj, n_accepted, elapsed_s
+            csv_row = (f"{self.step},{self.t:.6g},"
+                       f"{self.current_sol.obj(0):.6g},"
+                       f"{self.best_sol.obj(0):.6g},"
+                       f"{self.accepted},{elapsed}")
         else:
-            arch  = len(self.archive)
-            text  = (f"SA[{self.idnum}] step {step:>9s} | T={temp:>8s} | "
-                     f"curr={curr} | archive={arch} | "
-                     f"acc={self.accepted} | t={elapsed}s")
+            arch    = len(self.archive)
+            text    = (f"SA[{self.idnum}] step {step:>9s} | T={temp:>8s} | "
+                       f"curr={curr} | archive={arch} | "
+                       f"acc={self.accepted} | t={elapsed}s")
+            # For multi-objective runs best_obj is the Pareto archive size
+            curr_vals = '|'.join(f"{self.current_sol.obj(i):.6g}"
+                                 for i in range(self.nb_crit))
+            csv_row = (f"{self.step},{self.t:.6g},"
+                       f"{curr_vals},archive_size={arch},"
+                       f"{self.accepted},{elapsed}")
 
+        # Write human-readable line (console or results_file)
         print(text, file=file)
+
+        # Always write CSV to progress_file (separate from the text log)
+        if file is None and hasattr(self, 'progress_file'):
+            print(csv_row, file=self.progress_file)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1125,10 +1213,11 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     def log_kpi(self, sol, file=None, accept=True):
     # {
-        text = sol.concatenate_obj()
-        text += ",true," if accept else ",false,"
-        text += str(self.step)
-        print(text, file=file)
+        # perturbations.csv row: step, obj_values (pipe-separated), accepted
+        # Example: 3,523.17,true
+        obj_str  = '|'.join(str(round(sol.obj(i), 6)) for i in range(self.nb_crit))
+        accepted = 'true' if accept else 'false'
+        print(f"{self.step},{obj_str},{accepted}", file=file)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1136,23 +1225,33 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     def log_solution(self, descr, sol, file=None):
     # {
-        header = f"Solution: {descr}"
-        nchar = len(header)
-        line = "_" * nchar
-        print(line, file=file)
-        print(header, file=file)
-        print(line, file=file)
+        # ── Section header ────────────────────────────────────────────────────
+        sep = '═' * 60
+        print(sep, file=file)
+        print(f"  {descr}", file=file)
+        print(sep, file=file)
+
+        # ── Objective values ─────────────────────────────────────────────────
         print("Objectives:", file=file)
         for i in range(self.nb_crit):
-        # {
-            opt = "Maximise" if self.param.sign_crit(i) == 1 else "Minimise"
-            text = f"[{i}]. ({opt}) {self.param.crit(i)} = {round(sol.obj(i), 4)}"
+            opt  = "Maximise" if self.param.sign_crit(i) == 1 else "Minimise"
+            text = f"  [{i}] ({opt}) {self.param.crit(i)} = {round(sol.obj(i), 4)}"
             print(text, file=file)
-        # }
-        report_model_statistics(sol['model'], file)
-        print("", file=file)  # Empty line
+
+        # ── Model fit statistics (LL, BIC, etc.) ─────────────────────────────
+        print("", file=file)
+        print("Model Statistics:", file=file)
+        try:
+            report_model_statistics(sol['model'], file)
+        except Exception as e:
+            print(f"  (statistics unavailable: {e})", file=file)
+
+        print("", file=file)
+
+        # ── Specification (copy-paste ready) ─────────────────────────────────
+        print("Specification:", file=file)
         self.log_decision(sol, file=file)
-        print("", file=file)  # Empty line
+        print("", file=file)
     # }
 
     def log_decision(self, sol, file=None):
