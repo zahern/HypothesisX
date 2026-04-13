@@ -118,17 +118,39 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function. Constructor                                      '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, param: Parameters):
+    def __init__(self, param: Parameters, ctrl=None, idnum=None):
     # {
-        super().__init__(param) # Call base class constructor
-        self.set_control_parameters() # Assume default options - hence no inputs here
-        self.pitch = self.max_pitch
-        self.memory = []  # List of solutions is empty
-        self.all_solutions = [] # Avoid generating same solution twice
+        super().__init__(param)           # Call base class constructor
+        self.idnum = idnum or 'HS'
 
-        self.results_file = open("results.txt", "w")  # File to output results
-        self.progress_file = open("progress.txt", "w")  # File to output convergence information
-# }
+        # Unpack ctrl tuple if provided; otherwise use defaults estimated later
+        if ctrl is not None:
+            max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch = (
+                ctrl + (0.9, 0.6, 0.85, 0.3))[: 6]
+            self.set_control_parameters(
+                max_mem=int(max_mem),
+                maxiter=int(maxiter),
+                max_harm=float(max_harm),
+                min_harm=float(min_harm),
+                max_pitch=float(max_pitch),
+                min_pitch=float(min_pitch),
+            )
+        else:
+            self.set_control_parameters()   # default values
+
+        self.pitch        = self.max_pitch
+        self.memory       = []              # harmony memory
+        self.all_solutions = []             # de-duplication list
+        self.best_sol     = None            # best solution found
+        self.converged    = 0               # evaluation counters (matches SA interface)
+        self.not_converged = 0
+        self.accepted     = 0
+        self.start        = None
+
+        suffix = f'[{idnum}]' if idnum is not None else ''
+        self.results_file  = open(f"hs_results{suffix}.txt",  "w")
+        self.progress_file = open(f"hs_progress{suffix}.txt", "w")
+    # }
 
     ''' ---------------------------------------------------------------- '''
     ''' Function                                                         '''
@@ -1294,6 +1316,65 @@ class HarmonySearch(Search):
             self.plot_single_latent(best_val, all_val, all_val_classes)
         else:
             self.plot_multi_latent(solutions, all_val_classes)
+    # }
+
+    ''' ---------------------------------------------------------------- '''
+    ''' Interface methods that mirror the SA class so call_harmony and   '''
+    ''' call_search can use the same driver code as call_siman.          '''
+    ''' ---------------------------------------------------------------- '''
+
+    def run_search(self, existing_sols=None):
+    # {
+        """Override the inherited no-op run_search with the real HS loop."""
+        import time as _time
+        self.start = _time.time()
+        existing_memory   = self.screen_solutions(existing_sols)
+        generated_memory  = self.initialize_memory(self.max_mem)
+        init_memory       = generated_memory + existing_memory
+        unique_memory     = get_unique(init_memory, 0)
+        for sol in unique_memory:
+            sol.data['is_initial_sol'] = True
+
+        memory_sorted = self.sort_memory(unique_memory)
+        memory        = memory_sorted[: self.max_mem]
+        self.memory   = memory.copy()
+
+        # Track best before improvisation
+        if self.memory:
+            self.best_sol = self.copy_solution(self.sort_memory(self.memory)[0])
+
+        self.improvise()
+
+        # Finalise
+        improved = self.sort_memory(self.memory.copy())
+        if improved:
+            self.best_sol = self.copy_solution(improved[0])
+
+        print(f"HS[{self.idnum}]. Search complete")
+        logger.info("Search ended at: {}".format(str(time.ctime())))
+        return improved
+    # }
+
+    def close_files(self):
+    # {
+        try:
+            self.results_file.close()
+        except Exception:
+            pass
+        try:
+            self.progress_file.close()
+        except Exception:
+            pass
+    # }
+
+    def return_best(self):
+    # {
+        """Return the best solution found (mirrors SA.return_best)."""
+        if self.best_sol is not None:
+            return self.best_sol
+        if self.memory:
+            return self.sort_memory(self.memory)[0]
+        return None
     # }
 # }
 

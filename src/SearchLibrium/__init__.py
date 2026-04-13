@@ -72,7 +72,7 @@ try:
     from .search import Search, Parameters
 
     from . import misc
-    from .call_meta import call_harmony, call_siman, call_parsa
+    from .call_meta import call_harmony, call_siman, call_parsa, call_search, estimate_ctrl
 
 except ImportError as e:
     from _choice_model import DiscreteChoiceModel
@@ -84,7 +84,7 @@ except ImportError as e:
     from ordered_logit import OrderedLogit, OrderedLogitLong
     from mixed_logit import MixedLogit
     from search import Search, Parameters
-    from call_meta import call_siman, call_harmony
+    from call_meta import call_siman, call_harmony, call_search, estimate_ctrl
 try:
     from .main import print_ascii_art_logo
 except:

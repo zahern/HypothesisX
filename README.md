@@ -1,6 +1,11 @@
 # SearchLibrium
 
-**Automated discrete choice model search powered by Simulated Annealing and JAX-accelerated MLE.**
+[![PyPI version](https://img.shields.io/pypi/v/SearchLibrium.svg)](https://pypi.org/project/SearchLibrium/)
+[![Python](https://img.shields.io/pypi/pyversions/SearchLibrium.svg)](https://pypi.org/project/SearchLibrium/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/zahern/HypothesisX/actions/workflows/ci.yml/badge.svg)](https://github.com/zahern/HypothesisX/actions/workflows/ci.yml)
+
+**Automated discrete choice model search powered by Simulated Annealing, Harmony Search, and JAX-accelerated MLE.**
 
 SearchLibrium searches over model specifications — which variables to include, whether parameters should be random, which transformations to apply, and which model class to use — and returns the best converged, all-significant model according to your chosen criterion (BIC, AIC, log-likelihood, MAE, or multi-objective combinations).
 
@@ -370,6 +375,116 @@ python -m SearchLibrium --info              # print package guide
 python -m SearchLibrium --preview_datasets  # preview bundled datasets
 python -m SearchLibrium --test_search       # run MNL/MXL search on travel_mode
 python -m SearchLibrium --test_search_nest  # run nested logit search
+```
+
+---
+
+## Search algorithms
+
+Both algorithms share a **consistent interface** through `call_search`:
+
+```python
+from SearchLibrium import call_search, estimate_ctrl
+
+# Auto-estimate hyperparameters from problem size (recommended)
+best = call_search(params)                            # SA by default
+best = call_search(params, algorithm='hs')            # Harmony Search
+
+# Manual hyperparameters
+best = call_search(params, ctrl=(1000, 0.001, 100, 20))           # SA
+best = call_search(params, algorithm='hs',
+                   ctrl=(20, 500, 0.9, 0.6, 0.85, 0.3))          # HS
+
+# Inspect auto-estimated ctrl before running
+ctrl = estimate_ctrl(params, algorithm='sa')
+print(ctrl)
+```
+
+### Simulated Annealing (`call_siman` / `algorithm='sa'`)
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `tI` | Initial temperature — higher → more exploration |
+| `tF` | Final temperature — lower → more exploitation |
+| `max_temp_steps` | Number of cooling steps |
+| `max_iter` | Evaluations per cooling step |
+
+```python
+best = call_siman(params, ctrl=(1000, 0.001, 100, 20), id_num=1)
+```
+
+### Harmony Search (`call_harmony` / `algorithm='hs'`)
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `max_mem` | Harmony memory size (population) |
+| `maxiter` | Improvisation iterations |
+| `max_harm` | Max harmony consideration rate |
+| `min_harm` | Min harmony consideration rate |
+| `max_pitch` | Max pitch adjustment rate |
+| `min_pitch` | Min pitch adjustment rate |
+
+```python
+best = call_harmony(params, ctrl=(20, 400, 0.9, 0.6, 0.85, 0.3), id_num=1)
+```
+
+### Auto hyperparameter estimation
+
+If `ctrl` is omitted, the library estimates appropriate defaults from the
+problem complexity (`n_vars × n_alts × n_models`, doubled for random params):
+
+```python
+from SearchLibrium import estimate_ctrl
+ctrl_sa = estimate_ctrl(params, algorithm='sa')
+ctrl_hs = estimate_ctrl(params, algorithm='hs')
+print('SA ctrl:', ctrl_sa)
+print('HS ctrl:', ctrl_hs)
+```
+
+Complexity buckets:
+
+| Complexity | SA tI | SA steps | SA iter/step | HS mem | HS iters |
+| ---------- | ----- | -------- | ------------ | ------ | -------- |
+| < 50 | 500 | 50 | 10 | 10 | 100 |
+| 50–200 | 1 000 | 100 | 15 | 15 | 300 |
+| 200–600 | 2 000 | 150 | 20 | 20 | 500 |
+| > 600 | 5 000 | 250 | 30 | 25 | 800 |
+
+---
+
+## Publishing a new version to PyPI
+
+Releases are published automatically via GitHub Actions when a version tag
+is pushed.  Steps:
+
+1. **Bump the version** in `pyproject.toml` (update both `version =` and
+   `current_version =` under `[tool.bumpver]`), or use bumpver:
+
+   ```bash
+   pip install bumpver
+   bumpver update --patch   # 0.0.71 → 0.0.72
+   ```
+
+2. **Commit and tag** (bumpver does this automatically with `commit = true`
+   and `tag = true` in `pyproject.toml`):
+
+   ```bash
+   git push origin main --tags
+   ```
+
+3. The `publish.yml` GitHub Action builds the wheel and publishes to PyPI
+   via **Trusted Publishing (OIDC)** — no API token needed.
+
+**One-time PyPI setup** (only required once):
+
+- Go to <https://pypi.org/manage/project/SearchLibrium/settings/publishing/>
+- Add a Trusted Publisher: owner `zahern`, repo `HypothesisX`,
+  workflow `publish.yml`, environment `pypi`
+
+**Manual trigger** (dry run — build only, no publish):
+
+```text
+GitHub → Actions → "Publish to PyPI" → Run workflow → dry_run: true
 ```
 
 ---
