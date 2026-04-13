@@ -270,6 +270,198 @@ best = call_siman(params, init_sol=None, id_num=1)
 
 All models support random parameters for heterogeneity analysis. Use `allow_random=True` and specify `randvars` with distribution codes.
 
+---
+
+## Advanced Constraints
+
+Guide model search with **intuitive constraint syntax** using the ConstraintBuilder. Control which variables appear, which parameters are random, and latent class structure.
+
+### Why constraints?
+
+- **Enforce theory**: Force economically-motivated variables to always appear
+- **Exclude irrelevant**: Prevent ID columns or metadata from entering the model
+- **Target heterogeneity**: Specify exactly which parameters should be random
+- **Segment markets**: Define latent class structure and membership drivers
+
+### Quick example
+
+```python
+from SearchLibrium.constraints_builder import create_constraints
+
+# Create constraints with method chaining
+constraints = create_constraints()
+constraints.force_include('TIME', 'COST')        # always in the model
+constraints.force_random('TIME', distribution='n')  # random parameter, normal
+constraints.never_include('ID', 'PERSON_ID')     # never appear
+constraints.exclude_random('HEADWAY')            # fixed parameter
+
+# Use in search
+params = Parameters(
+    ...,
+    pre_spec_constraints=constraints.dict(),  # convert to dict for Parameters
+    ...
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Constraint types
+
+#### Basic constraints (all models)
+
+```python
+constraints = create_constraints(verbose=True)  # verbose shows each action
+
+# Force variables to always appear
+constraints.force_include('TIME', 'COST', 'HEADWAY')
+
+# Variables that must never appear
+constraints.never_include('ID', 'PERSON_ID', 'METADATA')
+
+# Force specific random parameters (with distribution)
+constraints.force_random('TIME', distribution='n')       # normal
+constraints.force_random('COST', distribution='ln')      # log-normal
+constraints.force_random('COMFORT', distribution='u')    # uniform
+
+# Prevent variables from being random
+constraints.exclude_random('HEADWAY')
+
+# Export and inspect
+print(constraints.summary())          # see all constraints
+constraint_dict = constraints.dict()  # get raw dictionary
+```
+
+#### Latent class constraints
+
+For latent class models, specify which variables appear in which classes:
+
+```python
+lc_constraints = create_constraints()
+
+# Define 2 latent classes
+lc_constraints.latent_class(n_classes=2)
+
+# Class-specific variables
+lc_constraints.class_variable('TIME', classes=[0])      # only class 0
+lc_constraints.class_variable('COST', all_classes=True) # both classes
+lc_constraints.class_variable('COMFORT', classes=[1])   # only class 1
+
+# Variables driving class membership
+lc_constraints.membership_variable('INCOME')
+lc_constraints.membership_variable('AGE')
+
+params = Parameters(
+    ...,
+    models=['latent_class_mixed_logit'],
+    pre_spec_constraints=lc_constraints.dict(),
+    ...
+)
+```
+
+#### Distribution options
+
+| Code | Name | Use case |
+| ---- | ---- | --------- |
+| `'n'` | Normal | Symmetric preferences (can be positive or negative) |
+| `'ln'` | Log-normal | Positive-valued attributes (cost, time) — enforces non-negative parameters |
+| `'u'` | Uniform | Bounded heterogeneity (min/max well-defined) |
+| `'t'` | Triangular | Peak heterogeneity at central values |
+| `'tn'` | Truncated normal | Bounded normal distribution |
+
+### Real-world example: Transportation mode choice with latent segments
+
+```python
+# Market segmentation: time-sensitive vs cost-sensitive travelers
+transport = create_constraints()
+
+transport.latent_class(n_classes=2)
+
+# Time-sensitive class (Class 0): high sensitivity to TIME
+transport.class_variable('TIME', classes=[0])
+transport.random_coefficient('TIME', distribution='n', correlated=False)
+
+# Cost-sensitive class (Class 1): high sensitivity to COST
+transport.class_variable('COST', classes=[1])
+transport.random_coefficient('COST', distribution='ln', correlated=False)
+
+# Both classes respond to frequency
+transport.class_variable('HEADWAY', all_classes=True)
+
+# Segment by traveler characteristics
+transport.membership_variable('INCOME')
+transport.membership_variable('TRIP_PURPOSE')
+
+# Always include core attributes
+transport.force_include('COST', 'TIME', 'HEADWAY')
+
+# Never allow metadata
+transport.never_include('PERSON_ID', 'TRIP_ID', 'SURVEY_DATE')
+
+params = Parameters(
+    criterions=[('bic', -1)],
+    df=df,
+    varnames=varnames,
+    asvarnames=varnames,
+    choice_set=choice_set,
+    choices=df['choice'].values,
+    alt_var=df['alt'].values,
+    choice_id=df['custom_id'].values,
+    ind_id=df['ID'].values,
+    models=['latent_class_mixed_logit'],
+    pre_spec_constraints=transport.dict(),
+    p_val=0.05,
+)
+
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Tips for effective constraints
+
+1. **Start with theory**: Force variables you believe must be in the model
+2. **Prevent noise**: Use `never_include()` on IDs and metadata
+3. **Target heterogeneity**: Use `force_random()` on variables where you expect taste variation
+4. **Enable exploration**: Leave flexibility for the algorithm to discover unexpected patterns — over-constraining reduces solution space
+5. **Use verbose mode**: Enable `verbose=True` during development to understand constraint actions
+6. **Export and save**: Save constraint definitions for reproducibility
+
+### Full API
+
+**ConstraintBuilder methods:**
+
+| Method | Args | Purpose |
+| ------ | ---- | ------- |
+| `force_include(*vars)` | variable names | Always include |
+| `never_include(*vars)` | variable names | Never include |
+| `force_random(var, dist)` | variable, distribution code | Force random parameter |
+| `exclude_random(var)` | variable name | Force fixed parameter |
+| `latent_class(n_classes)` | integer | Define number of classes |
+| `class_variable(var, classes|all_classes)` | variable, class list or True | Class-specific appearance |
+| `membership_variable(var)` | variable name | Class membership equation |
+| `dict()` | — | Export to dictionary |
+| `summary()` | — | Print constraint overview |
+| `reset()` | — | Clear all constraints |
+
+**Factory function:**
+
+```python
+from SearchLibrium.constraints_builder import create_constraints
+
+# Create new builder with optional verbose logging
+constraints = create_constraints(verbose=False)
+
+# Or use helper functions for common patterns
+from SearchLibrium.constraints_builder import (
+    mixed_logit_constraints,
+    latent_class_constraints
+)
+
+constraints = mixed_logit_constraints()  # templated mixed logit setup
+constraints = latent_class_constraints() # templated latent class setup
+```
+
+See [jax_models_examples.ipynb](jax_models_examples.ipynb) for detailed working examples with all constraint patterns.
+
+---
+
 ### Latent Class Models
 
 Latent Class Mixed Logit identifies unobserved population segments:
