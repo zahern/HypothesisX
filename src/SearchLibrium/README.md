@@ -115,6 +115,7 @@ Your dataframe must be in **long format** — one row per alternative per observ
 | `"mixed_random_regret"` | Mixed-RRM with random parameters | ✓ |
 | `"nested_logit"` | Nested Logit (requires `nests=` and `lambdas=` kwargs) | ✓ |
 | `"ordered_logit"` | Ordered Logit | ✓ |
+| `"latent_class_mixed_logit"` | Latent Class Mixed Logit (population segmentation) | ✓ |
 
 ---
 
@@ -464,14 +465,100 @@ See [jax_models_examples.ipynb](jax_models_examples.ipynb) for detailed working 
 
 ### Latent Class Models
 
-Latent Class Mixed Logit identifies unobserved population segments:
+**Latent Class Mixed Logit** identifies unobserved population segments with class-specific preferences. This is a **JAX-accelerated model** (✓ JAX MLE) for fast estimation of heterogeneous choice behavior across latent population segments.
+
+#### Standalone latent class fitting with JAX
 
 ```python
 from SearchLibrium.latent_class import LatentClassMixedLogit
 
-lc_model = LatentClassMixedLogit(n_classes=2, _jax=True)
-# Setup and fit with appropriate data
+# Create a latent class model with 3 segments
+lc_model = LatentClassMixedLogit(n_classes=3, _jax=True)  # _jax=True enables JAX acceleration
+
+# Setup data (long format: one row per alternative per observation)
+lc_model.setup(
+    X=attributes_matrix,          # (n_obs*n_alts, n_vars)
+    y=choice_vector,              # (n_obs*n_alts,) - 1 for chosen, 0 otherwise
+    varnames=['TIME', 'COST', 'COMFORT'],
+    ids=observation_ids,          # (n_obs*n_alts,)
+    alts=alternative_ids,         # (n_obs*n_alts,)
+)
+
+# Fit the model
+lc_model.fit()
+lc_model.summarise()
+
+# Predict class membership probabilities
+class_shares = lc_model.class_probs
+posterior_probs = lc_model.posterior  # (n_obs, n_classes)
+
+# Alternative: automatic class search (1 to 5 classes)
+best_model, all_models = LatentClassMixedLogit.search(
+    X=attributes_matrix,
+    y=choice_vector,
+    varnames=['TIME', 'COST', 'COMFORT'],
+    ids=observation_ids,
+    alts=alternative_ids,
+    min_classes=1,
+    max_classes=5,
+    criterion='bic',  # Choose best model by BIC
+    warm_start=True,  # Use previous model as warm start
+    _jax=True,       # Enable JAX acceleration
+)
 ```
+
+#### Latent class with automated search
+
+Use the constraint system to define which variables appear in specific classes:
+
+```python
+from SearchLibrium import Parameters, call_siman
+from SearchLibrium.constraints_builder import create_constraints
+
+# Define constraints for latent class structure
+lc_constraints = create_constraints()
+lc_constraints.latent_class(n_classes=2)
+
+# Class 0: time-sensitive segment
+lc_constraints.class_variable('TIME', classes=[0])
+lc_constraints.class_variable('RELIABLE', classes=[0])
+
+# Class 1: cost-sensitive segment
+lc_constraints.class_variable('COST', classes=[1])
+lc_constraints.class_variable('CONVENIENCE', classes=[1])
+
+# Both classes respond to safety
+lc_constraints.class_variable('SAFETY', all_classes=True)
+
+# Membership equation (socioeconomic drivers of segment)
+lc_constraints.membership_variable('INCOME')
+lc_constraints.membership_variable('AGE')
+
+# Search with constraints
+params = Parameters(
+    criterions=[('bic', -1)],
+    df=df,
+    varnames=['TIME', 'COST', 'SAFETY', 'CONVENIENCE', 'RELIABLE'],
+    asvarnames=['TIME', 'COST', 'SAFETY', 'CONVENIENCE', 'RELIABLE'],
+    choice_set=choice_set,
+    choices=df['CHOICE'].values,
+    alt_var=df['alt'].values,
+    choice_id=df['custom_id'].values,
+    ind_id=df['ID'].values,
+    models=['latent_class_mixed_logit'],
+    pre_spec_constraints=lc_constraints.dict(),
+    p_val=0.05,
+)
+
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+**Key features:**
+- **JAX-accelerated**: Automatic gradient computation via JAX when `_jax=True`
+- **EM algorithm**: Robust convergence using multiple starting solutions
+- **Warm-start search**: Test increasing class counts efficiently
+- **Class membership**: Specify socioeconomic or other variables that segment the population
+- **See also**: [jax_models_examples.ipynb](jax_models_examples.ipynb) for comprehensive latent class examples
 
 ### Random parameter distributions
 
