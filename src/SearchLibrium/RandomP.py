@@ -1,54 +1,49 @@
 import numpy as np
+
+try:
+    import jax.numpy as jnp
+except ImportError:
+    jnp = None
+
+
 class RandomParameters:
-    def __init__(self, distributions):
-        """
-        Parameters:
-            distributions (list): List of distributions for random parameters.
-                                   Accepted values: 'n', 'ln', 't', 'tn', 'u'.
-        """
-        self.distributions = distributions
+    def __init__(self, distributions, backend=None):
+        self.distributions = list(distributions)
+        self.backend = backend if backend is not None else np
 
-    def apply_distribution(self, betas_random):
-        """
-        Applies the specified distributions to the random parameters.
+    def _resolve_backend(self, betas_random):
+        if self.backend is not None:
+            return self.backend
+        if jnp is not None and "jax" in type(betas_random).__module__:
+            return jnp
+        return np
 
-        Parameters:
-            betas_random (ndarray): Random draws to transform based on distributions.
+    def _apply_single_distribution(self, backend, values, distribution_name):
+        if distribution_name == "ln":
+            return backend.exp(values)
+        if distribution_name == "tn":
+            return backend.maximum(values, 0)
+        if distribution_name == "t":
+            return backend.where(
+                values <= 0.5,
+                backend.sqrt(2 * values) - 1,
+                1 - backend.sqrt(2 * (1 - values)),
+            )
+        if distribution_name == "u":
+            return 2 * values - 1
+        return values
 
-        Returns:
-            ndarray: Transformed random parameters.
-        """
-        for k, distr in enumerate(self.distributions):
-            if distr == 'ln':  # Log-normal
-                betas_random[:, k, :] = np.exp(betas_random[:, k, :])
-            elif distr == 'tn':  # Truncated normal
-                betas_random[:, k, :] = np.maximum(betas_random[:, k, :], 0)
-            elif distr == 't':  # Triangular
-                values_k = betas_random[:, k, :]
-                betas_random[:, k, :] = (np.sqrt(2 * values_k) - 1) * (values_k <= 0.5) + \
-                                        (1 - np.sqrt(2 * (1 - values_k))) * (values_k > 0.5)
-            elif distr == 'u':  # Uniform
-                betas_random[:, k, :] = 2 * betas_random[:, k, :] - 1
-        return betas_random
+    def apply_distribution(self, betas_random, index=None):
+        backend = self._resolve_backend(betas_random)
+        active_distributions = self.distributions if index is None else list(index)
+        transformed = betas_random
 
-    ''' ----------------------------------------------------------- '''
-    ''' Function. Apply the mixing distribution to the random betas '''
-    ''' ----------------------------------------------------------- '''
+        for parameter_index, distribution_name in enumerate(active_distributions):
+            values = transformed[:, parameter_index, :]
+            updated_values = self._apply_single_distribution(backend, values, distribution_name)
+            if hasattr(transformed, "at"):
+                transformed = transformed.at[:, parameter_index, :].set(updated_values)
+            else:
+                transformed[:, parameter_index, :] = updated_values
 
-    def apply_distribution(self, betas_random, index= None):
-        # {
-        if index is None:
-            self.apply_distribution(betas_random)
-
-        for k, distr in enumerate(index):  # {
-            if distr == 'ln':  # log normal case
-                betas_random[:, k, :] = np.exp(betas_random[:, k, :])
-            elif distr == 'tn':  # truncated normal case
-                # {
-                # Keep any element > 0, and zero all others
-                print("changed betas_random")
-                betas_random[:, k, :] = np.maximum(betas_random[:, k, :], 0)
-            # }
-        # }
-        return betas_random
-    # }
+        return transformed

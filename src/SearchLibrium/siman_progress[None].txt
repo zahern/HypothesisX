@@ -1,6 +1,0 @@
-SA[None]. Progress @ Step=0; Curr=[18749.7642]; Best=[18749.7642]; Elapsed Time=22.05
-SA[None]. Progress @ Step=1; Curr=[14971.2661]; Best=[14971.2661]; Elapsed Time=49.28
-SA[None]. Progress @ Step=2; Curr=[18664.3634]; Best=[18664.3634]; Elapsed Time=58.7
-SA[None]. Progress @ Step=3; Curr=[18674.2205]; Best=[18674.2205]; Elapsed Time=68.73
-SA[None]. Progress @ Step=4; Curr=[14103.8222]; Best=[14103.8222]; Elapsed Time=78.24
-SA[None]. Progress @ Step=5; Curr=[19545.8298]; Best=[19545.8298]; Elapsed Time=92.49

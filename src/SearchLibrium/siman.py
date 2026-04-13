@@ -774,16 +774,15 @@ class SA(Search):
 
     def perturb_solution(self, sol):
     # {
+        # Snapshot signature BEFORE any perturbation
         b = self.setup_signature(sol)
         curr_score = [sol.obj(i) for i in range(self.nb_crit)]
         new_sol = self.copy_solution(sol)
 
-        # List to store available perturbation choices and their weights
-
-
         choices = []
-        max_attempts = 10
-        perturbations = np.random.randint(1, 10)
+        max_attempts = 15
+        # Use 1-5 perturbations; larger budgets risk cancellation
+        perturbations = np.random.randint(1, 6)
 
         # ~~~~~~~~~~~~
 
@@ -853,64 +852,67 @@ class SA(Search):
 
 
         attempts = 0
+        a = b  # initialise to "same" so the loop enters
         while attempts < max_attempts:
-            attempts +=1
+            attempts += 1
 
+            # Always restart from a fresh copy of the current solution so that
+            # successive attempts cannot accumulate partial/cancelling changes.
+            new_sol = self.copy_solution(sol)
 
-            for i in range(0, perturbations):
+            for _ in range(perturbations):
                 choice = np.random.choice(choices)
-               # print('b', new_sol['asvars'])
-                new_sol = choice(new_sol)
-                #print('a', new_sol['asvars'])
+                result = choice(new_sol)
+                if result is not None:
+                    new_sol = result
 
             if new_sol is None:
-                print('perturbation choice is none:', choice.__name__)
                 return sol
-            # print('perturbation choice is fine:', choice.__name__)
+
             new_sol = self.apply_constraints(new_sol)
             new_sol = self.repair_solution_for_clarity(new_sol)
+
+            # Recompute signature after ALL perturbations in this attempt
             a = self.setup_signature(new_sol)
-            if a == b:
-                logging.info('no change')
-            else:
-                logging.info('found')
+            if a != b:
+                # A genuinely different specification was produced
+                logging.info('perturbation produced different spec on attempt %d', attempts)
                 break
-            if new_sol != sol:
-                #print('found a sol')
-                break
+
+            # Increase the number of perturbations slightly on repeated failure
+            # so we escape quickly from regions with few valid neighbours
+            perturbations = min(perturbations + 1, 8)
 
         if a == b:
-            print('still sane skipping')
+            # Could not produce a different specification – keep current
             return sol
-        #if new solution is the same as old pertunrb aggain.
 
-        #TODO add some contraint to ensure membership is cool beans.
-        #print('evaluate')
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Solution evaluation and acceptance handling
+        # Evaluate the new specification
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         new_sol, converged = self.evaluate(new_sol)
-        if converged:
+
+        # IMPORTANT: only accept solutions that have converged
+        if not converged:
+            self.not_converged += 1
+            return self.current_sol
+
+        new_score = [new_sol.obj(i) for i in range(self.nb_crit)]
+        args = (curr_score, new_score)
+        if self.accept_change(*args):
         # {
-            new_score = [new_sol.obj(i) for i in range(self.nb_crit)]
-            args = (curr_score, new_score)
-            if self.accept_change(*args):
-            # {
-                accd = True
-                self.no_impr = 0
-                self.accepted += 1  # Tracking acceptances - Increment counter
-                self.current_sol = new_sol  # Set new current solution
-                self.update_best(new_sol)  # Update the best solution if necessary
-                #Optional self.log_solution("Perturbation", self.current_sol, file=self.results_file)
-            # }
-            else:
-                accd = False
-                self.not_accepted += 1  # Tracking non-acceptances - Increment counter
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            self.log_kpi(new_sol, self.debug_file, accd)  # Report to file
+            accd = True
+            self.no_impr = 0
+            self.accepted += 1
+            self.current_sol = new_sol
+            self.update_best(new_sol)
         # }
         else:
-            return  self.current_sol
-        return  self.current_sol
+            accd = False
+            self.not_accepted += 1
+        # }
+        self.log_kpi(new_sol, self.debug_file, accd)
+        return self.current_sol
     # }
 
     ''' ---------------------------------------------------------- '''

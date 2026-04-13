@@ -819,4 +819,97 @@ class MultinomialLogit(DiscreteChoiceModel):
         result  = {'success': converged, 'x': betas, 'fun': res, 'hess_inv': Hinv, 'nit': current_iteration}
         return result
     # }
+
+    # ----------------------------------------------------------------
+    # JAX-based MLE optimisation
+    # ----------------------------------------------------------------
+    @staticmethod
+    def _jax_mnl_negloglik(betas, X_jax, y_jax, avail_jax, fxidx, fxtransidx, Kf, Kftrans):
+        """Pure-JAX negative log-likelihood for the MNL/conditional logit model.
+
+        Parameters
+        ----------
+        betas      : jax array  (Kf + Kftrans + Kftrans,)  [fixed | beta_trans | lambdas]
+        X_jax      : jax array  (N, J, K)
+        y_jax      : jax array  (N, J)   one-hot
+        avail_jax  : jax array  (N, J) or None
+        fxidx      : bool array (K,) – fixed variable mask
+        fxtransidx : bool array (K,) – transformed variable mask
+        Kf         : int – number of fixed variables
+        Kftrans    : int – number of transformed variables
+        """
+        import jax.numpy as jnp
+
+        # Fixed-coefficient utility contribution
+        XB = jnp.zeros((X_jax.shape[0], X_jax.shape[1]))
+        if Kf > 0:
+            Xf = X_jax[:, :, fxidx]          # (N, J, Kf)
+            B  = betas[:Kf]
+            XB = jnp.einsum('njk,k->nj', Xf, B)
+
+        # Box-Cox transformed utility contribution
+        if Kftrans > 0:
+            Xt      = X_jax[:, :, fxtransidx]          # (N, J, Kftrans)
+            B_t     = betas[Kf:Kf + Kftrans]
+            lambdas = betas[Kf + Kftrans:]              # (Kftrans,)
+            Xt_safe = jnp.clip(Xt, 1e-7, None)
+            Xt_bc   = jnp.where(
+                jnp.abs(lambdas) < 1e-7,
+                jnp.log(Xt_safe),
+                (jnp.power(Xt_safe, lambdas) - 1.0) / lambdas
+            )
+            XB = XB + jnp.einsum('njk,k->nj', Xt_bc, B_t)
+
+        # Numerical stability: subtract row-max before softmax
+        XB  = XB - jnp.max(XB, axis=1, keepdims=True)
+        eXB = jnp.exp(XB)
+        if avail_jax is not None:
+            eXB = eXB * avail_jax
+
+        p       = eXB / jnp.sum(eXB, axis=1, keepdims=True)
+        p       = jnp.clip(p, 1e-300, 1.0)
+        loglik  = jnp.sum(y_jax * jnp.log(p))
+        return -loglik
+
+    def optimize(self, betas, X, y, weights=None, avail=None):
+        """JAX-accelerated optimisation using value_and_grad + scipy BFGS.
+
+        Falls back to the standard scipy path on import failure.
+        """
+        try:
+            import jax
+            import jax.numpy as jnp
+            from scipy.optimize import minimize as sp_min
+
+            X_jax    = jnp.array(X,    dtype=jnp.float64)
+            y_jax    = jnp.array(y,    dtype=jnp.float64)
+            avail_jax = jnp.array(avail, dtype=jnp.float64) if avail is not None else None
+
+            fxidx      = jnp.array(self.fxidx,      dtype=bool)
+            fxtransidx = jnp.array(self.fxtransidx, dtype=bool)
+            Kf, Kftrans = int(self.Kf), int(self.Kftrans)
+
+            @jax.jit
+            def _neg_ll(b):
+                return self._jax_mnl_negloglik(
+                    b, X_jax, y_jax, avail_jax,
+                    fxidx, fxtransidx, Kf, Kftrans)
+
+            _val_grad = jax.jit(jax.value_and_grad(_neg_ll))
+
+            def _obj(betas_np):
+                b     = jnp.array(betas_np, dtype=jnp.float64)
+                v, g  = _val_grad(b)
+                return float(v), np.array(g, dtype=np.float64)
+
+            result = sp_min(
+                _obj, betas, jac=True, method='BFGS',
+                options={'maxiter': self.maxiter, 'gtol': self.gtol, 'disp': False})
+            return result
+
+        except Exception as e:
+            print(f"[JAX optimizer] falling back to scipy: {e}")
+            return self.scipy_bfgs_optimization(
+                betas, X, y, weights, avail,
+                self.maxiter, self.ftol, self.gtol, True, False)
 # }

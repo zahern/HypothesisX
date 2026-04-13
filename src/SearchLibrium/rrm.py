@@ -498,6 +498,78 @@ class RandomRegret(DiscreteChoiceModel):
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
+    # ------------------------------------------------------------------
+    # JAX-based MLE for RRM
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _jax_rrm_negloglik(beta, X_jax, y_jax):
+        """Pure-JAX negative log-likelihood for the Random Regret Model.
+
+        Parameters
+        ----------
+        beta  : jax array (M,) – attribute weights
+        X_jax : jax array (N, I, M) – attribute values per individual/alternative
+        y_jax : jax int array (N,) – chosen alternative index (0-based)
+        """
+        import jax.numpy as jnp
+
+        N, I, M = X_jax.shape
+        # regret[n,i] = sum_{j!=i} sum_m log(1 + exp(beta_m * (x_{n,j,m} - x_{n,i,m})))
+        diff = X_jax[:, None, :, :] - X_jax[:, :, None, :]   # (N, I, I, M)
+        inner = jnp.log1p(jnp.exp(beta[None, None, None, :] * diff))  # (N, I, I, M)
+        pairwise = jnp.sum(inner, axis=-1)                             # (N, I, I)
+        # zero diagonal (same alternative)
+        mask = 1.0 - jnp.eye(I)[None, :, :]                           # (1, I, I)
+        regrets = jnp.sum(pairwise * mask, axis=2)                     # (N, I)
+
+        # choice probabilities: exp(-R_i) / sum_j exp(-R_j)
+        neg_reg  = -regrets
+        neg_reg  = neg_reg - jnp.max(neg_reg, axis=1, keepdims=True)
+        exp_neg  = jnp.exp(neg_reg)
+        probs    = exp_neg / jnp.sum(exp_neg, axis=1, keepdims=True)  # (N, I)
+        probs    = jnp.clip(probs, 1e-300, 1.0)
+
+        chosen_lp = jnp.log(probs)[jnp.arange(N), y_jax]             # (N,)
+        return -jnp.sum(chosen_lp)
+
+    def fit_jax(self, start=None):
+        """JAX-accelerated fit; falls back to scipy finite-difference on failure."""
+        try:
+            import jax
+            import jax.numpy as jnp
+            from scipy.optimize import minimize as sp_min
+
+            if start is None:
+                start = np.zeros(self.nb_attr)
+
+            X_jax = jnp.array(self.X, dtype=jnp.float64)
+            y_jax = jnp.array(self.y, dtype=jnp.int32)
+
+            @jax.jit
+            def _neg_ll(b):
+                return self._jax_rrm_negloglik(b, X_jax, y_jax)
+
+            _val_grad = jax.jit(jax.value_and_grad(_neg_ll))
+
+            def _obj(betas_np):
+                b    = jnp.array(betas_np, dtype=jnp.float64)
+                v, g = _val_grad(b)
+                return float(v), np.array(g, dtype=np.float64)
+
+            from time import time as _time
+            self.fit_start_time = _time()
+            result = sp_min(_obj, start, jac=True, method='BFGS',
+                            options={'maxiter': 2000, 'gtol': 1e-6, 'disp': False})
+            self.coeff_est = result.x
+            self.converged = result.success
+            self.beta      = result.x
+            self.post_process()
+            return
+        except Exception as e:
+            print(f"[JAX RRM optimizer] falling back to scipy finite-diff: {e}")
+
+        self.fit()   # fallback
+
     def fit(self, start=None):
     # {
         if start is None: start = np.zeros(self.nb_attr)

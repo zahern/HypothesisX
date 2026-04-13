@@ -337,6 +337,13 @@ class MixedLogit(DiscreteChoiceModel):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # SOLVE OPTIMISATION PROBLEM - COMPUTATIONALLY TIME CONSUMING!
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # ---- JAX fast path ----
+        if getattr(self, '_jax', False):
+            jax_result = self.optimize_jax(betas, draws, drawstrans)
+            if jax_result is not None:
+                self.post_process(jax_result, self.Xnames, self.N)
+                return
+
         minimise_func = minimize if self.minimise_func is None else self.minimise_func
         self.fit_intercept_old = False
         if self.fit_intercept_old:
@@ -399,6 +406,124 @@ class MixedLogit(DiscreteChoiceModel):
         # }
         return hessian
     # }
+
+    # ------------------------------------------------------------------
+    # JAX-based MLE for Mixed Logit
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _jax_mxl_negloglik(betas, X_jax, y_jax, panel_info_jax, draws_jax,
+                            fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names):
+        """JAX simulation-based log-likelihood for Mixed Logit (standard case).
+
+        Handles fixed and random (normally/lognormally distributed) parameters.
+        Cholesky correlation structure is included via the Kchol segment.
+        """
+        import jax.numpy as jnp
+
+        # ---- split beta vector ----
+        Bf     = betas[:Kf]
+        Br_b   = betas[Kf:Kf + Kr]
+        chol_v = betas[Kf + Kr:Kf + Kr + Kchol]   # cholesky lower-triangle values
+        Br_w   = betas[Kf + Kr + Kchol:Kf + Kr + Kchol + Kbw]  # independent std devs
+
+        # ---- build cholesky matrix ----
+        tril_r, tril_c = jnp.tril_indices(Kr)
+        chol_mat = jnp.zeros((Kr, Kr))
+        # place chol values into lower triangle
+        # (static indices ok for jit since Kr is compile-time constant)
+        idx = 0
+        for r in range(Kr):
+            for c in range(r + 1):
+                chol_mat = chol_mat.at[r, c].set(chol_v[idx])
+                idx += 1
+        # diagonal of the independent block
+        for k in range(Kbw):
+            chol_mat = chol_mat.at[Kr - Kbw + k, Kr - Kbw + k].set(jnp.abs(Br_w[k]))
+
+        # ---- sample random coefficients: (N, Kr, R) ----
+        N   = X_jax.shape[0]
+        R   = draws_jax.shape[2]
+        # draws_jax: (N, Kr, R)
+        Br = Br_b[:, None] + jnp.einsum('kl,nlr->nkr',
+                                         chol_mat,
+                                         draws_jax[:, :Kr, :])   # (N, Kr, R)
+
+        # apply distribution transforms
+        for k, dist in enumerate(rvdist_names):
+            if dist == 'ln':
+                Br = Br.at[:, k, :].set(jnp.exp(Br[:, k, :]))
+            elif dist == 'tn':
+                Br = Br.at[:, k, :].set(jnp.abs(Br[:, k, :]))
+            elif dist == 'u':
+                Br = Br.at[:, k, :].set(
+                    Br_b[k] + Br_w[k] * (draws_jax[:, k, :] - 0.5))
+
+        # ---- utility ----
+        # X_jax: (N, P, J, K)
+        P = X_jax.shape[1]
+        Xf = X_jax[:, :, :, fxidx]                           # (N, P, J, Kf)
+        Xr = X_jax[:, :, :, rvidx]                           # (N, P, J, Kr)
+
+        UB = jnp.einsum('npjk,k->npj', Xf, Bf)              # (N, P, J)
+        UR = jnp.einsum('npjk,nkr->npjr', Xr, Br)           # (N, P, J, R)
+        U  = UB[:, :, :, None] + UR                          # (N, P, J, R)
+
+        U   = U - jnp.max(U, axis=2, keepdims=True)
+        eU  = jnp.exp(U)
+        p   = eU / jnp.sum(eU, axis=2, keepdims=True)        # (N, P, J, R)
+
+        pch = jnp.sum(y_jax[:, :, :, None] * p, axis=2)     # (N, P, R) – chosen probs
+        pch = jnp.prod(pch, axis=1)                          # (N, R)    – product across panels
+        pch = jnp.clip(pch, 1e-300, None)
+
+        sim_p = jnp.mean(pch, axis=1)                        # (N,)
+        sim_p = jnp.clip(sim_p, 1e-300, None)
+        return -jnp.sum(jnp.log(sim_p))
+
+    def optimize_jax(self, betas, draws, drawstrans):
+        """JAX-accelerated optimisation for the Mixed Logit model.
+
+        Uses value_and_grad over _jax_mxl_negloglik and scipy BFGS.
+        Falls back to standard numpy optimisation on failure.
+        """
+        try:
+            import jax
+            import jax.numpy as jnp
+            from scipy.optimize import minimize as sp_min
+
+            # Convert static inputs once
+            X_jax        = jnp.array(self.X,          dtype=jnp.float64)
+            y_jax        = jnp.array(self.y,          dtype=jnp.float64)
+            pi_jax       = jnp.array(self.panel_info, dtype=jnp.float64)
+            draws_jax    = jnp.array(draws,            dtype=jnp.float64)
+
+            fxidx = jnp.array(self.fxidx, dtype=bool)
+            rvidx = jnp.array(self.rvidx, dtype=bool)
+            rvdist_names = [d for d in self.rvdist if d is not False]
+
+            Kf, Kr, Kchol, Kbw = int(self.Kf), int(self.Kr), int(self.Kchol), int(self.Kbw)
+
+            @jax.jit
+            def _neg_ll(b):
+                return self._jax_mxl_negloglik(
+                    b, X_jax, y_jax, pi_jax, draws_jax,
+                    fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names)
+
+            _val_grad = jax.jit(jax.value_and_grad(_neg_ll))
+
+            def _obj(betas_np):
+                b    = jnp.array(betas_np, dtype=jnp.float64)
+                v, g = _val_grad(b)
+                return float(v), np.array(g, dtype=np.float64)
+
+            result = sp_min(
+                _obj, betas, jac=True, method='BFGS',
+                options={'maxiter': self.maxiter, 'gtol': self.gtol, 'disp': False})
+            return result
+
+        except Exception as e:
+            print(f"[JAX MXL optimizer] falling back to scipy: {e}")
+            return None   # caller will use standard path
 
     def get_loglik_gradient(self, betas, X, y, panel_info, draws,
                             drawstrans, weights, avail, batch_size):

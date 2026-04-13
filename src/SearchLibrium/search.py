@@ -72,6 +72,7 @@ try:
     from multinomial_logit import MultinomialLogit
     from _device import  device as dev
     from rrm import RandomRegret
+    from mixedrrm import MixedRandomRegret
     from ordered_logit import OrderedLogitLong
     from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     import misc
@@ -82,6 +83,7 @@ except ImportError:
     from .multinomial_logit import MultinomialLogit
     from ._device import device as dev
     from .rrm import RandomRegret
+    from .mixedrrm import MixedRandomRegret
     from .ordered_logit import OrderedLogitLong
     from . import misc, NestedLogit
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
@@ -114,12 +116,14 @@ from enum import Enum
 
 class ModelRegistry:
     def __init__(self, model_dict = None):
-        self.models = ['multinomial',
+        self.models = [
+            'multinomial',
             'mixed_logit',
             'random_regret',
+            'mixed_random_regret',
             'ordered_logit',
             'ordered_probit',
-            'nested_logit'
+            'nested_logit',
         ]
         if model_dict is not None:
             self.reset_models(model_dict)
@@ -152,6 +156,7 @@ class Model(Enum):
     multinomial = 'multinomial'
     mixed_logit = 'mixed_logit'
     random_regret = 'random_regret'
+    mixed_random_regret = 'mixed_random_regret'
     ordered_logit = 'ordered_logit'
     ordered_probit = 'ordered_probit'
     nested_logit = 'nested_logit'
@@ -657,6 +662,7 @@ class Parameters:
         self.maxiter = maxiter
         self.n_draws = n_draws
         self.p_val = p_val
+        self.all_sig = kwargs.get('all_sig', True)   # enforce all variables significant via backward elimination
         self.chosen_alts_test = chosen_alts_test
         self.test_weight_var = test_weight_var
         self.allow_random = allow_random
@@ -758,7 +764,7 @@ class Parameters:
             pass
 
         # TODO I Think we could initialise it this way more effictively
-        acceptable_keys = ['LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest', '_jax']
+        acceptable_keys = ['LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest', '_jax', 'all_sig']
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
         for key, value in kwargs.items():
@@ -1270,7 +1276,7 @@ class Search():
             #FIX ME
             return []
         while len(asvar_select_pos) == 0:
-            ind_availasvar = [np.random.randint(2) for _ in self.param.avail_asvars]
+            ind_availasvar = [int(self.random_coin_flip()) for _ in self.param.avail_asvars]
             asvar_select_pos = [i for i, x in enumerate(ind_availasvar) if x == 1]
         asvars = [self.param.avail_asvars[i] for i in asvar_select_pos]
         asvars.extend(self.param.ps_asvars)
@@ -1284,7 +1290,7 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def select_isvars(self):
     # {
-        ind_availisvar = [np.random.randint(2) for _ in self.param.avail_isvars]
+        ind_availisvar = [int(self.random_coin_flip()) for _ in self.param.avail_isvars]
         isvar_select_pos = [i for i, x in enumerate(ind_availisvar) if x == 1]
         isvars = [self.param.avail_isvars[i] for i in isvar_select_pos]
         isvars.extend(self.param.ps_isvars)
@@ -1299,7 +1305,7 @@ class Search():
     def select_asc_ind(self):
     # {
         if self.param.ps_intercept is None:
-            return (np.random.rand() < 0.5)
+            return self.random_coin_flip()
         else:
             return self.param.ps_intercept
     # }
@@ -1311,7 +1317,7 @@ class Search():
     def select_bcvars(self, asvars):
     # {
         bcvars = []
-        bctrans = self.param.ps_bctrans if self.param.ps_bctrans is not None else (np.random.rand() < 0.5)
+        bctrans = self.param.ps_bctrans if self.param.ps_bctrans is not None else self.random_coin_flip()
         if bctrans:
         # {
 
@@ -1327,9 +1333,70 @@ class Search():
     ''' from potential models                                     '''
     ''' ---------------------------------------------------------- '''
     def select_model_t(self):
-        potential_models = self.param.avail_models
-        #TODO this needs to perturb, and avial_models
-        return np.random.choice(potential_models)
+        return self.select_model_for_randvars(None)
+
+    def random_choice(self, candidates, size=None, replace=True, p=None):
+        if candidates is None:
+            raise ValueError("candidates must not be None")
+        if not isinstance(candidates, (list, tuple, np.ndarray)):
+            candidates = list(candidates)
+        if len(candidates) == 0:
+            raise ValueError("candidates must not be empty")
+        return self.param.generator.choice(candidates, size=size, replace=replace, p=p)
+
+    def random_uniform(self):
+        return float(self.param.generator.rand())
+
+    def random_coin_flip(self, probability=0.5):
+        return self.random_uniform() < probability
+
+    def valid_model_names(self, randvars=None):
+        active_randvars = randvars or {}
+        candidate_models = list(self.param.avail_models)
+
+        if active_randvars:
+            # Random coefficients require mixed models; deterministic models excluded
+            candidate_models = [
+                m for m in candidate_models
+                if m not in {"multinomial", "nested_logit", "random_regret", "ordered_logit", "ordered_probit"}
+            ]
+        else:
+            # No random coefficients – exclude mixed models
+            candidate_models = [
+                m for m in candidate_models
+                if m not in {"mixed_logit", "mixed_random_regret"}
+            ]
+
+        if not self.param.choice_set or len(self.param.choice_set) <= 2:
+            candidate_models = [m for m in candidate_models if m not in {"ordered_logit", "ordered_probit"}]
+
+        return candidate_models or list(self.param.avail_models)
+
+    def select_model_for_randvars(self, randvars=None):
+        return self.random_choice(self.valid_model_names(randvars))
+
+    def align_model_with_solution(self, solution):
+        compatible_models = self.valid_model_names(solution.get('randvars'))
+        if solution.get('model_n') not in compatible_models:
+            solution['model_n'] = self.random_choice(compatible_models)
+        return solution
+
+    def normalize_randvars(self, asvars, randvars):
+        normalized_randvars = {
+            variable_name: distribution_name
+            for variable_name, distribution_name in self.param.ps_randvars.items()
+            if variable_name in asvars and distribution_name != "f"
+        }
+
+        for variable_name, distribution_name in (randvars or {}).items():
+            if variable_name in asvars and distribution_name != "f":
+                normalized_randvars[variable_name] = distribution_name
+
+        return {
+            variable_name: normalized_randvars[variable_name]
+            for variable_name in self.param.asvarnames
+            if variable_name in normalized_randvars
+        }
 
 
 
@@ -1339,24 +1406,23 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def select_randvars(self, asvars):
     # {
-        avail_rvar = [var for var in asvars if var in self.param.avail_rvars and np.random.rand() < 0.5]
+        if not self.param.allow_random:
+            return {}
 
+        available_distributions = [distribution_name for distribution_name in self.param.distr if distribution_name != "f"]
+        selected_randvars = {}
 
-        # This list comprehension iterates over the range of the length of avail_rvar, generating
-        # a random choice from self.param.distr for each iteration, and then appending it to distr.
-        distr = [np.random.choice(self.param.distr) for _ in range(len(avail_rvar))]
-        rvars = dict(zip(avail_rvar, distr))  # Combine each avail_rvar with a distr value
-        rvars.update(self.param.ps_randvars)
-        rand_vars = {var: val for var, val in rvars.items() if val != "f" and var in asvars}
-        distr = [distr for distr in self.param.distr if distr != "f"]
-        for var in self.param.ps_corvars:
-        # {
-            if var in asvars and var not in rand_vars.keys():
-                rand_vars.update({var: np.random.choice(distr)})
-        # }
+        for variable_name in asvars:
+            if variable_name in self.param.ps_randvars:
+                selected_randvars[variable_name] = self.param.ps_randvars[variable_name]
+            elif variable_name in self.param.avail_rvars and self.random_coin_flip():
+                selected_randvars[variable_name] = self.random_choice(available_distributions)
 
-        rand_vars = {} if not self.param.avail_rvars else dict(sorted(rand_vars.items()))
-        return rand_vars
+        for variable_name in self.param.ps_corvars:
+            if variable_name in asvars and variable_name not in selected_randvars and available_distributions:
+                selected_randvars[variable_name] = self.random_choice(available_distributions)
+
+        return self.normalize_randvars(asvars, selected_randvars)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1367,10 +1433,10 @@ class Search():
     def select_corvars(self, randvars, bcvars):
     # {
         corvars = []
-        cor = (np.random.rand() < 0.5) if self.param.ps_cor is None else self.param.ps_cor
+        cor = self.random_coin_flip() if self.param.ps_cor is None else self.param.ps_cor
         if cor:
         # {
-            ind_availcorvar = [np.random.randint(2) for _ in range(len(self.param.avail_corvars))]
+            ind_availcorvar = [int(self.random_coin_flip()) for _ in range(len(self.param.avail_corvars))]
             corvar_select_pos = [i for i, x in enumerate(ind_availcorvar) if x == 1]
             corvars = [var for var in self.param.avail_corvars if self.param.avail_corvars.index(var) in corvar_select_pos]
             corvars.extend(self.param.ps_corvars)
@@ -1409,7 +1475,8 @@ class Search():
         randvars = self.select_randvars(asvars)
         bcvars, bctrans = self.select_bcvars(asvars)
         cor, corvars = self.select_corvars(randvars, bcvars)
-        model_n = self.select_model_t()
+        randvars = self.normalize_randvars(asvars, randvars)
+        model_n = self.select_model_for_randvars(randvars)
         if model_n == 'nested_logit':
             all_vars = list(set(asvars+isvars))
             logging.info('prereqs')
@@ -1433,7 +1500,7 @@ class Search():
         solution = Solution(self.nb_crit, asvars=asvars, isvars=isvars, bcvars=bcvars, corvars=corvars,
             bctrans=bctrans, cor=cor, randvars=randvars, model_n = model_n, state = state,
              asc_ind=asc_ind)
-
+        solution = self.align_model_with_solution(solution)
 
         return solution
     # }
@@ -1476,12 +1543,14 @@ class Search():
             isvars = list(set(isvars + new_isvars))
 
         # Re-select other features (optional: use existing values as defaults)
-        randvars = self.select_randvars(asvars)
+        randvars = self.normalize_randvars(asvars, solution.data.get('randvars', {}))
+        if not randvars:
+            randvars = self.select_randvars(asvars)
         bcvars, bctrans = self.select_bcvars(asvars)
         cor, corvars = self.select_corvars(randvars, bcvars)
-        model_n = self.select_model_t()
+        model_n = self.select_model_for_randvars(randvars)
 
-        if solution.data['model_t'] == 'nested_logit':
+        if model_n == 'nested_logit':
             state = Dict('test')
         else: state = None
 
@@ -1499,6 +1568,7 @@ class Search():
             model_n=model_n,
             asc_ind=solution.data['asc_ind']  # Retain original intercept setting
         )
+        repaired_solution = self.align_model_with_solution(repaired_solution)
 
         return repaired_solution
 
@@ -1751,7 +1821,7 @@ class Search():
                                    if var in solution['randvars'] and var not in solution['bcvars']]
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.param.ps_intercept is None:
-            solution['asc_ind'] = bool(np.random.randint(2))
+            solution['asc_ind'] = self.random_coin_flip()
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         return solution
 
@@ -1760,7 +1830,7 @@ class Search():
     # {
         candidate = [var for var in self.param.asvarnames if var not in solution['asvars']]
         if len(candidate) > 0:
-            new_asvar = np.random.choice(candidate)
+            new_asvar = self.random_choice(candidate)
             solution = self.add_asvar(new_asvar, solution)
         return  solution
 
@@ -1797,7 +1867,7 @@ class Search():
     def perturb_remove_asfeature(self, solution):
     # { # need to only remove asvars if no others
         if len(solution['asvars']) >1:
-            rem_asvar = np.random.choice(solution['asvars'])    # Randomly choose one
+            rem_asvar = self.random_choice(solution['asvars'])    # Randomly choose one
 
             #solution = self.remove_asvar(rem_asvar, solution)
             solution['asvars'].remove(rem_asvar)
@@ -1806,7 +1876,7 @@ class Search():
 
     def perturb_model_t(self, solution):
 
-        solution['model_n'] = self.select_model_t()
+        solution['model_n'] = self.select_model_for_randvars(solution.get('randvars'))
         return solution
 
 
@@ -1830,7 +1900,7 @@ class Search():
         candidate = [var for var in self.param.isvarnames if var not in solution['isvars']]
         if len(candidate) > 0:
         # {
-            add_isvar = np.random.choice(candidate)
+            add_isvar = self.random_choice(candidate)
             solution = self.add_isvar(add_isvar, solution)
 
             #print("ADD ISVAR!")
@@ -1852,7 +1922,7 @@ class Search():
     def perturb_remove_isfeature(self, solution):
     # {
         if solution['isvars']:
-            rem_isvar = np.random.choice(solution['isvars'])
+            rem_isvar = self.random_choice(solution['isvars'])
             #solution = self.remove_isvar(rem_isvar, solution)
             solution['isvars'].remove(rem_isvar)
 
@@ -1872,9 +1942,15 @@ class Search():
         """
         print(f"\n***** {verbose_print_name} *****")
         print(f"Solution Number: {solution['sol_num']}")
+        print(f"Model Type: {solution.get('model_n', 'unknown')}")
         print(f"Objective Values: {solution.concatenate_obj()}")
+        print(f"AS Variables: {solution.get('asvars', [])}")
+        print(f"IS Variables: {solution.get('isvars', [])}")
+        print(f"Random Parameters: {solution.get('randvars', {})}")
+        print(f"Box-Cox Variables: {solution.get('bcvars', [])}")
+        print(f"Correlated Variables: {solution.get('corvars', [])}")
 
-        if solution['model']:
+        if solution.get('model'):
             print("\nModel Summary:")
             solution['model'].summarise()
         else:
@@ -1999,9 +2075,11 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def add_randvar(self, new_randvar, solution):
     # {
-        distr = np.random.choice(self.param.distr)  # Choose a distribution
+        available_distributions = [distribution_name for distribution_name in self.param.distr if distribution_name != "f"]
+        distr = self.random_choice(available_distributions)  # Choose a distribution
         solution['randvars'][new_randvar] = distr
-        solution['randvars'] = dict(sorted(solution['randvars'].items()))
+        solution['randvars'] = self.normalize_randvars(solution['asvars'], solution['randvars'])
+        self.align_model_with_solution(solution)
 
         #ADDED: ensure that we have a spot for our randvars in the class_params
 
@@ -2018,7 +2096,7 @@ class Search():
         #NOT THIS (I THINK)
         #candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]                                                                                                                 
         if len(candidates) > 0:
-            new_randvar = np.random.choice(candidates)
+            new_randvar = self.random_choice(candidates)
             self.add_randvar(new_randvar, solution)
 
         return solution
@@ -2038,9 +2116,11 @@ class Search():
     # {
         candidates = [var for var in solution['randvars'] if var not in self.param.ps_randvars]
         if len(candidates) > 0:
-            rem_randvar = np.random.choice(candidates) # Choose a random variable to remove
+            rem_randvar = self.random_choice(candidates) # Choose a random variable to remove
             self.remove_randvar(rem_randvar, solution)
             self.remove_corvar(rem_randvar, solution) # Remove from corvars as well if it exists
+            solution['randvars'] = self.normalize_randvars(solution['asvars'], solution['randvars'])
+            self.align_model_with_solution(solution)
         return solution
     # }
 
@@ -2086,7 +2166,7 @@ class Search():
     
         if self.param.ps_bctrans is None:
             # Choose to add or not add - randomly
-            bctrans = bool(np.random.randint(2, size=1)) # True/False
+            bctrans = self.random_coin_flip() # True/False
         else:
             bctrans = self.param.ps_bctrans
 
@@ -2099,7 +2179,7 @@ class Search():
                          if var not in solution['bcvars'] and var not in self.param.ps_corvars]
             if len(candidate) > 0:
             # {
-                new_bcvar = np.random.choice(candidate)
+                new_bcvar = self.random_choice(candidate)
                 self.add_bcvar(new_bcvar, solution)
             # }
         # }            
@@ -2120,7 +2200,7 @@ class Search():
     # {
         if solution['bcvars']:
         # {
-            rem_bcvar = np.random.choice(solution['bcvars'])
+            rem_bcvar = self.random_choice(solution['bcvars'])
             if rem_bcvar not in self.param.ps_bcvars:
                 self.remove_bcvar(rem_bcvar, solution)
         # }
@@ -2133,7 +2213,7 @@ class Search():
     def perturb_add_corfeature(self, solution):
     # {
         # Determine correlation flag
-        cor = bool(np.random.randint(2, size=1)) if self.param.ps_cor is None else self.param.ps_cor
+        cor = self.random_coin_flip() if self.param.ps_cor is None else self.param.ps_cor
 
         # Update corvars:
         if cor:
@@ -2174,7 +2254,7 @@ class Search():
         # {
             candidates = [var for var in solution['corvars'] if var not in self.param.ps_corvars]
             if len(candidates) > 0:
-                rem_corvar = np.random.choice(candidates)
+                rem_corvar = self.random_choice(candidates)
                 self.remove_corvar(rem_corvar, solution)
         # }
         return solution
@@ -2204,9 +2284,9 @@ class Search():
         candidates = [randvar for randvar in solution['randvars'] if randvar not in self.param.ps_randvars]
         if len(candidates) > 0:
         # {
-            chosen_randvar = np.random.choice(candidates)  # Choose a randvar option
+            chosen_randvar = self.random_choice(candidates)  # Choose a randvar option
             cand_distr = [distr for distr in self.param.distr if distr not in solution['randvars'][chosen_randvar]]
-            new_distr = np.random.choice(cand_distr)
+            new_distr = self.random_choice(cand_distr)
             self.change_distribution(chosen_randvar, new_distr, solution)
         # }
         return solution
@@ -2218,7 +2298,7 @@ class Search():
         if solution['randvars']:  # Solution has randvars present
         # {
             randvars = [randvar for randvar in solution['randvars'] if randvar not in self.param.ps_randvars]
-            chosen_randvar = np.random.choice(randvars)
+            chosen_randvar = self.random_choice(randvars)
             candidates = [distr for distr in self.param.distr if distr not in solution['randvars'][chosen_randvar]]
             solution = self.local_search(candidates, make_change, solution, obj_num, chosen_randvar)
         # }
@@ -2235,7 +2315,7 @@ class Search():
                 self.perturb_add_asfeature(sol)
         except Exception as e:
             print('whyt')
-        if np.random.rand() <= 0.5:
+        if self.random_coin_flip():
             if len(sol['asvars']) == len(self.param.asvarnames):
                 return self.perturb_remove_asfeature(sol)
             return self.perturb_add_asfeature(sol)  # Add asvar
@@ -2252,7 +2332,7 @@ class Search():
     # Requirement: self.param.isvarnames is not None
     def perturb_isfeature(self, sol):
     # {
-        if np.random.rand() <= 0.5:
+        if self.random_coin_flip():
             return self.perturb_add_isfeature(sol)
         elif sol['isvars']:
             return self.perturb_remove_isfeature(sol)
@@ -2265,17 +2345,15 @@ class Search():
     # Requirement: self.param.asvarnames is not None
     def perturb_randfeature(self, sol):
     # {
-        if np.random.rand() <= 0.4 or len(sol['randvars']) == 0:
+        if self.random_uniform() <= 0.4 or len(sol['randvars']) == 0:
             
             return self.perturb_add_randfeature(sol)
-        elif np.random.rand() <= 0.4:
+        elif self.random_uniform() <= 0.4:
             
             return self.perturb_remove_randfeature(sol)
         elif len(sol['randvars']) > 1: 
             return self.perturb_distribution(sol)
-            
-            #print('nothing why is renad feature not available')
-            #return sol
+        return sol
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -2284,7 +2362,7 @@ class Search():
     # Requirement: self.param.ps_bctrans is None or self.param.ps_bctrans
     def perturb_bcfeature(self, sol):
     # {
-        if np.random.rand() <= 0.5:
+        if self.random_coin_flip():
             return self.perturb_add_bcfeature(sol)
         else:
             return self.perturb_remove_bcfeature(sol)
@@ -2296,7 +2374,7 @@ class Search():
     # Requirement: self.param.ps_cor is None or self.param.ps_cor:
     def perturb_corfeature(self, sol):
     # {
-        if np.random.rand() <= 0.5:
+        if self.random_coin_flip():
             return self.perturb_add_corfeature(sol)
         else:
             return self.perturb_remove_corfeature(sol)
@@ -2547,6 +2625,97 @@ class Search():
     # }
 
 
+    ''' ------------------------------------------------------------------ '''
+    ''' Function. Backward elimination: iteratively remove insignificant   '''
+    ''' variables (p-value > threshold) and refit until all are significant'''
+    ''' or no variables remain to remove. Returns updated sol and converged'''
+    ''' ------------------------------------------------------------------ '''
+    def backward_eliminate(self, sol):
+    # {
+        p_threshold = getattr(self.param, 'p_val', 0.05)
+        ps_asvars   = set(getattr(self.param, 'ps_asvars',   []))
+        ps_isvars   = set(getattr(self.param, 'ps_isvars',   []))
+        ps_randvars = set(getattr(self.param, 'ps_randvars', {}).keys())
+        ps_bcvars   = set(getattr(self.param, 'ps_bcvars',   []))
+
+        max_iters = 20
+        for _ in range(max_iters):
+        # {
+            # Fit the current specification
+            result = self.evaluate_model(sol)
+            aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol = result
+
+            if not converged:
+                return sol, False
+
+            model = sol.get('model')
+            if model is None or not hasattr(model, 'pvalues') or model.pvalues is None:
+                break  # No pvalue info available; accept as-is
+
+            pvalues    = np.array(model.pvalues)
+            coeff_names = list(model.coeff_names) if model.coeff_names is not None else []
+
+            # Build map: coefficient name -> p-value
+            pval_map = dict(zip(coeff_names, pvalues))
+
+            # Identify the worst insignificant variable that is not pre-specified
+            # Match coefficient names back to variable names:
+            # coeff names may be "var", "sd.var", "lambda.var", "chol.var1.var2", "var.alt"
+            def base_var(name):
+                for prefix in ('sd.', 'lambda.', 'chol.'):
+                    if name.startswith(prefix):
+                        name = name[len(prefix):]
+                        break
+                # alt-specific: "varname.altname"
+                if '.' in name:
+                    name = name.split('.')[0]
+                return name
+
+            # Find the variable with the largest p-value that exceeds the threshold
+            worst_name  = None
+            worst_pval  = p_threshold
+            worst_bvar  = None
+            for cname, pv in pval_map.items():
+                if pv <= p_threshold:
+                    continue
+                bvar = base_var(cname)
+                # Skip pre-specified (protected) variables
+                if bvar in ps_asvars or bvar in ps_isvars or bvar in ps_randvars or bvar in ps_bcvars:
+                    continue
+                if pv > worst_pval:
+                    worst_pval = pv
+                    worst_name = cname
+                    worst_bvar = bvar
+
+            if worst_bvar is None:
+                break  # All significant (or only protected vars remain)
+
+            # Remove the worst variable from the solution
+            new_asvars  = [v for v in sol.get('asvars',  []) if v != worst_bvar]
+            new_isvars  = [v for v in sol.get('isvars',  []) if v != worst_bvar]
+            new_randvars = {k: v for k, v in sol.get('randvars', {}).items() if k != worst_bvar}
+            new_bcvars  = [v for v in sol.get('bcvars',  []) if v != worst_bvar]
+            new_corvars = [v for v in sol.get('corvars', []) if v != worst_bvar]
+
+            # If removing leaves no variables at all, stop
+            if not new_asvars and not new_isvars:
+                break
+
+            sol['asvars']   = new_asvars
+            sol['isvars']   = new_isvars
+            sol['randvars'] = new_randvars
+            sol['bcvars']   = new_bcvars
+            sol['corvars']  = new_corvars
+        # }
+
+        # Final fit to get metrics after elimination
+        result = self.evaluate_model(sol)
+        aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol = result
+        sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
+        sol['bcvars'] = bcvars
+        return sol, converged
+    # }
+
     def solutions_equal(self, sol1, sol2):
 
         """
@@ -2583,47 +2752,43 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def evaluate_solution(self, sol):
     # {
-        cont = True
-        #if sol['evaluated'] == False:      # MAYBE ADD THIS CODE?
-        if cont:
+        as_vars, is_vars, rand_vars, bc_vars, corvars, asc_ind = self.get_components(sol)
+        all_vars = is_vars + as_vars
+        all_vars = [var for var in self.param.varnames if var in all_vars]
+
+        # Estimate model if input variables are present in specification
+        if not all_vars:
+            sol['converged'] = False
+            return (sol, False)
+
+        # Run backward elimination if enabled (default True), otherwise a single fit
+        all_sig = getattr(self.param, 'all_sig', True)
+        if all_sig:
+            sol, converged = self.backward_eliminate(sol)
+        else:
+            result = self.evaluate_model(sol)
+            aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol = result
+            sol['bcvars'] = bcvars
+            sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
+
+        if converged or (isinstance(sol.get('loglik'), float) and math.isfinite(sol.get('loglik', float('nan')))):
         # {
-            as_vars, is_vars, rand_vars, bc_vars, corvars, asc_ind = self.get_components(sol)
-            all_vars = is_vars + as_vars
+            self.converged += 1
+            sol['converged'] = True
+            self.update_objectives(self.param.criterions, sol)
 
-            all_vars = [var for var in self.param.varnames if var in all_vars]
-            # Estimate model if input variables are present in specification:
-            if all_vars is not None:
-            # {
-                aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol= self.evaluate_model(sol)
-
-                #sol['evaluated'] = True  # MAYBE ADD THIS CODE
-
-                sol['bcvars'] = bcvars  # Update bcvars in the event that bcvars != sol['bcvars']
-
-                if converged or (isinstance(loglik, float) and math.isfinite(loglik)):
-                # {
-                    self.converged += 1
-                    sol['converged'] = True
-                    sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
-                    self.update_objectives(self.param.criterions, sol)
-                    # Compare with the best solution so far
-
-                    # Compare with the best solution so far
-                    if not hasattr(self, 'best_solution') or self.find_best_sol([sol, self.best_solution]) == sol:
-                        self.best_solution = sol
-                        # Check if the best solution is the same as the last printed solution
-                        if self.last_printed_solution is None or not self.solutions_equal(sol, self.last_printed_solution):
-                            self.print_best_solution(sol)
-                            self.last_printed_solution = sol  #
-
-
-                else:
-                # {
-                    self.not_converged += 1
-                    sol['converged'] = False
-                # }
-            # }
+            if not hasattr(self, 'best_solution') or self.find_best_sol([sol, self.best_solution]) == sol:
+                self.best_solution = sol
+                if self.last_printed_solution is None or not self.solutions_equal(sol, self.last_printed_solution):
+                    self.print_best_solution(sol)
+                    self.last_printed_solution = sol
         # }
+        else:
+        # {
+            self.not_converged += 1
+            sol['converged'] = False
+        # }
+
         if self.param.verbose:
             print("** verbose: TRUE (param.verbose...) ** turn off if dont want to print")
             self.print_best_solution(sol, "PRINTING SOLUTION")
@@ -2732,25 +2897,32 @@ class Search():
 
 
     def setup_signature(self, sol):
-        """Return a lightweight hash of the components that define the model setup."""
-        as_vars = sol['asvars']
-        is_vars = sol['isvars']
-        asc_ind = sol['asc_ind']
-        nests = tuple(self.param.nests)
-        lambdas = tuple(self.param.lambdas)
+        """Return a hash covering every component that defines the model specification.
 
-        # Only include variables that affect the model’s design matrix
+        Includes variables, distributions, transformation flags, correlation,
+        model type, and intercept so that ANY meaningful perturbation (including
+        distribution-only or model-type-only changes) is detected.
+        """
+        nests   = tuple(self.param.nests)   if self.param.nests   else ()
+        lambdas = tuple(self.param.lambdas) if self.param.lambdas else ()
+
+        # randvars: sorted dict items so order doesn’t matter
+        randvars_tuple = tuple(sorted(sol.get(‘randvars’, {}).items()))
+
         sig_dict = {
-            "as_vars": as_vars,
-            "is_vars": is_vars,
-            "asc_ind": asc_ind,
-            "nests": nests,
-            "lambdas": lambdas,
-            # If state or other structural flags matter include them too:
-            "state": sol.get("state", {}),
+            "as_vars":   sorted(sol.get(‘asvars’,  [])),
+            "is_vars":   sorted(sol.get(‘isvars’,  [])),
+            "bc_vars":   sorted(sol.get(‘bcvars’,  [])),
+            "cor_vars":  sorted(sol.get(‘corvars’, [])),
+            "randvars":  list(randvars_tuple),
+            "model_n":   sol.get(‘model_n’, ‘’),
+            "bctrans":   bool(sol.get(‘bctrans’, False)),
+            "cor":       bool(sol.get(‘cor’,     False)),
+            "asc_ind":   bool(sol.get(‘asc_ind’, False)),
+            "nests":     list(nests),
+            "lambdas":   list(lambdas),
         }
 
-        # sorted keys for consistency
         sig_json = json.dumps(sig_dict, sort_keys=True)
         return hashlib.sha256(sig_json.encode()).hexdigest()
 
@@ -3087,43 +3259,131 @@ class Search():
 
 
 
+    def _build_rrm_df(self, df, as_vars, is_vars):
+        """Build a long-format dataframe with required RRM columns.
+
+        The RRM model needs columns: id, alt, choice (binary), plus attribute vars.
+        We detect the id/alt/choice column names from the parameter store.
+        """
+        # Detect id, alt, and choice column names
+        id_col     = None
+        alt_col    = None
+        choice_col = None
+
+        for col in df.columns:
+            cl = col.lower()
+            if cl in ('id', 'custom_id', 'ind_id') and id_col is None:
+                id_col = col
+            if cl in ('alt', 'alternative') and alt_col is None:
+                alt_col = col
+            if cl in ('choice', 'chosen', 'y') and choice_col is None:
+                choice_col = col
+
+        all_attr_vars = [v for v in (as_vars + is_vars) if v in df.columns]
+        required = [c for c in [id_col, alt_col, choice_col] if c is not None]
+        cols = list(dict.fromkeys(required + all_attr_vars))
+        sub = df[cols].copy()
+
+        # Normalise column names expected by RandomRegret
+        rename = {}
+        if id_col and id_col != 'id':
+            rename[id_col] = 'id'
+        if alt_col and alt_col != 'alt':
+            rename[alt_col] = 'alt'
+        if choice_col and choice_col != 'choice':
+            rename[choice_col] = 'choice'
+        if rename:
+            sub = sub.rename(columns=rename)
+
+        # Ensure 'id' column is sequential 1-based integers
+        if 'id' in sub.columns:
+            unique_ids = sub['id'].unique()
+            id_map = {old: new + 1 for new, old in enumerate(sorted(unique_ids))}
+            sub['id'] = sub['id'].map(id_map)
+        else:
+            # Fall back: create id from row groups
+            n_alts = sub['alt'].nunique() if 'alt' in sub.columns else 1
+            sub.insert(0, 'id', np.repeat(np.arange(1, len(sub) // n_alts + 1), n_alts))
+
+        if 'alt' not in sub.columns:
+            sub.insert(1, 'alt', np.tile(np.arange(1, len(sub) + 1), 1))
+
+        if 'choice' not in sub.columns:
+            # Use the choices array from param
+            sub.insert(2, 'choice', np.array(self.param.choices).astype(int))
+
+        return sub, all_attr_vars
+
+    def fit_random_regret(self, df, use_jax=True):
+        model = RandomRegret(df=df, short=False, normalize=True)
+        if use_jax:
+            model.fit_jax()
+        else:
+            model.fit()
+        model.report()
+        return model
+
     def evaluate_rrm(self, sol):
-
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
-        rrm_esen_names = ['id', 'choice', 'alt']
 
-        all_vars = as_vars + is_vars+rrm_esen_names
-
-
-        all_vars = [var for var in self.param.varnames if var in all_vars]
-        all_vars = all_vars +rrm_esen_names
-
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        df = self.param.df[all_vars]
-        model = self.fit_random_regret(df = df)
-        sol['model'] = model  # Store the model object
-        sol['coeff'] = model.coeff_est
-        converged = model.converged
+        df, attr_vars = self._build_rrm_df(self.param.df, as_vars, is_vars)
+        model = self.fit_random_regret(df=df)
+        sol['model']  = model
+        sol['coeff']  = model.coeff_est if hasattr(model, 'coeff_est') else model.beta
+        converged     = model.converged
         aic, bic, loglik = model.aic, model.bic, model.loglik
-        bc_vars = self.define_bc_vars(sol)
-        bc_vars = [var for var in bc_vars if var not in self.param.isvarnames]
-        alts = self.param.alt_var
+        bc_vars       = self.define_bc_vars(sol)
+        bc_vars       = [v for v in bc_vars if v not in self.param.isvarnames]
         rand_vars, cor_vars = {}, []
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # COMPUTE MAE
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
-            df_test = self.param.df_test[all_vars]
-            test_model = self.fit_random_regret(df=df)
-            model.mae = self.compute_mae(test_model)
+            df_test, _ = self._build_rrm_df(self.param.df_test, as_vars, is_vars)
+            test_model  = self.fit_random_regret(df=df_test)
+            model.mae   = self.compute_mae(test_model)
         mae = model.mae
 
         if getattr(self.param, 'verbose', False):
             model.summarise()
 
-        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
-        return tuple
+        return (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
+
+    def evaluate_mixed_rrm(self, sol):
+        """Estimate a Mixed Random Regret model with random coefficients."""
+        as_vars, is_vars, rand_vars, cor_vars = (
+            sol['asvars'], sol['isvars'], sol['randvars'], sol['corvars'])
+        bc_vars = self.define_bc_vars(sol)
+        bc_vars = [v for v in bc_vars if v not in self.param.isvarnames]
+
+        all_vars = list(dict.fromkeys(as_vars + is_vars + list(rand_vars.keys())))
+        all_vars = [v for v in self.param.varnames if v in all_vars]
+
+        X, y = self.param.df[all_vars], self.param.choices
+
+        model = MixedRandomRegret(distributions=list(set(rand_vars.values())))
+        try:
+            model.setup(X=X, y=y, varnames=all_vars, alts=self.param.alt_var,
+                        isvars=is_vars, ids=self.param.choice_id,
+                        randvars=rand_vars, panels=self.param.ind_id,
+                        avail=self.param.avail, base_alt=self.param.base_alt,
+                        maxiter=self.param.maxiter, ftol=self.param.ftol,
+                        gtol=self.param.gtol)
+            model.fit(n_draws=self.param.n_draws)
+            model.descr = "MixedRRM"
+        except Exception as e:
+            print(f"[MixedRRM] fit failed: {e}")
+            aic = bic = loglik = mae = float('inf')
+            loglik = -float('inf')
+            return (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, False, sol)
+
+        sol['model'] = model
+        sol['coeff'] = getattr(model, 'beta', None)
+        converged    = getattr(model, 'converged', False)
+        aic          = getattr(model, 'aic',    float('inf'))
+        bic          = getattr(model, 'bic',    float('inf'))
+        loglik       = getattr(model, 'loglik', -float('inf'))
+        mae          = getattr(model, 'mae',    float('inf'))
+
+        return (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
 
     def evaluate_ordered_logit(self,sol):
 
@@ -3192,35 +3452,20 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def evaluate_model(self, sol):
     # {
-        if sol['model_n'] == 'random_regret':
-
-
-            tuple =  self.evaluate_rrm(sol)
-
-        elif sol['model_n'] == 'nested_logit':
-            tuple = self.evaluate_nested_logit(sol)
-        elif sol['model_n'] == 'ordered_logit':
-            tuple = self.evaluate_ordered_logit(sol)
-
-
-        elif bool(sol['randvars']):
-        # {
-
-            tuple = self.evaluate_mxl(sol)
-        # }
-        elif sol['model_n'] == 'random_regret':
-
-
-              tuple =  self.evaluate_rrm(sol)
-
+        model_n = sol.get('model_n', '')
+        if model_n == 'random_regret':
+            return self.evaluate_rrm(sol)
+        elif model_n == 'mixed_random_regret':
+            return self.evaluate_mixed_rrm(sol)
+        elif model_n == 'nested_logit':
+            return self.evaluate_nested_logit(sol)
+        elif model_n == 'ordered_logit':
+            return self.evaluate_ordered_logit(sol)
+        elif bool(sol.get('randvars')):
+            return self.evaluate_mxl(sol)
         else:
-        # {
-
             sol = self.repair_solution(sol)
-
-            tuple = self.evaluate_mnl(sol)
-        # }
-        return tuple
+            return self.evaluate_mnl(sol)
     # }
 
     ''' ---------------------------------------------------------- '''

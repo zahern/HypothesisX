@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: SearchLibrium
-Version: 0.0.68
+Version: 0.0.70
 Summary: A wrapper for Searchlogit with extended functionality for ABM models.
 Author-email: Zeke Ahern <z.ahern@qut.edu.au>
 Project-URL: Homepage, https://github.com/zahern/HypothesisX

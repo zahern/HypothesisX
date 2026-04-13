@@ -398,34 +398,35 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     def pitch_adjustment(self, sol, pitch):
     # {
-        # QUERY. IS DEEP COPY REQUIRED?
-        adj = copy.deepcopy(sol)  # Adjusted solution
-
-        # pitch adjustment: add/remove as variables
-        if self.param.generator.rand() <= pitch: adj = self.perturb_asfeature(sol)
-        # pitch adjustment: add|remove is variables
-        if self.param.generator.rand() <= pitch: adj = self.perturb_isfeature(adj)
-        # pitch adjustment: add|remove random variable
-        if self.param.allow_random:
-            if self.param.generator.rand() <= pitch: adj = self.perturb_randfeature(adj)
+        adjusted_solution = copy.deepcopy(sol)
+        perturbations = [self.perturb_asfeature, self.perturb_isfeature, self.perturb_model_t]
 
         if self.param.allow_random:
-            if self.param.generator.rand() <= pitch: adj = self.change_distribution(adj)
-
-        # pitch adjustment: add|remove bc variables
+            perturbations.append(self.perturb_randfeature)
+            if adjusted_solution['randvars']:
+                perturbations.append(self.perturb_distribution)
 
         if self.param.allow_bcvars:
-            if self.param.generator.rand() <= pitch: adj = self.perturb_bcfeature(adj, pitch)
-        # Pitch adjustment: add|remove cor variables
-        if self.param.allow_corvars:
-            if self.param.generator.rand() <= pitch: adj = self.perturb_corfeature(adj)
-        # Pitch adjustment: add|remove class param variables
-        #if self.param.generator.rand() <= pitch: adj = self.perturb_class_paramfeature(adj)
-        # Pitch adjustment: add|remove member param variables
-        #if self.param.generator.rand() <= pitch: adj = self.perturb_member_paramfeature(adj)
+            perturbations.append(self.perturb_bcfeature)
 
-        adj, converged = self.evaluate_solution(adj)
-        return adj, converged
+        if self.param.allow_corvars and adjusted_solution['randvars']:
+            perturbations.append(self.perturb_corfeature)
+
+        perturbation_count = 1 + int(self.param.generator.rand() < max(0.0, min(1.0, pitch)))
+        perturbation_count = min(perturbation_count, len(perturbations))
+        selected_perturbations = self.param.generator.choice(perturbations, size=perturbation_count, replace=False)
+
+        for perturbation in np.atleast_1d(selected_perturbations):
+            adjusted_solution = perturbation(adjusted_solution)
+
+        adjusted_solution['randvars'] = self.normalize_randvars(
+            adjusted_solution['asvars'],
+            adjusted_solution['randvars'],
+        )
+        adjusted_solution = self.align_model_with_solution(adjusted_solution)
+        adjusted_solution = self.repair_solution(adjusted_solution)
+        adjusted_solution, converged = self.evaluate_solution(adjusted_solution)
+        return adjusted_solution, converged
     # }
 
     ''' ---------------------------------------------------------- '''
