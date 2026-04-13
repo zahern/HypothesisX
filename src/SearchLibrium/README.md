@@ -1,0 +1,510 @@
+# SearchLibrium
+
+[![PyPI version](https://img.shields.io/pypi/v/SearchLibrium.svg)](https://pypi.org/project/SearchLibrium/)
+[![Python](https://img.shields.io/pypi/pyversions/SearchLibrium.svg)](https://pypi.org/project/SearchLibrium/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/zahern/HypothesisX/actions/workflows/ci.yml/badge.svg)](https://github.com/zahern/HypothesisX/actions/workflows/ci.yml)
+
+**Automated discrete choice model search powered by Simulated Annealing, Harmony Search, and JAX-accelerated MLE.**
+
+SearchLibrium searches over model specifications — which variables to include, whether parameters should be random, which transformations to apply, and which model class to use — and returns the best converged, all-significant model according to your chosen criterion (BIC, AIC, log-likelihood, MAE, or multi-objective combinations).
+
+---
+
+## Install
+
+```bash
+pip install SearchLibrium --upgrade
+```
+
+**Requirements:** Python ≥ 3.9, numpy, scipy ≥ 1.10, pandas ≥ 2.0, jax ≥ 0.4.1, jaxlib ≥ 0.4.1, scikit-learn ≥ 1.3.1, statsmodels, matplotlib
+
+---
+
+## Quick start
+
+```python
+import numpy as np
+import pandas as pd
+from SearchLibrium import Parameters, call_siman
+
+df = pd.read_csv("https://raw.githubusercontent.com/zahern/HypothesisX/refs/heads/main/data/Swissmetro_final.csv")
+varnames   = ["TIME", "COST", "HEADWAY", "SEATS"]
+choice_set = np.unique(df["alt"]).tolist()
+
+params = Parameters(
+    criterions   = [("bic", -1)],        # minimise BIC
+    df           = df,
+    varnames     = varnames,
+    asvarnames   = varnames,
+    isvarnames   = [],
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    ind_id       = df["ID"].values,
+    base_alt     = "SM",
+    models       = ["multinomial", "mixed_logit"],
+    allow_random = True,
+    p_val        = 0.05,
+)
+
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+A **run dashboard** is printed automatically at the end of every search, showing BIC, log-likelihood, AIC, MAE, variables, model type, and (if multi-objective) the full Pareto archive.
+
+---
+
+## Example notebooks
+
+| Model | Notebook |
+| ----- | -------- |
+| Multinomial Logit — standalone fit + search | [notebooks/mnl_example.ipynb](notebooks/mnl_example.ipynb) |
+| Mixed Logit — standalone fit + search | [notebooks/mixed_logit_example.ipynb](notebooks/mixed_logit_example.ipynb) |
+| Random Regret Minimisation — standalone fit + search | [notebooks/rrm_example.ipynb](notebooks/rrm_example.ipynb) |
+| Mixed Random Regret — standalone fit + search | [notebooks/mixed_rrm_example.ipynb](notebooks/mixed_rrm_example.ipynb) |
+| Nested Logit — standalone fit + search | [notebooks/Data_Nest.ipynb](notebooks/Data_Nest.ipynb) |
+| JAX-Compatible Models Examples | [jax_models_examples.ipynb](jax_models_examples.ipynb) |
+
+---
+
+## How the search works
+
+The search uses **Simulated Annealing (SA)** to explore the space of model specifications:
+
+```text
+generate starting solution
+  └─ for each SA temperature step
+       └─ perturb current specification → guaranteed distinct from current
+            ├─ fit model with JAX-accelerated MLE
+            ├─ run backward elimination (remove insignificant vars, refit)
+            ├─ accept if converged + Metropolis criterion satisfied
+            └─ update best solution
+print dashboard
+```
+
+**Key guarantees:**
+
+- Only **converged** solutions are accepted
+- Every accepted solution has **all variables statistically significant** (p < `p_val`, backward elimination)
+- Each perturbation is guaranteed to produce a **genuinely different specification** — a distribution-only swap (e.g. normal → lognormal) without any structural change does not count
+
+---
+
+## Data format
+
+Your dataframe must be in **long format** — one row per alternative per observation:
+
+| obs_id | alt   | choice | TIME | COST | ... |
+| ------ | ----- | ------ | ---- | ---- | --- |
+| 1      | car   | 1      | 35   | 12   | ... |
+| 1      | train | 0      | 60   | 8    | ... |
+| 1      | bus   | 0      | 55   | 5    | ... |
+| 2      | car   | 0      | 40   | 14   | ... |
+
+---
+
+## Model types
+
+| Model name | Description | JAX MLE |
+| ---------- | ----------- | ------- |
+| `"multinomial"` | Multinomial Logit (MNL) | ✓ |
+| `"mixed_logit"` | Mixed Logit with simulation-based integration | ✓ |
+| `"random_regret"` | Random Regret Minimisation (RRM) | ✓ |
+| `"mixed_random_regret"` | Mixed-RRM with random parameters | ✓ |
+| `"nested_logit"` | Nested Logit (requires `nests=` and `lambdas=` kwargs) | ✓ |
+| `"ordered_logit"` | Ordered Logit | ✓ |
+
+---
+
+## Search examples by model type
+
+### Multinomial Logit
+
+```python
+params = Parameters(
+    criterions = [("bic", -1)],
+    df         = df,
+    varnames   = ["TIME", "COST", "HEADWAY"],
+    asvarnames = ["TIME", "COST", "HEADWAY"],
+    isvarnames = [],
+    choice_set = choice_set,
+    choices    = df["CHOICE"].values,
+    alt_var    = df["alt"].values,
+    choice_id  = df["custom_id"].values,
+    base_alt   = "SM",
+    models     = ["multinomial"],
+    p_val      = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Mixed Logit (random parameters)
+
+```python
+params = Parameters(
+    criterions   = [("bic", -1)],
+    df           = df,
+    varnames     = ["TIME", "COST", "HEADWAY"],
+    asvarnames   = ["TIME", "COST", "HEADWAY"],
+    isvarnames   = [],
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    ind_id       = df["ID"].values,
+    base_alt     = "SM",
+    models       = ["mixed_logit"],
+    allow_random = True,     # enable random parameters
+    allow_bcvars = True,     # enable Box-Cox transformations
+    n_draws      = 500,      # Halton draws for simulation
+    p_val        = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Random Regret Minimisation (RRM)
+
+```python
+params = Parameters(
+    criterions = [("bic", -1)],
+    df         = df,
+    varnames   = ["TIME", "COST", "HEADWAY"],
+    asvarnames = ["TIME", "COST", "HEADWAY"],
+    isvarnames = [],
+    choice_set = choice_set,
+    choices    = df["CHOICE"].values,
+    alt_var    = df["alt"].values,
+    choice_id  = df["custom_id"].values,
+    base_alt   = "SM",
+    models     = ["random_regret"],
+    p_val      = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Mixed Random Regret (regret + heterogeneity)
+
+```python
+params = Parameters(
+    criterions   = [("bic", -1)],
+    df           = df,
+    varnames     = ["TIME", "COST", "HEADWAY"],
+    asvarnames   = ["TIME", "COST", "HEADWAY"],
+    isvarnames   = [],
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    ind_id       = df["ID"].values,
+    base_alt     = "SM",
+    models       = ["mixed_random_regret"],
+    allow_random = True,
+    n_draws      = 500,
+    p_val        = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Nested Logit
+
+```python
+nests   = {"PublicTransport": [0, 1], "Private": [2, 3]}
+lambdas = {"PublicTransport": 0.8, "Private": 1.0}
+
+params = Parameters(
+    criterions = [("bic", -1)],
+    df         = df,
+    varnames   = ["TIME", "COST", "HEADWAY"],
+    asvarnames = ["TIME", "COST", "HEADWAY"],
+    choice_set = choice_set,
+    choices    = df["CHOICE"].values,
+    alt_var    = df["alt"].values,
+    choice_id  = df["custom_id"].values,
+    base_alt   = "SM",
+    models     = ["nested_logit"],
+    nests      = nests,
+    lambdas    = lambdas,
+    p_val      = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Multi-objective search (BIC + MAE)
+
+```python
+params = Parameters(
+    criterions   = [("bic", -1), ("mae", -1)],   # minimise both
+    df           = df,
+    df_test      = df_test,                        # required for MAE
+    varnames     = varnames,
+    asvarnames   = varnames,
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    base_alt     = "SM",
+    models       = ["multinomial", "mixed_logit"],
+    allow_random = True,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+# Returns a Pareto-optimal solution; full archive is printed in the dashboard
+```
+
+---
+
+## Key parameters
+
+| Parameter | Type | Default | Description |
+| --------- | ---- | ------- | ----------- |
+| `criterions` | list of `(name, sign)` | required | Objectives: `"bic"`, `"aic"`, `"loglik"`, `"mae"`. Sign: `-1` = minimise, `+1` = maximise |
+| `models` | list of str | all | Model classes to search over |
+| `allow_random` | bool | `False` | Enable random parameters (required for mixed models) |
+| `allow_bcvars` | bool | `False` | Enable Box-Cox variable transformations |
+| `allow_corvars` | bool | `False` | Enable correlated random parameters |
+| `p_val` | float | `0.05` | Significance threshold — variables with p > p_val are eliminated |
+| `all_sig` | bool | `True` | Enforce all-significant via backward elimination at each evaluation |
+| `n_draws` | int | `1000` | Halton draws for mixed model simulation |
+| `maxiter` | int | `2000` | Maximum MLE iterations per model evaluation |
+
+All models support random parameters for heterogeneity analysis. Use `allow_random=True` and specify `randvars` with distribution codes.
+
+### Latent Class Models
+
+Latent Class Mixed Logit identifies unobserved population segments:
+
+```python
+from SearchLibrium.latent_class import LatentClassMixedLogit
+
+lc_model = LatentClassMixedLogit(n_classes=2, _jax=True)
+# Setup and fit with appropriate data
+```
+
+### Random parameter distributions
+
+| Code | Distribution |
+| ---- | ------------ |
+| `"n"` | Normal |
+| `"ln"` | Log-normal |
+| `"t"` | Triangular |
+| `"tn"` | Truncated normal |
+| `"u"` | Uniform |
+
+### SA control parameters
+
+Pass `ctrl=(tI, tF, max_temp_steps, max_iter)` to `call_siman`:
+
+```python
+best = call_siman(params, ctrl=(500, 0.001, 100, 20), id_num=1)
+```
+
+| Parameter | Description |
+| --------- | ----------- |
+| `tI` | Initial temperature — higher = more exploration early on |
+| `tF` | Final temperature — lower = more exploitation at the end |
+| `max_temp_steps` | Number of cooling steps |
+| `max_iter` | Iterations evaluated at each temperature step |
+
+---
+
+## Standalone model fitting (no search)
+
+```python
+from SearchLibrium import MultinomialLogit, MixedLogit, RandomRegret, MixedRandomRegret
+
+# MNL
+mnl = MultinomialLogit()
+mnl.setup(X, y, varnames=varnames, alts=alts, ids=ids)
+mnl.fit()
+mnl.summarise()
+
+# Mixed Logit
+mxl = MixedLogit()
+mxl.setup(X, y, varnames=varnames, alts=alts, ids=ids, panels=panels,
+          randvars={"TIME": "n", "COST": "ln"}, n_draws=500)
+mxl.fit()
+mxl.summarise()
+
+# RRM
+rrm = RandomRegret(df=df, short=False)
+rrm.fit()
+rrm.report()
+
+# Mixed RRM
+mrrm = MixedRandomRegret(df=df)
+mrrm.fit()
+```
+
+---
+
+## Interpreting the dashboard
+
+After every `call_siman` run a dashboard is printed:
+
+```text
+╔══════════════════════════════════════════════════════╗
+║           SEARCHLIBRIUM — RUN DASHBOARD             ║
+╠══════════════════════════════════════════════════════╣
+║  Model type   : mixed_logit                         ║
+║  Variables    : TIME, COST, HEADWAY                 ║
+║  Random params: TIME~n, COST~ln                     ║
+╠══════════════════════════════════════════════════════╣
+║  Log-likelihood : -312.45                           ║
+║  AIC            :  634.90                           ║
+║  BIC            :  658.22   ◄ best                  ║
+║  MAE            :  0.1843                           ║
+╠══════════════════════════════════════════════════════╣
+║  Evaluations : 247   Converged : 198   Accepted : 43║
+╚══════════════════════════════════════════════════════╝
+```
+
+- **Lower BIC / AIC** = better fit-complexity tradeoff
+- All retained variables are **statistically significant** (p < `p_val`)
+- **Random parameters** indicate heterogeneity in that attribute's taste
+- **RRM** models suit contexts where regret-avoidance drives choice behaviour
+- For multi-objective runs the full Pareto archive is shown with one row per non-dominated solution
+
+---
+
+## Bundled datasets
+
+```python
+import SearchLibrium as sl
+sl.main.preview_dataset()   # prints head of each dataset
+```
+
+| Name | Description |
+| ---- | ----------- |
+| `electricity` | Stated-preference electricity plan choice |
+| `travel_mode` | Mode choice: air / train / bus / car |
+| `swiss_metro` | Swiss Metro SP study (SM / train / car) |
+
+---
+
+## CLI
+
+```bash
+python -m SearchLibrium --info              # print package guide
+python -m SearchLibrium --preview_datasets  # preview bundled datasets
+python -m SearchLibrium --test_search       # run MNL/MXL search on travel_mode
+python -m SearchLibrium --test_search_nest  # run nested logit search
+```
+
+---
+
+## Search algorithms
+
+Both algorithms share a **consistent interface** through `call_search`:
+
+```python
+from SearchLibrium import call_search, estimate_ctrl
+
+# Auto-estimate hyperparameters from problem size (recommended)
+best = call_search(params)                 # SA by default
+best = call_search(params, algorithm='hs')           # Harmony Search
+
+# Manual hyperparameters
+best = call_search(params, ctrl=(1000, 0.001, 100, 20))           # SA
+best = call_search(params, algorithm='hs',
+                   ctrl=(20, 500, 0.9, 0.6, 0.85, 0.3))          # HS
+
+# Inspect auto-estimated ctrl before running
+ctrl = estimate_ctrl(params, algorithm='sa')
+print(ctrl)
+```
+
+### Simulated Annealing (`call_siman` / `algorithm='sa'`)
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `tI` | Initial temperature — higher → more exploration |
+| `tF` | Final temperature — lower → more exploitation |
+| `max_temp_steps` | Number of cooling steps |
+| `max_iter` | Evaluations per cooling step |
+
+```python
+best = call_siman(params, ctrl=(1000, 0.001, 100, 20), id_num=1)
+```
+
+### Harmony Search (`call_harmony` / `algorithm='hs'`)
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `max_mem` | Harmony memory size (population) |
+| `maxiter` | Improvisation iterations |
+| `max_harm` | Max harmony consideration rate |
+| `min_harm` | Min harmony consideration rate |
+| `max_pitch` | Max pitch adjustment rate |
+| `min_pitch` | Min pitch adjustment rate |
+
+```python
+best = call_harmony(params, ctrl=(20, 400, 0.9, 0.6, 0.85, 0.3), id_num=1)
+```
+
+### Auto hyperparameter estimation
+
+If `ctrl` is omitted, the library estimates appropriate defaults from the problem complexity (`n_vars × n_alts × n_models`, doubled for random params):
+
+```python
+from SearchLibrium import estimate_ctrl
+ctrl_sa = estimate_ctrl(params, algorithm='sa')
+ctrl_hs = estimate_ctrl(params, algorithm='hs')
+print('SA ctrl:', ctrl_sa)
+print('HS ctrl:', ctrl_hs)
+```
+
+Complexity buckets:
+
+| Complexity | SA tI | SA steps | SA iter/step | HS mem | HS iters |
+| ---------- | ----- | -------- | ------------ | ------ | -------- |
+| < 50 | 500 | 50 | 10 | 10 | 100 |
+| 50–200 | 1 000 | 100 | 15 | 15 | 300 |
+| 200–600 | 2 000 | 150 | 20 | 20 | 500 |
+| > 600 | 5 000 | 250 | 30 | 25 | 800 |
+
+---
+
+## Publishing a new version to PyPI
+
+Releases are published automatically via GitHub Actions when a version tag is pushed.  Steps:
+
+1. **Bump the version** in `pyproject.toml` (update both `version =` and `current_version =` under `[tool.bumpver]`), or use bumpver:
+
+   ```bash
+   pip install bumpver
+   bumpver update --patch   # 0.0.71 → 0.0.72
+   ```
+
+2. **Commit and tag** (bumpver does this automatically with `commit = true` and `tag = true` in `pyproject.toml`):
+
+   ```bash
+   git push origin main --tags
+   ```
+
+3. The `publish.yml` GitHub Action builds the wheel and publishes to PyPI via **Trusted Publishing (OIDC)** — no API token needed.
+
+**One-time PyPI setup** (only required once):
+
+- Go to <https://pypi.org/manage/project/SearchLibrium/settings/publishing/>
+- Add a Trusted Publisher: owner `zahern`, repo `HypothesisX`, workflow `publish.yml`, environment `pypi`
+
+**Manual trigger** (dry run — build only, no publish):
+
+```text
+GitHub → Actions → "Publish to PyPI" → Run workflow → dry_run: true
+```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+## Citation
+
+If you use SearchLibrium in academic work, please cite the repository:
+
+```text
+Ahern, Z. (2025). SearchLibrium: Automated discrete choice model search. https://github.com/zahern/HypothesisX
+```

@@ -67,9 +67,8 @@ try:
     from .rrm import RandomRegret
     from .mixedrrm import MixedRandomRegret
     from .ordered_logit import OrderedLogit, OrderedLogitLong
-    from .mixed_logit import MixedLogit
-
-    from .search import Search, Parameters
+    from .latent_class import LatentClassMixedLogit
+    from .RandomP import RandomParameters
 
     from . import misc
     from .call_meta import call_harmony, call_siman, call_parsa, call_search, estimate_ctrl
@@ -82,8 +81,8 @@ except ImportError as e:
     from rrm import RandomRegret
     from mixedrrm import MixedRandomRegret
     from ordered_logit import OrderedLogit, OrderedLogitLong
-    from mixed_logit import MixedLogit
-    from search import Search, Parameters
+    from latent_class import LatentClassMixedLogit
+    from RandomP import RandomParameters
     from call_meta import call_siman, call_harmony, call_search, estimate_ctrl
 try:
     from .main import print_ascii_art_logo

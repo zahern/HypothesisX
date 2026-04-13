@@ -39,7 +39,7 @@ with open('version.txt', 'w') as f:
 # Setup configuration
 setuptools.setup(
     name='SearchLibrium',
-    version='0.0.1',
+    version=open("version.txt").read().strip(),
     description='A Python package for econometric models driven by search',
     long_description=long_description,
     long_description_content_type='text/markdown',  # Specify Markdown content

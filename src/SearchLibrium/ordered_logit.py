@@ -146,10 +146,17 @@ class OrderedLogit():
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, **kwargs):
+    def __init__(self, _jax=False, **kwargs):
     # {
         self.descr = "ORL"
         self.delta_transform = kwargs.get('dt',True)
+        self._jax = _jax
+        if self._jax:
+            import jax.numpy as jnp
+            self.np = jnp
+        else:
+            import numpy as np
+            self.np = np
         self.setup(**kwargs)
     # }
 
@@ -321,7 +328,7 @@ class OrderedLogit():
         # Note: [1:]  => Ignore first element
         # Note: |cut[:-1]| = |cut[1:]| = self.J and |low| = |high| = self.N x self.J
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        cut = np.concatenate(([-np.inf], thresholds, [np.inf]))
+        cut = self.np.concatenate(([-self.np.inf], thresholds, [self.np.inf]))
         y_latent = self.y_latent[:, None]  # Add a second dimension => |y_latent| = (self.N, 1)
         low = cut[:-1] - y_latent  # Compute: cut[j] - y_latent[n] for j in range(0, self.J - 1)
         high = cut[1:] - y_latent  # Compute: cut[j + 1] - y_latent[n] for j in range(1, self.J - 1)
@@ -361,9 +368,9 @@ class OrderedLogit():
     def get_loglike_obs(self, params: np.ndarray)->np.ndarray:
     # {
         p = self.compute_probability(self.X, params) # |p| = N x J
-        p = np.clip(p, minval, 1.0)  # Elements: Force value to range (0, 1]
-        like = np.array([p[n][self.y[n]] for n in range(self.N)])
-        return np.log(like)
+        p = self.np.clip(p, minval, 1.0)  # Elements: Force value to range (0, 1]
+        like = self.np.array([p[n][self.y[n]] for n in range(self.N)])
+        return self.np.log(like)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -371,7 +378,7 @@ class OrderedLogit():
     ''' ---------------------------------------------------------- '''
     def get_loglike(self, params: np.ndarray)->float:
         loglike_obs = self.get_loglike_obs(params)  # Log-likelihood for each observation
-        loglik = np.sum(loglike_obs)
+        loglik = self.np.sum(loglike_obs)
         return loglik
 
     ''' ---------------------------------------------------------- '''
@@ -384,12 +391,12 @@ class OrderedLogit():
         self.nparams = self.K + self.J
         self.names = names
         self.define_labels()
-        self.params = np.zeros(self.nparams)
-        self.stderr = np.zeros(self.nparams)
-        self.signif_lb = np.zeros(self.nparams)
-        self.signif_ub = np.zeros(self.nparams)
-        self.pvalues = np.zeros(self.nparams)
-        self.zvalues = np.zeros(self.nparams)
+        self.params = self.np.zeros(self.nparams)
+        self.stderr = self.np.zeros(self.nparams)
+        self.signif_lb = self.np.zeros(self.nparams)
+        self.signif_ub = self.np.zeros(self.nparams)
+        self.pvalues = self.np.zeros(self.nparams)
+        self.zvalues = self.np.zeros(self.nparams)
     # }
 
 
@@ -457,9 +464,9 @@ class OrderedLogit():
     def get_hessian(self, eps=1e-6):
     # {
         N = self.nparams  # Cardinality of hessian matrix
-        hessian = np.zeros((N, N))  # Initialise hessian matrix
+        hessian = self.np.zeros((N, N))  # Initialise hessian matrix
         delta = [eps] * N
-        params = np.copy(self.params)
+        params = self.np.copy(self.params)
         df_0 = self.compute_gradient_central(params, delta)
         for i in range(N):  # i.e., for i = 0, 1, ..., N-1
         # {
@@ -475,11 +482,11 @@ class OrderedLogit():
     ''' ---------------------------------------------------------- '''
     def get_hessian_2(self, eps=1e-6):
         N = self.nparams  # Cardinality of hessian matrix
-        hessian = np.zeros((N, N))  # Initialise hessian matrix
+        hessian = self.np.zeros((N, N))  # Initialise hessian matrix
 
         for i in range(N):
             for j in range(i, N):
-                params = np.copy(self.params)  # Create a copy of the parameters
+                params = self.np.copy(self.params)  # Create a copy of the parameters
                 # Perturb the parameters in all four combinations
                 params[i] += eps
                 params[j] += eps
@@ -544,9 +551,9 @@ class OrderedLogit():
     def compute_stderr(self, tol):
     # {
         hessian = self.get_hessian(tol)
-        inverse = np.linalg.pinv(hessian) # Conventional approach
-        diag = np.diagonal(inverse)
-        diag_copy = np.copy(diag)
+        inverse = self.np.linalg.pinv(hessian) # Conventional approach
+        diag = self.np.diagonal(inverse)
+        diag_copy = self.np.copy(diag)
         diag_copy[diag_copy < minval] = minval
 
         # DEBUG:
@@ -555,7 +562,7 @@ class OrderedLogit():
         #        diag_copy[i] = 0
 
         # Standard errors are the square root of the diagonal elements of the variance-covariance matrix
-        self.stderr = np.sqrt(diag_copy)
+        self.stderr = self.np.sqrt(diag_copy)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -584,9 +591,9 @@ class OrderedLogit():
             if self.stderr[i] > minval:
                 self.zvalues[i] = self.params[i] / self.stderr[i]
             else:
-                self.zvalues[i] = np.nan
+                self.zvalues[i] = self.np.nan
         # }
-        self.zvalues = np.clip(self.zvalues, -np.inf, np.inf)  # Set limits
+        self.zvalues = self.np.clip(self.zvalues, -self.np.inf, self.np.inf)  # Set limits
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -669,7 +676,7 @@ class OrderedLogit():
 
         thr = self.get_thresholds(self.params)
         beta = self.get_beta(self.params)
-        params = np.concatenate((beta, thr))
+        params = self.np.concatenate((beta, thr))
 
         for i in range(lb, self.nparams):
         # {
@@ -696,10 +703,10 @@ class OrderedLogit():
             value = [1] * (self.J - 2) # These are the deltas
             set_last_elements(start, self.J - 2, value)
 
-        delta = np.ones(self.nparams) * tol
-        bounds_beta = [(-np.inf, np.inf)] * (self.K + 1+int(self.fit_intercept))  # K+1 betas + 1 threshold. [-inf, inf]
-        bounds_delta = [(minval, np.inf)] * (self.J - 2)  # These are deltas. [0, inf]
-        bounds = np.concatenate((bounds_beta, bounds_delta))
+        delta = self.np.ones(self.nparams) * tol
+        bounds_beta = [(-self.np.inf, self.np.inf)] * (self.K + 1+int(self.fit_intercept))  # K+1 betas + 1 threshold. [-inf, inf]
+        bounds_delta = [(minval, self.np.inf)] * (self.J - 2)  # These are deltas. [0, inf]
+        bounds = self.np.concatenate((bounds_beta, bounds_delta))
         args = (delta,)  # Make sure this is a tuple by adding a comma
         optimize_result = minimize(fun=self.get_loglike_gradient, x0=start, args=args,
             method='L-BFGS-B', tol=tol, jac=True, options=options, bounds=bounds)
@@ -756,17 +763,17 @@ class OrderedLogitLong(OrderedLogit):
             self.varnames = varnames
         else:
             raise Exception('must pass in varnames')
-        self.X = np.asarray(kwargs.get('X')) # Ensure X is 2D
+        self.X = self.np.asarray(kwargs.get('X')) # Ensure X is 2D
         #i want X to be panels
 
-        self.y = np.asarray(kwargs.get('y'))
+        self.y = self.np.asarray(kwargs.get('y'))
 
-        self.ids = np.asarray(kwargs.get('ids'))
-        self.obs = np.unique(self.ids)
+        self.ids = self.np.asarray(kwargs.get('ids'))
+        self.obs = self.np.unique(self.ids)
 
         # Dimensions
         self.N_obs = self.X.shape[0]  # Total number of observations
-        self.N = len(np.unique(self.ids))  # Number of unique panels
+        self.N = len(self.np.unique(self.ids))  # Number of unique panels
         self.K = self.X.shape[1]  # Number of predictors (1 for long format)
         self.J = kwargs.get('J')  # Number of ordinal categories
         try:
@@ -786,7 +793,7 @@ class OrderedLogitLong(OrderedLogit):
 
         self.params = kwargs.get('start')
         if self.params is None:
-            self.params = np.zeros(self.nparams, dtype=float)
+            self.params = self.np.zeros(self.nparams, dtype=float)
 
 
         # Normalization
@@ -856,9 +863,9 @@ class OrderedLogitLong(OrderedLogit):
         #get the last J - 1
         delta = params[-(self.J-1):]
         if self.delta_transform:
-            delta[1:] = np.clip(delta[1:], a_min=0, a_max=None)
+            delta[1:] = self.np.clip(delta[1:], a_min=0, a_max=None)
             #delta[0] = delta[0]-1
-        return np.cumsum(delta)
+        return self.np.cumsum(delta)
         #return OrderedLogit.get_thresholds(self,params)
         #return np.cumsum(params[self.K:])
 
@@ -949,10 +956,10 @@ class OrderedLogitLong(OrderedLogit):
                 value = [0.2] * (self.J - 2)  # These are the deltas
                 set_last_elements(start, self.J - 2, value)
 
-            delta = np.ones(self.nparams) * tol
-            bounds_beta = [(-np.inf, np.inf)] * (self.K)  # K+1 betas + 1 threshold. [-inf, inf]
-            bounds_delta = [(minval, np.inf)] * (self.J - 1)  # These are deltas. [0, inf]
-            bounds = np.concatenate((bounds_beta, bounds_delta))
+            delta = self.np.ones(self.nparams) * tol
+            bounds_beta = [(-self.np.inf, self.np.inf)] * (self.K)  # K+1 betas + 1 threshold. [-inf, inf]
+            bounds_delta = [(minval, self.np.inf)] * (self.J - 1)  # These are deltas. [0, inf]
+            bounds = self.np.concatenate((bounds_beta, bounds_delta))
             args = (delta,)  # Make sure this is a tuple by adding a comma
             result = minimize(fun=self.get_loglike_gradient, x0=start, args=args,
                                        method='L-BFGS-B', jac = True, tol=tol, bounds=bounds)
@@ -1070,7 +1077,7 @@ class MixedOrderedLogit(OrderedLogitLong, MixedLogit):
             n_vars (int): Number of variables.
         """
         if n_vars == 0:
-            return np.ndarray((1,0,1))
+            return self.np.ndarray((1,0,1))
         draws_s = Draws(k=n_vars, halton_opts=None)
         draws = draws_s.generate_draws(sample_size, n_draws, n_vars)
         return draws
