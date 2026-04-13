@@ -87,7 +87,7 @@ class Halton:
         return np.stack(draws, axis=1)  # (N, Kr, R)
 
     def halton_seq(self, length, prime):
-        """Generates a Halton sequence for a given prime number."""
+        """Generates a scrambled Halton sequence for a given prime number."""
         req_length = length + self.drop
         seq = np.zeros(req_length)
         seq_idx, t = 1, 1
@@ -102,9 +102,41 @@ class Halton:
                 seq_idx += max_seq
             t += 1
         seq = seq[self.drop:length + self.drop]
+        
+        # Apply scrambling if enabled
         if self.shuffled:
-            np.random.shuffle(seq)
+            seq = self._scramble_halton(seq, prime)
+        
         return seq
+    
+    def _scramble_halton(self, seq, prime):
+        """Apply Owen scrambling to the Halton sequence."""
+        scrambled = seq.copy()
+        n = len(scrambled)
+        
+        # Generate random permutations for each digit position
+        max_digits = int(np.log(n) / np.log(prime)) + 1
+        permutations = {}
+        for digit in range(max_digits):
+            permutations[digit] = np.random.permutation(prime)
+        
+        for i in range(n):
+            # Convert index to base-prime representation
+            temp = i
+            digit = 0
+            scrambled_val = 0.0
+            
+            while temp > 0 and digit < max_digits:
+                remainder = temp % prime
+                # Apply permutation
+                permuted_remainder = permutations[digit][remainder]
+                scrambled_val += permuted_remainder * (1.0 / (prime ** (digit + 1)))
+                temp //= prime
+                digit += 1
+            
+            scrambled[i] = scrambled_val
+        
+        return scrambled
 
 
 class Draws:

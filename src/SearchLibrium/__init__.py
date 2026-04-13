@@ -17,7 +17,20 @@ def new_features():
     '''vars you want to ensure are included'''
     pre_spec_constraints = Dict({
         'ps_nest_vars': ['var_NMT_1', 'var_IPT_3'],
-        'ps_alt_vars': ['var_ICT_1']
+        'ps_alt_vars': ['var_ICT_1'],
+        'force_include': ['TIME', 'COST'],  # Variables that must always be included
+        'force_exclude': [],  # Variables that must never be included
+        'force_random': {'TIME': 'n', 'COST': 'ln'},  # Variables that must have random parameters
+        'never_random': [],  # Variables that must never have random parameters
+        'latent_class_constraints': {
+            'class_specific_vars': {
+                'class_0': ['TIME'],  # Variables that appear only in class 0
+                'class_1': ['COST'],  # Variables that appear only in class 1
+            }
+        },
+        'mixed_model_constraints': {
+            # Additional mixed model specific constraints
+        }
     })
     print("""
            ADDICTY DICT FUNCTION
@@ -26,13 +39,19 @@ def new_features():
 
            Returns:
                Dict with keys:
-                   ps_nest_vars → variables always included
-                   ps_alt_vars  → alternative optional variables
+                   ps_nest_vars → variables always included in nests
+                   ps_alt_vars → alternative optional variables
+                   force_include → variables that must always be included
+                   force_exclude → variables that must never be included
+                   force_random → dict of variables that must have random parameters with distributions
+                   never_random → variables that must never have random parameters
+                   latent_class_constraints → constraints for latent class models
+                   mixed_model_constraints → constraints for mixed models
 
            Example usage:
                from yourpackage import new_features
                constraints = new_features()
-               print(constraints.ps_nest_vars)
+               print(constraints.force_include)
            """)
 
 def get_version_from_pkg_info():

@@ -1507,13 +1507,66 @@ class Search():
 
     def apply_constraints(self, solution) -> Solution:
         '''edits solution to enforce constraints'''
+        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+            return solution
+            
         state = solution['state']
-        nest = state.ps_nest_vars
-        alt_var = state.ps_alt_vars
-        solution['asvars'] = list(set(alt_var+ solution['asvars']+nest))
-        '''-->'''
-        #solution['isvars'] = set(list(nest+solution['asvars']))
+        constraints = self.pres_spec_constr
+        
+        # Basic constraints (existing)
+        if 'ps_nest_vars' in constraints:
+            nest = constraints['ps_nest_vars']
+            solution['asvars'] = list(set(nest + solution['asvars']))
+        
+        if 'ps_alt_vars' in constraints:
+            alt_var = constraints['ps_alt_vars']
+            solution['asvars'] = list(set(alt_var + solution['asvars']))
+        
+        # Advanced constraints for latent class and mixed models
+        if 'latent_class_constraints' in constraints:
+            lc_constraints = constraints['latent_class_constraints']
+            self._apply_latent_class_constraints(solution, lc_constraints)
+        
+        if 'mixed_model_constraints' in constraints:
+            mm_constraints = constraints['mixed_model_constraints']
+            self._apply_mixed_model_constraints(solution, mm_constraints)
+        
+        if 'force_include' in constraints:
+            force_vars = constraints['force_include']
+            solution['asvars'] = list(set(force_vars + solution['asvars']))
+        
+        if 'force_exclude' in constraints:
+            exclude_vars = constraints['force_exclude']
+            solution['asvars'] = [v for v in solution['asvars'] if v not in exclude_vars]
+            solution['isvars'] = [v for v in solution['isvars'] if v not in exclude_vars]
+        
+        if 'force_random' in constraints:
+            rand_vars = constraints['force_random']
+            if 'randvars' not in solution:
+                solution['randvars'] = {}
+            for var, dist in rand_vars.items():
+                solution['randvars'][var] = dist
+        
+        if 'never_random' in constraints:
+            never_rand = constraints['never_random']
+            if 'randvars' in solution:
+                solution['randvars'] = {k: v for k, v in solution['randvars'].items() if k not in never_rand}
+        
         return solution
+    
+    def _apply_latent_class_constraints(self, solution, lc_constraints):
+        """Apply constraints specific to latent class models."""
+        # Example: force variables to appear only in certain classes
+        if 'class_specific_vars' in lc_constraints:
+            # This would require more complex logic depending on latent class implementation
+            # For now, just ensure variables are included
+            for class_vars in lc_constraints['class_specific_vars'].values():
+                solution['asvars'] = list(set(class_vars + solution['asvars']))
+    
+    def _apply_mixed_model_constraints(self, solution, mm_constraints):
+        """Apply constraints specific to mixed models."""
+        # Example constraints already handled above (force_random, never_random)
+        pass
 
     def repair_solution(self, solution, min_length=1):
         """
