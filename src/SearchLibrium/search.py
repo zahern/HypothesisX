@@ -2933,18 +2933,18 @@ class Search():
         lambdas = tuple(self.param.lambdas) if self.param.lambdas else ()
 
         # randvars: sorted dict items so order doesn’t matter
-        randvars_tuple = tuple(sorted(sol.get(‘randvars’, {}).items()))
+        randvars_tuple = tuple(sorted(sol.get('randvars', {}).items()))
 
         sig_dict = {
-            "as_vars":   sorted(sol.get(‘asvars’,  [])),
-            "is_vars":   sorted(sol.get(‘isvars’,  [])),
-            "bc_vars":   sorted(sol.get(‘bcvars’,  [])),
-            "cor_vars":  sorted(sol.get(‘corvars’, [])),
+            "as_vars":   sorted(sol.get('asvars',  [])),
+            "is_vars":   sorted(sol.get('isvars',  [])),
+            "bc_vars":   sorted(sol.get('bcvars',  [])),
+            "cor_vars":  sorted(sol.get('corvars', [])),
             "randvars":  list(randvars_tuple),
-            "model_n":   sol.get(‘model_n’, ‘’),
-            "bctrans":   bool(sol.get(‘bctrans’, False)),
-            "cor":       bool(sol.get(‘cor’,     False)),
-            "asc_ind":   bool(sol.get(‘asc_ind’, False)),
+            "model_n":   sol.get('model_n', ''),
+            "bctrans":   bool(sol.get('bctrans', False)),
+            "cor":       bool(sol.get('cor',     False)),
+            "asc_ind":   bool(sol.get('asc_ind', False)),
             "nests":     list(nests),
             "lambdas":   list(lambdas),
         }
