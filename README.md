@@ -1,244 +1,388 @@
 # SearchLibrium
-## Econometric Models driven by Search and built on SearchLogit and MetaCountRegresssor
 
-This repository contains the SearchLibrium package, which is a Python library designed for econometric models driven by search. It builds upon the foundations of SearchLogit and MetaCountRegressor, providing a robust framework for estimating data count models.
+**Automated discrete choice model search powered by Simulated Annealing and JAX-accelerated MLE.**
 
+SearchLibrium searches over model specifications — which variables to include, whether parameters should be random, which transformations to apply, and which model class to use — and returns the best converged, all-significant model according to your chosen criterion (BIC, AIC, log-likelihood, MAE, or multi-objective combinations).
 
-```python
-!pip install SearchLibrium --upgrade
+---
 
+## Install
+
+```bash
+pip install SearchLibrium --upgrade
 ```
 
-    Looking in indexes: https://pypi.org/simple, https://pypi.ngc.nvidia.com
-    Requirement already satisfied: SearchLibrium in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (0.0.27)
-    Collecting SearchLibrium
-      Downloading searchlibrium-0.0.28-py3-none-any.whl.metadata (1.3 kB)
-    Requirement already satisfied: numpy>2.0.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from SearchLibrium) (2.2.6)
-    Requirement already satisfied: pandas>=2.0.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from SearchLibrium) (2.3.1)
-    Requirement already satisfied: scikit-learn>=1.3.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from SearchLibrium) (1.7.1)
-    Requirement already satisfied: statsmodels in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from SearchLibrium) (0.14.5)
-    Requirement already satisfied: pyfiglet in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from SearchLibrium) (1.0.3)
-    Requirement already satisfied: addicty in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from SearchLibrium) (2023.9.3)
-    Requirement already satisfied: matplotlib in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from SearchLibrium) (3.10.5)
-    Requirement already satisfied: python-dateutil>=2.8.2 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from pandas>=2.0.0->SearchLibrium) (2.9.0.post0)
-    Requirement already satisfied: pytz>=2020.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from pandas>=2.0.0->SearchLibrium) (2025.2)
-    Requirement already satisfied: tzdata>=2022.7 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from pandas>=2.0.0->SearchLibrium) (2025.2)
-    Requirement already satisfied: six>=1.5 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from python-dateutil>=2.8.2->pandas>=2.0.0->SearchLibrium) (1.17.0)
-    Requirement already satisfied: scipy>=1.8.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from scikit-learn>=1.3.1->SearchLibrium) (1.15.3)
-    Requirement already satisfied: joblib>=1.2.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from scikit-learn>=1.3.1->SearchLibrium) (1.5.1)
-    Requirement already satisfied: threadpoolctl>=3.1.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from scikit-learn>=1.3.1->SearchLibrium) (3.6.0)
-    Requirement already satisfied: pyyaml in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from addicty->SearchLibrium) (6.0.2)
-    Requirement already satisfied: yamllint in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from addicty->SearchLibrium) (1.37.1)
-    Requirement already satisfied: contourpy>=1.0.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib->SearchLibrium) (1.3.2)
-    Requirement already satisfied: cycler>=0.10 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib->SearchLibrium) (0.12.1)
-    Requirement already satisfied: fonttools>=4.22.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib->SearchLibrium) (4.59.1)
-    Requirement already satisfied: kiwisolver>=1.3.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib->SearchLibrium) (1.4.9)
-    Requirement already satisfied: packaging>=20.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib->SearchLibrium) (25.0)
-    Requirement already satisfied: pillow>=8 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib->SearchLibrium) (11.3.0)
-    Requirement already satisfied: pyparsing>=2.3.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib->SearchLibrium) (3.2.3)
-    Requirement already satisfied: patsy>=0.5.6 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from statsmodels->SearchLibrium) (1.0.1)
-    Requirement already satisfied: pathspec>=0.5.3 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from yamllint->addicty->SearchLibrium) (0.12.1)
-    Downloading searchlibrium-0.0.28-py3-none-any.whl (146 kB)
-    Installing collected packages: SearchLibrium
-      Attempting uninstall: SearchLibrium
-        Found existing installation: SearchLibrium 0.0.27
-        Uninstalling SearchLibrium-0.0.27:
-          Successfully uninstalled SearchLibrium-0.0.27
-    Successfully installed SearchLibrium-0.0.28
-    
+**Requirements:** Python ≥ 3.9, numpy, scipy ≥ 1.10, pandas ≥ 2.0, jax ≥ 0.4.1, jaxlib ≥ 0.4.1, scikit-learn ≥ 1.3.1, statsmodels, matplotlib
 
+---
+
+## Quick start
 
 ```python
+import numpy as np
+import pandas as pd
+from SearchLibrium import Parameters, call_siman
 
+df = pd.read_csv("https://raw.githubusercontent.com/zahern/HypothesisX/refs/heads/main/data/Swissmetro_final.csv")
+varnames   = ["TIME", "COST", "HEADWAY", "SEATS"]
+choice_set = np.unique(df["alt"]).tolist()
 
+params = Parameters(
+    criterions   = [("bic", -1)],        # minimise BIC
+    df           = df,
+    varnames     = varnames,
+    asvarnames   = varnames,
+    isvarnames   = [],
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    ind_id       = df["ID"].values,
+    base_alt     = "SM",
+    models       = ["multinomial", "mixed_logit"],
+    allow_random = True,
+    p_val        = 0.05,
+)
 
+best = call_siman(params, init_sol=None, id_num=1)
+```
 
+A **run dashboard** is printed automatically at the end of every search, showing BIC, log-likelihood, AIC, MAE, variables, model type, and (if multi-objective) the full Pareto archive.
+
+---
+
+## Example notebooks
+
+| Model | Notebook |
+| ----- | -------- |
+| Multinomial Logit — standalone fit + search | [notebooks/mnl_example.ipynb](notebooks/mnl_example.ipynb) |
+| Mixed Logit — standalone fit + search | [notebooks/mixed_logit_example.ipynb](notebooks/mixed_logit_example.ipynb) |
+| Random Regret Minimisation — standalone fit + search | [notebooks/rrm_example.ipynb](notebooks/rrm_example.ipynb) |
+| Mixed Random Regret — standalone fit + search | [notebooks/mixed_rrm_example.ipynb](notebooks/mixed_rrm_example.ipynb) |
+| Nested Logit — standalone fit + search | [notebooks/Data_Nest.ipynb](notebooks/Data_Nest.ipynb) |
+
+---
+
+## How the search works
+
+The search uses **Simulated Annealing (SA)** to explore the space of model specifications:
+
+```text
+generate starting solution
+  └─ for each SA temperature step
+       └─ perturb current specification → guaranteed distinct from current
+            ├─ fit model with JAX-accelerated MLE
+            ├─ run backward elimination (remove insignificant vars, refit)
+            ├─ accept if converged + Metropolis criterion satisfied
+            └─ update best solution
+print dashboard
+```
+
+**Key guarantees:**
+
+- Only **converged** solutions are accepted
+- Every accepted solution has **all variables statistically significant** (p < `p_val`, backward elimination)
+- Each perturbation is guaranteed to produce a **genuinely different specification** — a distribution-only swap (e.g. normal → lognormal) without any structural change does not count
+
+---
+
+## Data format
+
+Your dataframe must be in **long format** — one row per alternative per observation:
+
+| obs_id | alt   | choice | TIME | COST | ... |
+| ------ | ----- | ------ | ---- | ---- | --- |
+| 1      | car   | 1      | 35   | 12   | ... |
+| 1      | train | 0      | 60   | 8    | ... |
+| 1      | bus   | 0      | 55   | 5    | ... |
+| 2      | car   | 0      | 40   | 14   | ... |
+
+---
+
+## Model types
+
+| Model name | Description | JAX MLE |
+| ---------- | ----------- | ------- |
+| `"multinomial"` | Multinomial Logit (MNL) | ✓ |
+| `"mixed_logit"` | Mixed Logit with simulation-based integration | ✓ |
+| `"random_regret"` | Random Regret Minimisation (RRM) | ✓ |
+| `"mixed_random_regret"` | Mixed-RRM with random parameters | ✓ |
+| `"nested_logit"` | Nested Logit (requires `nests=` and `lambdas=` kwargs) | – |
+| `"ordered_logit"` | Ordered Logit | – |
+
+---
+
+## Search examples by model type
+
+### Multinomial Logit
+
+```python
+params = Parameters(
+    criterions = [("bic", -1)],
+    df         = df,
+    varnames   = ["TIME", "COST", "HEADWAY"],
+    asvarnames = ["TIME", "COST", "HEADWAY"],
+    isvarnames = [],
+    choice_set = choice_set,
+    choices    = df["CHOICE"].values,
+    alt_var    = df["alt"].values,
+    choice_id  = df["custom_id"].values,
+    base_alt   = "SM",
+    models     = ["multinomial"],
+    p_val      = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Mixed Logit (random parameters)
+
+```python
+params = Parameters(
+    criterions   = [("bic", -1)],
+    df           = df,
+    varnames     = ["TIME", "COST", "HEADWAY"],
+    asvarnames   = ["TIME", "COST", "HEADWAY"],
+    isvarnames   = [],
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    ind_id       = df["ID"].values,
+    base_alt     = "SM",
+    models       = ["mixed_logit"],
+    allow_random = True,     # enable random parameters
+    allow_bcvars = True,     # enable Box-Cox transformations
+    n_draws      = 500,      # Halton draws for simulation
+    p_val        = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Random Regret Minimisation (RRM)
+
+```python
+params = Parameters(
+    criterions = [("bic", -1)],
+    df         = df,
+    varnames   = ["TIME", "COST", "HEADWAY"],
+    asvarnames = ["TIME", "COST", "HEADWAY"],
+    isvarnames = [],
+    choice_set = choice_set,
+    choices    = df["CHOICE"].values,
+    alt_var    = df["alt"].values,
+    choice_id  = df["custom_id"].values,
+    base_alt   = "SM",
+    models     = ["random_regret"],
+    p_val      = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Mixed Random Regret (regret + heterogeneity)
+
+```python
+params = Parameters(
+    criterions   = [("bic", -1)],
+    df           = df,
+    varnames     = ["TIME", "COST", "HEADWAY"],
+    asvarnames   = ["TIME", "COST", "HEADWAY"],
+    isvarnames   = [],
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    ind_id       = df["ID"].values,
+    base_alt     = "SM",
+    models       = ["mixed_random_regret"],
+    allow_random = True,
+    n_draws      = 500,
+    p_val        = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Nested Logit
+
+```python
+nests   = {"PublicTransport": [0, 1], "Private": [2, 3]}
+lambdas = {"PublicTransport": 0.8, "Private": 1.0}
+
+params = Parameters(
+    criterions = [("bic", -1)],
+    df         = df,
+    varnames   = ["TIME", "COST", "HEADWAY"],
+    asvarnames = ["TIME", "COST", "HEADWAY"],
+    choice_set = choice_set,
+    choices    = df["CHOICE"].values,
+    alt_var    = df["alt"].values,
+    choice_id  = df["custom_id"].values,
+    base_alt   = "SM",
+    models     = ["nested_logit"],
+    nests      = nests,
+    lambdas    = lambdas,
+    p_val      = 0.05,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+```
+
+### Multi-objective search (BIC + MAE)
+
+```python
+params = Parameters(
+    criterions   = [("bic", -1), ("mae", -1)],   # minimise both
+    df           = df,
+    df_test      = df_test,                        # required for MAE
+    varnames     = varnames,
+    asvarnames   = varnames,
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    base_alt     = "SM",
+    models       = ["multinomial", "mixed_logit"],
+    allow_random = True,
+)
+best = call_siman(params, init_sol=None, id_num=1)
+# Returns a Pareto-optimal solution; full archive is printed in the dashboard
+```
+
+---
+
+## Key parameters
+
+| Parameter | Type | Default | Description |
+| --------- | ---- | ------- | ----------- |
+| `criterions` | list of `(name, sign)` | required | Objectives: `"bic"`, `"aic"`, `"loglik"`, `"mae"`. Sign: `-1` = minimise, `+1` = maximise |
+| `models` | list of str | all | Model classes to search over |
+| `allow_random` | bool | `False` | Enable random parameters (required for mixed models) |
+| `allow_bcvars` | bool | `False` | Enable Box-Cox variable transformations |
+| `allow_corvars` | bool | `False` | Enable correlated random parameters |
+| `p_val` | float | `0.05` | Significance threshold — variables with p > p_val are eliminated |
+| `all_sig` | bool | `True` | Enforce all-significant via backward elimination at each evaluation |
+| `n_draws` | int | `1000` | Halton draws for mixed model simulation |
+| `maxiter` | int | `2000` | Maximum MLE iterations per model evaluation |
+
+### Random parameter distributions
+
+| Code | Distribution |
+| ---- | ------------ |
+| `"n"` | Normal |
+| `"ln"` | Log-normal |
+| `"t"` | Triangular |
+| `"tn"` | Truncated normal |
+| `"u"` | Uniform |
+
+### SA control parameters
+
+Pass `ctrl=(tI, tF, max_temp_steps, max_iter)` to `call_siman`:
+
+```python
+best = call_siman(params, ctrl=(500, 0.001, 100, 20), id_num=1)
+```
+
+| Parameter | Description |
+| --------- | ----------- |
+| `tI` | Initial temperature — higher = more exploration early on |
+| `tF` | Final temperature — lower = more exploitation at the end |
+| `max_temp_steps` | Number of cooling steps |
+| `max_iter` | Iterations evaluated at each temperature step |
+
+---
+
+## Standalone model fitting (no search)
+
+```python
+from SearchLibrium import MultinomialLogit, MixedLogit, RandomRegret, MixedRandomRegret
+
+# MNL
+mnl = MultinomialLogit()
+mnl.setup(X, y, varnames=varnames, alts=alts, ids=ids)
+mnl.fit()
+mnl.summarise()
+
+# Mixed Logit
+mxl = MixedLogit()
+mxl.setup(X, y, varnames=varnames, alts=alts, ids=ids, panels=panels,
+          randvars={"TIME": "n", "COST": "ln"}, n_draws=500)
+mxl.fit()
+mxl.summarise()
+
+# RRM
+rrm = RandomRegret(df=df, short=False)
+rrm.fit()
+rrm.report()
+
+# Mixed RRM
+mrrm = MixedRandomRegret(df=df)
+mrrm.fit()
+```
+
+---
+
+## Interpreting the dashboard
+
+After every `call_siman` run a dashboard is printed:
+
+```text
+╔══════════════════════════════════════════════════════╗
+║           SEARCHLIBRIUM — RUN DASHBOARD              ║
+╠══════════════════════════════════════════════════════╣
+║  Model type   : mixed_logit                          ║
+║  Variables    : TIME, COST, HEADWAY                  ║
+║  Random params: TIME~n, COST~ln                      ║
+╠══════════════════════════════════════════════════════╣
+║  Log-likelihood : -312.45                            ║
+║  AIC            :  634.90                            ║
+║  BIC            :  658.22   ◄ best                   ║
+║  MAE            :  0.1843                            ║
+╠══════════════════════════════════════════════════════╣
+║  Evaluations : 247   Converged : 198   Accepted : 43 ║
+╚══════════════════════════════════════════════════════╝
+```
+
+- **Lower BIC / AIC** = better fit-complexity tradeoff
+- All retained variables are **statistically significant** (p < `p_val`)
+- **Random parameters** indicate heterogeneity in that attribute's taste
+- **RRM** models suit contexts where regret-avoidance drives choice behaviour
+- For multi-objective runs the full Pareto archive is shown with one row per non-dominated solution
+
+---
+
+## Bundled datasets
+
+```python
 import SearchLibrium as sl
-
+sl.main.preview_dataset()   # prints head of each dataset
 ```
 
-    Looking in indexes: https://pypi.org/simple, https://pypi.ngc.nvidia.com
-    Requirement already satisfied: matplotlib in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (3.10.5)
-    Requirement already satisfied: contourpy>=1.0.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (1.3.2)
-    Requirement already satisfied: cycler>=0.10 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (0.12.1)
-    Requirement already satisfied: fonttools>=4.22.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (4.59.1)
-    Requirement already satisfied: kiwisolver>=1.3.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (1.4.9)
-    Requirement already satisfied: numpy>=1.23 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (2.2.6)
-    Requirement already satisfied: packaging>=20.0 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (25.0)
-    Requirement already satisfied: pillow>=8 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (11.3.0)
-    Requirement already satisfied: pyparsing>=2.3.1 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (3.2.3)
-    Requirement already satisfied: python-dateutil>=2.7 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from matplotlib) (2.9.0.post0)
-    Requirement already satisfied: six>=1.5 in c:\users\ahernz\source\searchlibrium\.venv\lib\site-packages (from python-dateutil>=2.7->matplotlib) (1.17.0)
-    
+| Name | Description |
+| ---- | ----------- |
+| `electricity` | Stated-preference electricity plan choice |
+| `travel_mode` | Mode choice: air / train / bus / car |
+| `swiss_metro` | Swiss Metro SP study (SM / train / car) |
 
-    ERROR: Invalid requirement: '#todo': Expected package name at the start of dependency specifier
-        #todo
-        ^
-    
+---
 
-    Current version: unknown
-    
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .. .. 
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. ..
-                  .............................................................................
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .. .. 
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. ..
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .*@:. .. .. .. ..  .  .  .. .. 
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .:@@@@@@ .. .. .. ..  .  .  .. .. 
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. .@@@@  .+@@  .. .. .. .. .. .. .. ..
-                  .. .. .. .. .. .. .. ..  .  .  .  .. *@@@@@=. .. .@@=. .. .. ..  .  .  .. .. 
-                  ...................................@@@@@@%........@@@........................
-                   .. ..  .  .  .. .. .. .. .. .. ..@@@%@@...  .  . *@@ .. .. .. .. .. .. .. ..
-                  .. .. .. .. .. .. .. ..  .  .  ..@@%-@@... .. .. .+@@. .. .. ..  .  .  .. .. 
-                   .. ..  .  .  .. .. .. .. .. .. @@@.@@.. ..  .  . @%. .. .. .. .. .. .. .. ..
-                   .. ..  .  .  .. .. .. .. .. ..#@@ =@@.. ..  .  .:@@  .. .. .. .. .. .. .. ..
-                  .. .. .. .. .. :%*@@@@@@@.  .  @@*.@@-. .. .. .. @@-.. .. .. ..  .  .  .. .. 
-                   .. ..  .  .  .#@@. .. @@@-. ..@@. @@:.. ..  .  @@%.  .. .. .. .. .. .. .. ..
-                   .. ..  .  .  .. ..-@@@@@@@@@@:@@+@@@@@@-..  .%@@# .  .. .. .. .. .. .. .. ..
-                  .. .. .. .. ..@@@@@@@@-  .  :@@@@@@@....@@@@@@@@... .. .. .. ..  .  .  .. .. 
-                   .. ..  .  .  @@..@@@@@@@ .. .*@@: .. .. .@@@@%@@@@@# .. .. .. .. .. .. .. ..
-                  .................-@@@@:@@:.....@@..........@@@@%.=@@@@@*.....................
-                  .. .. .. .. .. ..@@@@@@@@.  . %@@ .. .. .. @@@.. %@@..%@@=.. ..  .  .  .. .. 
-                   .. ..  .  .  .. @@*=@@.. ...@@@.. .. .. ..@@:  .@@.  .@@@@... .. .. .. .. ..
-                  .. .. .. .. .. ..#@@ ..  .%@@@@*  .. .. ..@@@ ..@@+ ..-@@.@@#..  .  .  .. .. 
-                  .. .. .. .. .. .. #@@@@@@@@#.:@%  .. .. %@@=. .@@#. ..@@- .@@#.  .  .  .. .. 
-                   .. ..  .  .  .. .. .-=:. .. .-@@# ..*@@@@.  .@@=  ..@@+ ..@@@ .. .. .. .. ..
-                  .. .. .. .. .. .. .. ..  .  .  . *%@@@@@@@ .@@@. ..-@@:.. %@@@@  .  .  .. .. 
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. @@@@@ .. .@@@. ..@@@.%@. .  .  .. .. 
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. *@@#.  -@@#  .#@@@ .@@:. .. .. .. ..
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. @@@@@@@. ..@@%....@@. .  .  .. .. 
-                  .............................................%@@@@*#@@@#..=%@@-..............
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. ..  .  .%@@@@@@@@@@@@ .. .. .. .. ..
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. .. ..@@.  .  .  .. .. 
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .  .. .. @@ .. .. .. .. ..
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .  .. .. *. .. .. .. .. ..
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .. .. 
-                   .. ..  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. ..
-                  .............................................................................
-                  .. .. .. .. .. .. .. ..  .  .  .  .. .. .. .. .. .. .. .. .. ..  .  .  .. .. 
-    
-    Welcome to SearchLibrium
-    
+## CLI
 
-
-```python
-# Test the main functionality of SearchLibrium for nested search
-sl.main.test_nested_search()
+```bash
+python -m SearchLibrium --info              # print package guide
+python -m SearchLibrium --preview_datasets  # preview bundled datasets
+python -m SearchLibrium --test_search       # run MNL/MXL search on travel_mode
+python -m SearchLibrium --test_search_nest  # run nested logit search
 ```
 
-    No id applied to SA algorithm, creating random run ID
-       Unnamed: 0  individual   mode choice  wait  vcost  travel  gcost  income  \
-    0           1           1    air     no    69     59     100     70      35   
-    1           2           1  train     no    34     31     372     71      35   
-    2           3           1    bus     no    35     25     417     70      35   
-    3           4           1    car    yes     0     10     180     30      35   
-    4           5           2    air     no    64     58      68     68      30   
-    
-       size  AV  CHOICE  
-    0     1   1       0  
-    1     1   1       0  
-    2     1   1       0  
-    3     1   1       1  
-    4     2   1       0  
-    [INFO] Control parameters (ctrl): (100, 0.001, 2, 20)
-    
-    [INFO] To change the control parameters, pass the 'ctrl' argument as a tuple:
-      Example: ctrl=(200, 0.01, 10, 50)
-      - tI: Initial temperature (higher = more exploration).
-      - tF: Final temperature (lower = more exploitation).
-      - max_temp_steps: Number of temperature steps.
-      - max_iter: Number of iterations per temperature step.
-    
-    SA[1] - Generating a starting solution
-    SA[1]. Attempt=0
-    
-    ***** New Best Solution Found *****
-    Solution Number: 0
-    Objective Values: 533.17
-    
-    Model Summary:
-    
-    Choice Model: Nested Logit
-    --------------------------------------------------
-    WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
-    **************************************************
-    Estimation time= 0.0 seconds
-    
-    Proportion of alternatives: observed choice
-    [0.27619048 0.3        0.14285714 0.28095238]
-    
-    Proportion of alternatives: predicted choice
-    [0.27940301 0.17501344 0.12502983 0.42055373]
-    
-    Table.
-    ---------------------------------------------------------------------------
-    Coefficient              Estimate      Std.Err.         z-val         P>|z|
-    ---------------------------------------------------------------------------
-    gcost               -0.0350466357  0.0060412480 -171.3299376864             0 ***
-    wait                -0.0874383983  0.0064088322 -169.6780879755             0 ***
-    vcost                0.0630758986  0.0064233443 -145.8623518304             0 ***
-    income               0.1000000000  1.0000000000 -0.9000000000         0.368    
-    lambda_Nest1         2.2559517922  0.1120656499 11.2072860252             0 ***
-    lambda_Nest2         2.7622588959  0.1182633223 14.9011448433             0 ***
-    ---------------------------------------------------------------------------
-    Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
-    
-    LOGLIK = -250.544; AIC = 513.087; BIC = 533.170; ADJLIK RATIO: 0.119
-    ***********************************
-    
-    SA[1]. Starting solution:  [533.17000501]
-    step number 1
-    SA[1]. Progress @ Step=1; Curr=[533.17]; Best=[533.17]; Elapsed Time=0.35
-    Solver[1]. Search complete
-    Solver[1]. Finalising
-    ***************
-    {'asvars': ['gcost', 'wait', 'vcost', 'income'], 'isvars': [], 'bcvars': [], 'corvars': [], 'bctrans': False, 'cor': False, 'randvars': {}, 'model_n': np.str_('nested_logit'), 'asc_ind': False, 'bic': np.float64(533.170005006407), 'loglik': np.float64(-250.54367991105107), 'mae': None, 'aic': np.float64(513.0873598221021), 'is_initial_sol': False, 'converged': True, 'coeff': array([-0.03504664, -0.0874384 ,  0.0630759 ,  0.1       ,  2.25595179,
-            2.7622589 ]), 'sol_num': 0, 'insig': None, 'obj': array([533.17000501]), 'model': <SearchLibrium.multinomial_nested.NestedLogit object at 0x000001ABCF2AA290>, 'class_num': None}
-    ***************
-    
+---
 
+## License
 
-```python
-# what is happening under the hood..
-import inspect
+MIT — see [LICENSE](LICENSE) for details.
 
-print(inspect.getsource(sl.main.test_nested_search))
+## Citation
+
+If you use SearchLibrium in academic work, please cite the repository:
+
+```text
+Ahern, Z. (2025). SearchLibrium: Automated discrete choice model search.
+https://github.com/zahern/HypothesisX
 ```
-
-    def test_nested_search():
-        #preview_dataset()
-        try:
-            from call_meta import call_siman
-            from search import  Parameters
-        except ImportError:
-            from .call_meta import call_siman
-            from .search import Parameters
-        # Define nests and lambdas for nested logit
-    
-        #train_df = pd.read_csv(problem_set.travel_mode)
-        train_df = prepare_dataset('travel_mode')
-        print(train_df.head())
-        nests = {"Nest1": [0, 1], "Nest2": [2, 3]}
-        lambdas = {"Nest1": 0.8, "Nest2": 1.0}
-        varnames = ['gcost', 'wait', 'vcost', 'travel', 'income']
-        # Initialize Parameters
-        params = Parameters(
-            criterions=[("bic", -1)],  # Minimize BIC
-            df=train_df,
-            choice_set = np.unique(train_df['CHOICE']),
-            choices = train_df['CHOICE'],
-            choice_id=train_df['individual'],
-            varnames=varnames,
-            asvarnames=varnames,
-            alt_var=train_df['mode'],
-            avail=train_df['AV'],
-            base_alt='air',
-            models=["nested_logit"],  # Include nested_logit
-            nests=nests,
-            lambdas=lambdas
-        )
-        init_sol = None
-        # supply id number so to overwrite logfiles.
-        call_siman(params, init_sol, id_num=1)
-    
-    

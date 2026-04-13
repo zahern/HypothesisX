@@ -1935,27 +1935,53 @@ class Search():
         pass
 
 
-    def print_best_solution(self, solution, verbose_print_name = 'New Best Solution Found'):
-        """
-        Print the details of the current best solution, including its objectives
-        and summaries.
-        """
-        print(f"\n***** {verbose_print_name} *****")
-        print(f"Solution Number: {solution['sol_num']}")
-        print(f"Model Type: {solution.get('model_n', 'unknown')}")
-        print(f"Objective Values: {solution.concatenate_obj()}")
-        print(f"AS Variables: {solution.get('asvars', [])}")
-        print(f"IS Variables: {solution.get('isvars', [])}")
-        print(f"Random Parameters: {solution.get('randvars', {})}")
-        print(f"Box-Cox Variables: {solution.get('bcvars', [])}")
-        print(f"Correlated Variables: {solution.get('corvars', [])}")
+    def print_best_solution(self, solution, verbose_print_name='New Best Solution Found'):
+        """Print a structured summary of the current best solution."""
+        sep = '─' * 52
+        print(f"\n┌{sep}┐")
+        title = f" {verbose_print_name} "
+        pad   = max((52 - len(title)) // 2, 0)
+        print(f"│{' ' * pad}{title}{' ' * (52 - pad - len(title))}│")
+        print(f"├{sep}┤")
+
+        def _row(label, value):
+            line = f"  {label:<22s}: {value}"
+            print(f"│{line:<52s}│")
+
+        _row("Solution #",  str(solution.get('sol_num', '?')))
+        _row("Model type",  str(solution.get('model_n',  'unknown')))
+
+        # Objectives
+        crit_names = [c[0] for c in self.param.criterions]
+        for i, name in enumerate(crit_names):
+            val = solution.get(name)
+            if val is not None:
+                try:
+                    _row(name.upper(), f"{float(val):.4f}")
+                except Exception:
+                    _row(name.upper(), str(val))
+
+        # Specification
+        print(f"├{sep}┤")
+        asvars   = solution.get('asvars',   [])
+        isvars   = solution.get('isvars',   [])
+        randvars = solution.get('randvars', {})
+        bcvars   = solution.get('bcvars',   [])
+
+        _row("AS vars",   ', '.join(asvars)  if asvars   else '—')
+        if isvars:
+            _row("IS vars", ', '.join(isvars))
+        if randvars:
+            rv_str = ', '.join(f"{k}~{v}" for k, v in randvars.items())
+            _row("Random params", rv_str[:46])
+        if bcvars:
+            _row("Box-Cox vars", ', '.join(bcvars))
+
+        print(f"└{sep}┘")
 
         if solution.get('model'):
-            print("\nModel Summary:")
             solution['model'].summarise()
-        else:
-            print("No model summary available.")
-        print("***********************************\n")
+        print()
 
 
     ''' ---------------------------------------------------------- '''

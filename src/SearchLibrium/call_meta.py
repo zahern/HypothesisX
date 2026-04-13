@@ -11,6 +11,104 @@ except ImportError:
     from .siman import*
     from .threshold import*
 
+
+def _print_dashboard(solver, best_sol):
+    """Print a formatted summary dashboard after a search run completes."""
+    W = 58   # box width (interior)
+    LINE = '═' * W
+
+    def row(label, value, flag=''):
+        text = f"  {label:<20s}: {value}"
+        if flag:
+            text += f'   {flag}'
+        # pad to width
+        pad = W - len(text)
+        return f"║{text}{' ' * max(pad, 1)}║"
+
+    def section(text):
+        pad = W - len(text) - 2
+        return f"╠{'═' * W}╣\n║  {text}{' ' * max(pad - 1, 0)}║"
+
+    print(f"\n╔{LINE}╗")
+    title = 'SEARCHLIBRIUM — RUN DASHBOARD'
+    tpad  = (W - len(title)) // 2
+    print(f"║{' ' * tpad}{title}{' ' * (W - tpad - len(title))}║")
+
+    # --- Specification ---
+    print(section('Specification'))
+    model_n   = best_sol.get('model_n', 'unknown') if best_sol else 'n/a'
+    asvars    = best_sol.get('asvars',  []) if best_sol else []
+    isvars    = best_sol.get('isvars',  []) if best_sol else []
+    randvars  = best_sol.get('randvars', {}) if best_sol else {}
+    bcvars    = best_sol.get('bcvars',  []) if best_sol else []
+    corvars   = best_sol.get('corvars', []) if best_sol else []
+
+    print(row('Model type', str(model_n)))
+    print(row('AS variables', ', '.join(asvars) if asvars else '—'))
+    if isvars:
+        print(row('IS variables', ', '.join(isvars)))
+    if randvars:
+        rv_str = ', '.join(f"{k}~{v}" for k, v in randvars.items())
+        print(row('Random params', rv_str))
+    if bcvars:
+        print(row('Box-Cox vars', ', '.join(bcvars)))
+    if corvars:
+        print(row('Correlated vars', ', '.join(corvars)))
+
+    # --- Fit statistics ---
+    print(section('Fit statistics'))
+    criterions = getattr(solver.param, 'criterions', []) if solver else []
+    crit_names = [c[0] for c in criterions] if criterions else []
+
+    loglik = best_sol.get('loglik') if best_sol else None
+    aic    = best_sol.get('aic')    if best_sol else None
+    bic    = best_sol.get('bic')    if best_sol else None
+    mae    = best_sol.get('mae')    if best_sol else None
+
+    def fmt(v):
+        if v is None:
+            return '—'
+        try:
+            return f'{float(v):.4f}'
+        except Exception:
+            return str(v)
+
+    best_marker = lambda name: '◄ criterion' if name in crit_names else ''
+    print(row('Log-likelihood', fmt(loglik)))
+    print(row('AIC', fmt(aic), best_marker('aic')))
+    print(row('BIC', fmt(bic), best_marker('bic')))
+    if mae is not None:
+        print(row('MAE', fmt(mae), best_marker('mae')))
+
+    # --- Search statistics ---
+    print(section('Search statistics'))
+    converged     = getattr(solver, 'converged',     '?') if solver else '?'
+    not_converged = getattr(solver, 'not_converged', '?') if solver else '?'
+    accepted      = getattr(solver, 'accepted',      '?') if solver else '?'
+    not_accepted  = getattr(solver, 'not_accepted',  '?') if solver else '?'
+    total = (converged if isinstance(converged, int) else 0) + \
+            (not_converged if isinstance(not_converged, int) else 0)
+    print(row('Evaluations', str(total)))
+    print(row('Converged', str(converged)))
+    print(row('Accepted', str(accepted)))
+
+    # --- Multi-objective archive ---
+    nb_crit = getattr(solver, 'nb_crit', 1) if solver else 1
+    if nb_crit > 1:
+        archive = getattr(solver, 'archive', []) if solver else []
+        print(section(f'Pareto archive  ({len(archive)} solutions)'))
+        header = '  #   ' + '   '.join(f'{c[0].upper()[:7]:<8}' for c in criterions)
+        print(f"║{header[:W]}{' ' * max(W - len(header[:W]), 0)}║")
+        for idx, sol in enumerate(archive[:12]):   # show up to 12
+            vals = '   '.join(f"{float(sol.obj(i)):>8.3f}" for i in range(nb_crit))
+            line = f"  {idx+1:<3d} {vals}"
+            print(f"║{line[:W]}{' ' * max(W - len(line[:W]), 0)}║")
+        if len(archive) > 12:
+            more = f"  ... and {len(archive) - 12} more"
+            print(f"║{more}{' ' * max(W - len(more), 0)}║")
+
+    print(f"╚{LINE}╝\n")
+
 def call_harmony(parameters, init_sol=None):
 # {
     solver = HarmonySearch(parameters)
@@ -61,7 +159,9 @@ def call_siman(parameters, init_sol=None,  **kwargs):
     solver = SA(parameters, init_sol, ctrl, id_num, **kwargs)
     solver.run()
     solver.close_files()
-    return solver.return_best()
+    best = solver.return_best()
+    _print_dashboard(solver, best)
+    return best
 # }
 
 def call_parsa(parameters, init_sol=None, nthrds=4, **kwargs):

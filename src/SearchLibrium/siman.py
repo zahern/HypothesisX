@@ -1100,16 +1100,22 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     def report_progress(self, file=None):
     # {
-        text = f"SA[{self.idnum}]. Progress @ Step={self.step}; Curr=[{self.current_sol.concatenate_obj()}]; "
+        now     = time.time()
+        elapsed = round(now - self.start, 1)
+        temp    = f"{self.t:.4g}"
+        step    = f"{self.step}/{self.max_temp_steps}"
+        curr    = self.current_sol.concatenate_obj()
 
         if self.nb_crit == 1:
-            text += f"Best=[{self.best_sol.concatenate_obj()}]; "
+            best  = self.best_sol.concatenate_obj()
+            text  = (f"SA[{self.idnum}] step {step:>9s} | T={temp:>8s} | "
+                     f"curr={curr} | best={best} | "
+                     f"acc={self.accepted} | t={elapsed}s")
         else:
-            text += f"Archive Size={len(self.archive)}; "
-
-        now = time.time()
-        elapsed = now - self.start
-        text += f"Elapsed Time={round(elapsed,2)}"
+            arch  = len(self.archive)
+            text  = (f"SA[{self.idnum}] step {step:>9s} | T={temp:>8s} | "
+                     f"curr={curr} | archive={arch} | "
+                     f"acc={self.accepted} | t={elapsed}s")
 
         print(text, file=file)
     # }
