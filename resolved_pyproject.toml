@@ -1,4 +1,4 @@
-[build-system]
+d[build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
@@ -61,7 +61,7 @@ realpython = "SearchLibrium.__main__:main"
 [tool.bumpver]
 current_version = "0.0.81"
 version_pattern = "MAJOR.MINOR.PATCH"
-commit_message = "Bump version {old_version} -> {new_version}"
+commit_message = "[skip ci] Bump version {old_version} -> {new_version}"
 commit = true
 tag = true
 push = false
