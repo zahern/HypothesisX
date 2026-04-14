@@ -6,16 +6,7 @@ name: Publish to PyPI
 # 2. Manually via the GitHub Actions UI (workflow_dispatch)
 on:
   push:
-    tags:
-      - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Dry run (build only, do not publish)"
-        required: false
-        default: "false"
-        type: choice
-        options: ["true", "false"]
+    branches: [main]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Permissions – only id-token is needed for Trusted Publishing (OIDC)
