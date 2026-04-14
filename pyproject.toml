@@ -8,7 +8,7 @@ version = {file = "src/SearchLibrium/version.txt"}
 [project]
 name = "SearchLibrium"
 <<<<<<< HEAD
-version = "0.0.82"
+version = "0.0.83"
 authors = [
 { name="Zeke Ahern", email="z.ahern@qut.edu.au" },
 ]
@@ -59,7 +59,7 @@ realpython = "SearchLibrium.__main__:main"
 
 [tool.bumpver]
 <<<<<<< HEAD
-current_version = "0.0.82"
+current_version = "0.0.83"
 =======
 current_version = "0.0.72"
 >>>>>>> 09deb3f (fix: configure PyPI workflow to match MetaCount structure)
