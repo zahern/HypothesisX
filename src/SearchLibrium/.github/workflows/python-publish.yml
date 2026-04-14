@@ -22,24 +22,17 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Install bumpver
+        run: pip install bumpver
+
       - name: Bump patch version
-        run: |
-          cd src/SearchLibrium
-          python - <<'EOF'
-          with open("version.txt") as f:
-              v = f.read().strip()
-          major, minor, patch = v.split(".")
-          new_version = f"{major}.{minor}.{int(patch) + 1}"
-          with open("version.txt", "w") as f:
-              f.write(new_version + "\n")
-          print(f"Version bumped: {v} -> {new_version}")
-          EOF
+        run: bumpver update --patch --no-commit
 
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add src/SearchLibrium/version.txt
+          git add src/SearchLibrium/version.txt pyproject.toml
           git commit -m "chore: bump version [skip ci]"
           git push
 
@@ -47,15 +40,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install build
 
-      - name: Build distribution
-        run: |
-          cd src/SearchLibrium
-          python -m build
+      - run: python -m build
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: src/SearchLibrium/dist/
           username: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
           skip-existing: true
