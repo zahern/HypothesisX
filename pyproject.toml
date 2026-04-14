@@ -61,10 +61,10 @@ realpython = "SearchLibrium.__main__:main"
 [tool.bumpver]
 current_version = "0.0.81"
 version_pattern = "MAJOR.MINOR.PATCH"
-commit_message  = "Bump version {old_version} -> {new_version}"
-commit          = true
-tag             = true
-push            = false
+commit_message = "[skip ci] Bump version {old_version} -> {new_version}"
+commit = true
+tag = true
+push = false
 
 [tool.bumpver.file_patterns]
 "src/SearchLibrium/version.txt" = ["{version}"]
