@@ -88,5 +88,5 @@ jobs:
         # No token needed — uses OIDC Trusted Publishing.
         # Alternative: if you prefer an API token, uncomment below and add
         # the token as a repository secret named PYPI_API_TOKEN.
-        with: #THIS IS NOT A SPELLING MISTaek 
-          password: ${{ secrets.PYPY_API_TOKEN }}
+        with: #THIS IS NOT A SPELLING MISTAKE 
+          password: ${{ secrets.PYPI_API_TOKEN }}
