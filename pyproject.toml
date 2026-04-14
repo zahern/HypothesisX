@@ -5,21 +5,19 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.dynamic]
 version = {file = "src/SearchLibrium/version.txt"}
 
+[tool.setuptools.packages]
+find = { where = ["src"] }
+
 [project]
 name = "SearchLibrium"
-<<<<<<< HEAD
-version = "0.0.85"
-authors = [
-{ name="Zeke Ahern", email="z.ahern@qut.edu.au" },
-]
-=======
 dynamic = ["version"]
->>>>>>> 09deb3f (fix: configure PyPI workflow to match MetaCount structure)
-description = "Automated discrete choice model search: JAX-accelerated MLE, Simulated Annealing & Harmony Search over MNL, Mixed Logit, RRM, and Mixed-RRM specifications."
+description = "A Python package for econometric models driven by search"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name="Zeke Ahern", email="z.ahern@qut.edu.au" },
+    { name = "Zeke Ahern", email = "z.ahern@qut.edu.au" },
+    { name = "Alexander Paz Prithvi Beeramole" },
+    { name = "Robert Burdett" },
 ]
 keywords = [
     "econometric models",
@@ -45,11 +43,14 @@ dependencies = [
     "statsmodels",
 ]
 
-[tool.setuptools.packages]
-find = { where = ["src"] }
-
 [project.optional-dependencies]
-dev = ["black", "bumpver", "isort", "pip-tools", "pytest"]
+dev = [
+    "black",
+    "bumpver",
+    "isort",
+    "pip-tools",
+    "pytest",
+]
 
 [project.urls]
 Homepage = "https://github.com/zahern/HypothesisX"
@@ -58,16 +59,12 @@ Homepage = "https://github.com/zahern/HypothesisX"
 realpython = "SearchLibrium.__main__:main"
 
 [tool.bumpver]
-<<<<<<< HEAD
-current_version = "0.0.85"
-=======
-current_version = "0.0.72"
->>>>>>> 09deb3f (fix: configure PyPI workflow to match MetaCount structure)
+current_version = "0.0.81"
 version_pattern = "MAJOR.MINOR.PATCH"
-commit_message  = "Bump version {old_version} -> {new_version}"
-commit          = true
-tag             = true
-push            = false
+commit_message = "Bump version {old_version} -> {new_version}"
+commit = true
+tag = true
+push = false
 
 [tool.bumpver.file_patterns]
 "src/SearchLibrium/version.txt" = ["{version}"]
