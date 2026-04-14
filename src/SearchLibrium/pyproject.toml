@@ -9,7 +9,7 @@ version = {file = "version.txt"}
 name = "SearchLibrium"
 dynamic = ["version"]
 description = "A Python package for econometric models driven by search"
-readme = { file = "README.md", content-type = "text/markdown" }
+readme = { file = "../../README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 authors = [
     { name = "Zeke Ahern" },

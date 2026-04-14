@@ -17,7 +17,21 @@ SearchLibrium searches over model specifications — which variables to include,
 pip install SearchLibrium --upgrade
 ```
 
-**Requirements:** Python ≥ 3.9, numpy, scipy ≥ 1.10, pandas ≥ 2.0, jax ≥ 0.4.1, jaxlib ≥ 0.4.1, scikit-learn ≥ 1.3.1, statsmodels, matplotlib
+**Requirements:** Python ≥ 3.10, numpy ≥ 2.0, scipy ≥ 1.10, pandas ≥ 2.0, scikit-learn ≥ 1.3.1, statsmodels
+
+### Install in Jupyter Notebook
+
+```python
+# Run in a notebook cell
+import subprocess
+import sys
+
+subprocess.check_call([sys.executable, "-m", "pip", "install", "SearchLibrium", "--upgrade"])
+
+# Then import
+from SearchLibrium import Parameters, call_siman
+print("✓ SearchLibrium installed and ready!")
+```
 
 ---
 
@@ -56,15 +70,16 @@ A **run dashboard** is printed automatically at the end of every search, showing
 
 ---
 
-## Example notebooks
+## Example Notebooks
 
 | Model | Notebook |
 | ----- | -------- |
-| Multinomial Logit — standalone fit + search | [notebooks/mnl_example.ipynb](notebooks/mnl_example.ipynb) |
-| Mixed Logit — standalone fit + search | [notebooks/mixed_logit_example.ipynb](notebooks/mixed_logit_example.ipynb) |
-| Random Regret Minimisation — standalone fit + search | [notebooks/rrm_example.ipynb](notebooks/rrm_example.ipynb) |
-| Mixed Random Regret — standalone fit + search | [notebooks/mixed_rrm_example.ipynb](notebooks/mixed_rrm_example.ipynb) |
-| Nested Logit — standalone fit + search | [notebooks/Data_Nest.ipynb](notebooks/Data_Nest.ipynb) |
+| Multinomial Logit — standalone fit + search | [notebooks/mnl_example.ipynb](src/SearchLibrium/notebooks/mnl_example.ipynb) |
+| Mixed Logit — standalone fit + search | [notebooks/mixed_logit_example.ipynb](src/SearchLibrium/notebooks/mixed_logit_example.ipynb) |
+| Random Regret Minimisation — standalone fit + search | [notebooks/rrm_example.ipynb](src/SearchLibrium/notebooks/rrm_example.ipynb) |
+| Mixed Random Regret — standalone fit + search | [notebooks/mixed_rrm_example.ipynb](src/SearchLibrium/notebooks/mixed_rrm_example.ipynb) |
+| Nested Logit — standalone fit + search | [notebooks/Data_Nest.ipynb](src/SearchLibrium/notebooks/Data_Nest.ipynb) |
+| HPC Batch Jobs & PyPI Publishing | [notebooks/pbs_batch_jobs_guide.ipynb](src/SearchLibrium/notebooks/pbs_batch_jobs_guide.ipynb) |
 
 ---
 
@@ -112,8 +127,8 @@ Your dataframe must be in **long format** — one row per alternative per observ
 | `"mixed_logit"` | Mixed Logit with simulation-based integration | ✓ |
 | `"random_regret"` | Random Regret Minimisation (RRM) | ✓ |
 | `"mixed_random_regret"` | Mixed-RRM with random parameters | ✓ |
-| `"nested_logit"` | Nested Logit (requires `nests=` and `lambdas=` kwargs) | – |
-| `"ordered_logit"` | Ordered Logit | – |
+| `"nested_logit"` | Nested Logit (requires `nests=` and `lambdas=` kwargs) | ✓ |
+| `"ordered_logit"` | Ordered Logit | ✓ |
 
 ---
 
@@ -450,44 +465,7 @@ Complexity buckets:
 | 200–600 | 2 000 | 150 | 20 | 20 | 500 |
 | > 600 | 5 000 | 250 | 30 | 25 | 800 |
 
----
 
-## Publishing a new version to PyPI
-
-Releases are published automatically via GitHub Actions when a version tag
-is pushed.  Steps:
-
-1. **Bump the version** in `pyproject.toml` (update both `version =` and
-   `current_version =` under `[tool.bumpver]`), or use bumpver:
-
-   ```bash
-   pip install bumpver
-   bumpver update --patch   # 0.0.71 → 0.0.72
-   ```
-
-2. **Commit and tag** (bumpver does this automatically with `commit = true`
-   and `tag = true` in `pyproject.toml`):
-
-   ```bash
-   git push origin main --tags
-   ```
-
-3. The `publish.yml` GitHub Action builds the wheel and publishes to PyPI
-   via **Trusted Publishing (OIDC)** — no API token needed.
-
-**One-time PyPI setup** (only required once):
-
-- Go to <https://pypi.org/manage/project/SearchLibrium/settings/publishing/>
-- Add a Trusted Publisher: owner `zahern`, repo `HypothesisX`,
-  workflow `publish.yml`, environment `pypi`
-
-**Manual trigger** (dry run — build only, no publish):
-
-```text
-GitHub → Actions → "Publish to PyPI" → Run workflow → dry_run: true
-```
-
----
 
 ## License
 
