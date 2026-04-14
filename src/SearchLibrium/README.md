@@ -69,6 +69,97 @@ A **run dashboard** is printed automatically at the end of every search, showing
 
 ---
 
+## HPC Batch Job Submission
+
+For **large-scale hyperparameter or specification searches**, SearchLibrium includes a production-ready PBS batch submission system.
+
+### Quick Start: Run 100 Models in Parallel on HPC
+
+Create a `batch_jobs.pbs` file with your model configurations:
+
+```bash
+#!/bin/bash
+# Edit the JOBS array in batch_jobs.pbs with your configurations
+declare -a JOBS=(
+    "model_1:search.py:04:00:00:1:32GB"
+    "model_2:search.py:04:00:00:1:32GB"
+    "model_3:search.py:04:00:00:1:32GB"
+)
+```
+
+Submit to HPC cluster (all jobs run in parallel):
+```bash
+qsub batch_jobs.pbs
+```
+
+Monitor all jobs:
+```bash
+qstat -u $USER
+tail -f log_model_1.out
+```
+
+Each job gets its own output directory (`runs/model_1/`, `runs/model_2/`, etc.).
+
+### Features
+
+- ✅ **Parallel or sequential execution** — choose how jobs depend on each other
+- ✅ **Automatic output isolation** — each job has its own `runs/<name>/` directory
+- ✅ **Real-time monitoring** — stream outputs with `tail -f`
+- ✅ **Job dependencies** — run Job B only if Job A succeeds
+- ✅ **Auto-restart** — failed jobs retry automatically (configurable)
+
+### Complete Guide
+
+See [**PBS Batch Jobs Tutorial**](notebooks/pbs_batch_jobs_guide.ipynb) for:
+- Detailed job configuration
+- Multi-stage workflows
+- Resource allocation best practices
+- Monitoring and troubleshooting
+- Example: running 100+ configurations overnight
+
+---
+
+## PyPI Publishing
+
+SearchLibrium uses **secure token authentication** for automated PyPI uploads via GitHub Actions.
+
+### First-Time Setup
+
+1. **Generate PyPI API Token** (on pypi.org):
+   - Account Settings → API Tokens → Create API Token
+   - Copy token (format: `pypi-...`)
+
+2. **Store in GitHub Secrets** (your repository settings):
+   - Settings → Secrets and variables → Actions
+   - New secret: `PYPI_API_TOKEN` = your token
+
+3. **Push to main branch**:
+   ```bash
+   git add .
+   git commit -m "your changes"
+   git push
+   ```
+
+4. **Version auto-bumps** — GitHub Actions automatically increments patch version and publishes to PyPI
+
+**Verify upload**:
+```bash
+pip install --upgrade SearchLibrium
+python -c "import SearchLibrium; print(SearchLibrium.__version__)"
+```
+
+### How It Works
+
+The [python-publish.yml](.github/workflows/python-publish.yml) workflow:
+- Builds distribution packages (`wheel` + `sdist`)
+- Auto-increments `version.txt`
+- Publishes to PyPI using trusted token authentication
+- Commits version bump back to repository
+
+See the [PBS tutorial notebook](notebooks/pbs_batch_jobs_guide.ipynb) for detailed PyPI authentication setup and troubleshooting.
+
+---
+
 ## How the search works
 
 The search uses **Simulated Annealing (SA)** to explore the space of model specifications:

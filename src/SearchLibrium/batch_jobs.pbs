@@ -1,0 +1,167 @@
+#!/bin/bash -l
+#
+# batch_jobs.pbs
+# ===============
+# Submits SearchLibrium batch jobs to HPC via PBS.
+# Each job gets its own walltime window and output directory.
+#
+# Usage:
+#   qsub batch_jobs.pbs                    → submit all jobs in parallel (default)
+#   qsub batch_jobs.pbs sequential         → submit jobs sequentially (chain via afterok)
+#
+# Each job writes to:
+#   runs/<job_name>/                       ← SearchLibrium outputs
+#   log_<job_name>.out / log_<job_name>.err ← stdout/stderr
+#
+# The submission script itself runs near-instantly — it just calls qsub N times.
+
+#PBS -N searchlibrium_submit
+#PBS -l walltime=00:05:00
+#PBS -l select=1:ncpus=1:mem=2GB
+#PBS -j eo
+#PBS -m n
+
+cd $PBS_O_WORKDIR
+module purge
+module load Anaconda3/2024.02-1
+conda activate venvnewg
+module unload Anaconda3
+
+# Default: parallel  (all jobs run independently)
+# Use: qsub batch_jobs.pbs sequential  for sequential execution
+SUBMIT_MODE=${1:-"parallel"}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job configuration array
+# Format: "job_name:script_to_run.py:walltime:ncpus:mem"
+# ─────────────────────────────────────────────────────────────────────────────
+declare -a JOBS=(
+    "model_search_1:search.py:04:00:00:1:32GB"
+    "model_search_2:search.py:04:00:00:1:32GB"
+    "model_search_3:search.py:04:00:00:1:32GB"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generate per-job PBS scripts
+# ─────────────────────────────────────────────────────────────────────────────
+write_job() {
+    local JOB_SPEC=$1
+    IFS=':' read -r JOB_NAME SCRIPT WALLTIME NCPUS MEM <<< "$JOB_SPEC"
+
+    local PBS_SCRIPT="job_${JOB_NAME}.pbs"
+
+    cat > "${PBS_SCRIPT}" << INNER
+#!/bin/bash -l
+#PBS -N sl_${JOB_NAME}
+#PBS -l walltime=${WALLTIME}
+#PBS -l select=1:ncpus=${NCPUS}:mem=${MEM}
+#PBS -j eo
+#PBS -m n
+#PBS -r y
+
+cd \$PBS_O_WORKDIR
+module purge
+module load Anaconda3/2024.02-1
+conda activate venvnewg
+module unload Anaconda3
+
+# Create run directory
+mkdir -p runs/${JOB_NAME}
+
+echo "=========================================="
+echo "PBS Job:   \$PBS_JOBID"
+echo "Job Name:  ${JOB_NAME}"
+echo "Script:    ${SCRIPT}"
+echo "Working:   \$PBS_O_WORKDIR"
+echo "Output:    runs/${JOB_NAME}/"
+echo "Started:   \$(date)"
+echo "=========================================="
+
+# Run with unbuffered output (-u) for immediate visibility
+python -u ${SCRIPT} \
+    --output-dir runs/${JOB_NAME} \
+    --job-id ${JOB_NAME} \
+    > log_${JOB_NAME}.out \
+    2> log_${JOB_NAME}.err
+
+EXIT_CODE=\$?
+echo "=========================================="
+echo "Finished:  \$(date)"
+echo "Exit Code: \${EXIT_CODE}"
+echo "=========================================="
+exit \${EXIT_CODE}
+INNER
+
+    echo "  Generated ${PBS_SCRIPT}"
+}
+
+echo "Generating job scripts..."
+for JOB_SPEC in "${JOBS[@]}"; do
+    write_job "${JOB_SPEC}"
+done
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Submit jobs
+# ─────────────────────────────────────────────────────────────────────────────
+echo "Submitting jobs (mode: ${SUBMIT_MODE})..."
+
+if [ "${SUBMIT_MODE}" = "parallel" ]; then
+    echo ""
+    echo "PARALLEL mode — all jobs run simultaneously"
+    echo "============================================"
+    declare -a JOB_IDS
+    for i in "${!JOBS[@]}"; do
+        JOB_SPEC="${JOBS[$i]}"
+        IFS=':' read -r JOB_NAME SCRIPT WALLTIME NCPUS MEM <<< "$JOB_SPEC"
+        JID=$(qsub "job_${JOB_NAME}.pbs")
+        JOB_IDS+=("$JID")
+        echo "  ${JOB_NAME}  → $JID"
+    done
+    echo ""
+    echo "All ${#JOBS[@]} jobs submitted"
+
+else
+    echo ""
+    echo "SEQUENTIAL mode — jobs run one after another"
+    echo "=============================================="
+    PREV_JID=""
+    for JOB_SPEC in "${JOBS[@]}"; do
+        IFS=':' read -r JOB_NAME SCRIPT WALLTIME NCPUS MEM <<< "$JOB_SPEC"
+        
+        if [ -z "$PREV_JID" ]; then
+            JID=$(qsub "job_${JOB_NAME}.pbs")
+            echo "  ${JOB_NAME}  → $JID  (start immediately)"
+        else
+            JID=$(qsub -W depend=afterok:${PREV_JID} "job_${JOB_NAME}.pbs")
+            echo "  ${JOB_NAME}  → $JID  (after $PREV_JID)"
+        fi
+        PREV_JID=$JID
+    done
+fi
+
+echo ""
+echo "OUTPUT DIRECTORIES:"
+echo "==================="
+for JOB_SPEC in "${JOBS[@]}"; do
+    IFS=':' read -r JOB_NAME SCRIPT WALLTIME NCPUS MEM <<< "$JOB_SPEC"
+    echo "  runs/${JOB_NAME}/"
+done
+
+echo ""
+echo "MONITOR ON HPC:"
+echo "==============="
+echo "  qstat -u \$USER              # Show all your jobs"
+echo "  qstat -f <job_id>            # Full details"
+echo "  qdel <job_id>                # Cancel a job"
+echo ""
+echo "CHECK OUTPUT:"
+echo "=============="
+for JOB_SPEC in "${JOBS[@]}"; do
+    IFS=':' read -r JOB_NAME SCRIPT WALLTIME NCPUS MEM <<< "$JOB_SPEC"
+    echo "  tail -f log_${JOB_NAME}.out"
+done
+
+echo ""
+echo "TO RUN PARALLEL: qsub batch_jobs.pbs"
+echo "TO RUN SEQUENTIAL: qsub batch_jobs.pbs sequential"
