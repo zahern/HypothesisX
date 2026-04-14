@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {file = "src/SearchLibrium/version.txt"}
+
+[tool.setuptools.packages]
+find = { where = ["src"] }
+
+[project]
+name = "SearchLibrium"
+dynamic = ["version"]
+description = "A Python package for econometric models driven by search"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Zeke Ahern", email = "z.ahern@qut.edu.au" },
+    { name = "Alexander Paz Prithvi Beeramole" },
+    { name = "Robert Burdett" },
+]
+keywords = [
+    "econometric models",
+    "search",
+    "discrete choice",
+    "logit",
+    "probit",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+    "numpy>2.0.0",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.3.1",
+    "statsmodels",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "bumpver",
+    "isort",
+    "pip-tools",
+    "pytest",
+]
+
+[project.urls]
+Homepage = "https://github.com/zahern/HypothesisX"
+
+[project.scripts]
+realpython = "SearchLibrium.__main__:main"
+
+[tool.bumpver]
+current_version = "0.0.81"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit_message = "Bump version {old_version} -> {new_version}"
+commit = true
+tag = true
+push = false
+
+[tool.bumpver.file_patterns]
+"src/SearchLibrium/version.txt" = ["{version}"]
