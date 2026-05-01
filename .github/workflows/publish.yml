@@ -106,4 +106,4 @@ jobs:
         #   3. Comment out the 'with' block below.
         # ─────────────────────────────────────────────────────────────────────
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          password: ${{ secrets.PYPY_API_TOKEN }}
