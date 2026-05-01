@@ -1206,7 +1206,412 @@ class Search():
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         asvars_new = self.create_dummy_column(self.param.asvarnames)
         asvars_new = self.remove_redundant_asvars(asvars_new, self.param.trans_asvars, self.param.asvarnames)
+
+        # Pre-compute pairwise correlations & VIF for collinearity-aware solution generation
+        self._precompute_correlations()
     # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Pre-compute pairwise Pearson correlations and    '''
+    ''' VIF scores for all candidate variables. Called once on     '''
+    ''' initialisation so that collinearity checks are fast during '''
+    ''' the search.                                                '''
+    ''' ---------------------------------------------------------- '''
+    def _precompute_correlations(self, corr_threshold=0.90, vif_threshold=10.0):
+        """
+        Pre-compute Pearson correlation matrix and Variance Inflation Factors
+        (VIF) for all numeric columns in the training dataframe that are also
+        listed in param.varnames.
+
+        Results stored on the instance:
+            self._corr_matrix    : pd.DataFrame  (variable x variable)
+            self._vif_scores     : dict           {var: vif_value}
+            self._high_corr_pairs: list of tuples [(var_a, var_b, r), ...]
+            self._corr_threshold : float
+            self._vif_threshold  : float
+        """
+        import pandas as pd
+
+        self._corr_threshold  = corr_threshold
+        self._vif_threshold   = vif_threshold
+        self._corr_matrix     = None
+        self._vif_scores      = {}
+        self._high_corr_pairs = []
+
+        try:
+            df = self.param.df
+            candidate_cols = [
+                v for v in self.param.varnames
+                if v in df.columns and pd.api.types.is_numeric_dtype(df[v])
+            ]
+            if len(candidate_cols) < 2:
+                return
+
+            X = df[candidate_cols].dropna()
+
+            # ── 1. Pearson correlation matrix ─────────────────────────
+            self._corr_matrix = X.corr()
+
+            # Identify highly correlated pairs (upper triangle only)
+            cols = self._corr_matrix.columns.tolist()
+            for i in range(len(cols)):
+                for j in range(i + 1, len(cols)):
+                    r = self._corr_matrix.iloc[i, j]
+                    if abs(r) >= corr_threshold:
+                        self._high_corr_pairs.append(
+                            (cols[i], cols[j], round(float(r), 4))
+                        )
+
+            if self._high_corr_pairs:
+                logging.info(
+                    "[Collinearity] %d highly correlated pair(s) detected (|r| >= %.2f):",
+                    len(self._high_corr_pairs), corr_threshold,
+                )
+                for va, vb, r in self._high_corr_pairs:
+                    logging.info("  %s  <->  %s   r = %.4f", va, vb, r)
+
+            # ── 2. Variance Inflation Factors ─────────────────────────
+            if len(candidate_cols) >= 2:
+                try:
+                    from numpy.linalg import lstsq
+
+                    Xmat  = X.values
+                    means = Xmat.mean(axis=0)
+                    stds  = Xmat.std(axis=0)
+                    stds[stds == 0] = 1.0
+                    Xz = (Xmat - means) / stds
+
+                    for k, col in enumerate(candidate_cols):
+                        y_k   = Xz[:, k]
+                        X_oth = np.delete(Xz, k, axis=1)
+                        X_oth = np.column_stack([np.ones(len(y_k)), X_oth])
+                        coef, _, _, _ = lstsq(X_oth, y_k, rcond=None)
+                        y_hat  = X_oth @ coef
+                        ss_res = np.sum((y_k - y_hat) ** 2)
+                        ss_tot = np.sum((y_k - y_k.mean()) ** 2)
+                        r2  = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
+                        r2  = min(max(r2, 0.0), 1.0 - 1e-12)
+                        self._vif_scores[col] = round(1.0 / (1.0 - r2), 2)
+
+                    high_vif = {
+                        v: s for v, s in self._vif_scores.items()
+                        if s > vif_threshold
+                    }
+                    if high_vif:
+                        logging.info(
+                            "[Collinearity] %d variable(s) with VIF > %.1f: %s",
+                            len(high_vif), vif_threshold,
+                            ', '.join(f"{v}={s}" for v, s in high_vif.items()),
+                        )
+                except Exception as vif_err:
+                    logging.warning(
+                        "[Collinearity] VIF computation failed: %s", vif_err
+                    )
+
+        except Exception as e:
+            logging.warning("[Collinearity] Pre-computation failed: %s", e)
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Remove highly collinear variables from a list.   '''
+    ''' Greedy approach: for each high-correlation pair remove the  '''
+    ''' variable with the higher VIF (or second if VIF unavailable).'''
+    ''' Prespecified (protected) variables are never removed.       '''
+    ''' ---------------------------------------------------------- '''
+    def remove_collinear_vars(self, varlist, protected=None):
+        """
+        Filter `varlist` to remove variables that are highly correlated with
+        others or have excessive VIF, while preserving any `protected` variables.
+
+        Args:
+            varlist   (list): Candidate variable names.
+            protected (set) : Variables that must not be removed.
+
+        Returns:
+            list: Filtered variable list with collinear variables removed.
+        """
+        if not varlist or self._corr_matrix is None:
+            return varlist
+
+        protected = set(protected or [])
+        protected |= set(getattr(self.param, 'ps_asvars', []))
+        protected |= set(getattr(self.param, 'ps_isvars', []))
+
+        active  = list(varlist)
+        removed = set()
+
+        # ── Step 1: VIF-based removal ─────────────────────────────
+        for var in list(active):
+            if var in removed or var in protected:
+                continue
+            vif = self._vif_scores.get(var, 0.0)
+            if vif > self._vif_threshold:
+                removed.add(var)
+                logging.info(
+                    "[CollinearityConstraint] Removed '%s' (VIF=%.1f > %.1f)",
+                    var, vif, self._vif_threshold,
+                )
+
+        # ── Step 2: Pairwise correlation removal ──────────────────
+        for va, vb, r in self._high_corr_pairs:
+            if va not in active or vb not in active:
+                continue
+            if va in removed or vb in removed:
+                continue
+            # Keep protected var; otherwise drop the higher-VIF one
+            if vb in protected and va not in protected:
+                drop = va
+            elif va in protected and vb not in protected:
+                drop = vb
+            else:
+                vif_a = self._vif_scores.get(va, 0.0)
+                vif_b = self._vif_scores.get(vb, 0.0)
+                drop  = va if vif_a >= vif_b else vb
+
+            if drop not in protected:
+                removed.add(drop)
+                kept = vb if drop == va else va
+                logging.info(
+                    "[CollinearityConstraint] Removed '%s' (|r|=%.4f with '%s')",
+                    drop, abs(r), kept,
+                )
+
+        filtered = [v for v in active if v not in removed]
+        return filtered if filtered else list(varlist)   # fallback: never return empty
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Check model prerequisites before fitting.        '''
+    ''' Returns a list of warning strings (empty => all clear).    '''
+    ''' ---------------------------------------------------------- '''
+    def _check_model_prerequisites(self, all_vars, model_n=''):
+        """
+        Inspect the design matrix for common problems that cause gradient-based
+        optimisers to fail to converge:
+
+          1. Near-constant variables (variance ≈ 0)
+          2. Extreme scale disparity between columns
+          3. Near-singular design matrix (condition number)
+          4. Insufficient observations-to-parameters ratio
+
+        Args:
+            all_vars (list): Variable names in the design matrix.
+            model_n  (str) : Model type label (for logging).
+
+        Returns:
+            list[str]: Diagnostic warning messages (empty list if none).
+        """
+        warnings_out = []
+        try:
+            df   = self.param.df
+            cols = [v for v in all_vars if v in df.columns]
+            if not cols:
+                return warnings_out
+
+            X = df[cols].values.astype(float)
+            n_obs, n_params = X.shape
+
+            # 1. Near-constant columns
+            stds = X.std(axis=0)
+            near_const = [cols[i] for i, s in enumerate(stds) if s < 1e-8]
+            if near_const:
+                msg = (
+                    f"[Prerequisite/{model_n}] Near-constant variable(s) detected "
+                    f"– may cause singular Hessian: {near_const}"
+                )
+                warnings_out.append(msg)
+                logging.warning(msg)
+
+            # 2. Scale disparity
+            col_ranges = X.max(axis=0) - X.min(axis=0)
+            col_ranges[col_ranges == 0] = 1.0
+            scale_ratio = col_ranges.max() / col_ranges.min()
+            if scale_ratio > 1e4:
+                msg = (
+                    f"[Prerequisite/{model_n}] Large scale disparity "
+                    f"(max/min range ratio = {scale_ratio:.1e}). "
+                    f"Consider standardising inputs to aid gradient convergence."
+                )
+                warnings_out.append(msg)
+                logging.warning(msg)
+
+            # 3. Condition number (on standardised matrix)
+            means = X.mean(axis=0)
+            stds2 = X.std(axis=0);  stds2[stds2 == 0] = 1.0
+            Xz = (X - means) / stds2
+            try:
+                cond = np.linalg.cond(Xz)
+                if cond > 1e6:
+                    msg = (
+                        f"[Prerequisite/{model_n}] Design matrix condition number "
+                        f"= {cond:.2e} (> 1e6). High collinearity is very likely "
+                        f"preventing gradient convergence."
+                    )
+                    warnings_out.append(msg)
+                    logging.warning(msg)
+                elif cond > 1e3:
+                    logging.info(
+                        "[Prerequisite/%s] Moderate condition number = %.2e.", model_n, cond
+                    )
+            except Exception:
+                pass
+
+            # 4. Obs-to-parameters ratio
+            n_cs = n_obs // max(len(self.param.choice_set), 1)
+            if n_cs < n_params * 10:
+                msg = (
+                    f"[Prerequisite/{model_n}] Low obs-to-params ratio "
+                    f"({n_cs} choice situations / {n_params} params). "
+                    f"Model may be overparameterised."
+                )
+                warnings_out.append(msg)
+                logging.warning(msg)
+
+        except Exception as e:
+            logging.debug("[_check_model_prerequisites] %s", e)
+
+        return warnings_out
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Diagnose why gradient optimisation failed to     '''
+    ''' converge. Prints a structured diagnostic report to stdout. '''
+    ''' ---------------------------------------------------------- '''
+    def _diagnose_nonconvergence(self, sol, model_n=''):
+        """
+        Called after a model fails to converge.  Analyses the candidate variable
+        set and prints potential causes together with remediation suggestions.
+
+        Possible causes diagnosed:
+          • Highly correlated predictors  (from pre-computed correlation cache)
+          • High VIF variables
+          • Near-constant / near-zero-variance columns
+          • Extreme scale differences
+          • Ill-conditioned design matrix
+          • Too many parameters relative to observations
+          • Mixed-model specifics (draws, degenerate distributions)
+          • RRM-specific advice
+
+        Args:
+            sol     (Solution): The non-converging solution.
+            model_n (str)     : Model type label for display.
+        """
+        as_vars  = sol.get('asvars',   [])
+        is_vars  = sol.get('isvars',   [])
+        randvars = sol.get('randvars', {})
+        all_vars = list(dict.fromkeys(as_vars + is_vars + list(randvars.keys())))
+        all_vars = [v for v in self.param.varnames if v in all_vars]
+
+        label    = model_n or sol.get('model_n', '?')
+        sep      = '─' * 62
+        print(f"\n{sep}")
+        print(f"[NonConvergence Diagnostic]  model={label}  sol#={sol.get('sol_num','?')}")
+        print(f"  Variables : {all_vars}")
+        print(sep)
+
+        if not all_vars:
+            print("  No variables – cannot diagnose."); print(sep); return
+
+        df   = self.param.df
+        cols = [v for v in all_vars if v in df.columns]
+        if not cols:
+            print("  Solution vars not found in dataframe."); print(sep); return
+
+        X    = df[cols].values.astype(float)
+        n_obs, n_params = X.shape
+        n_cs = n_obs // max(len(self.param.choice_set), 1)
+        issues = False
+
+        # 1. High-correlation pairs among solution variables
+        if self._high_corr_pairs:
+            sol_set  = set(cols)
+            relevant = [(a, b, r) for a, b, r in self._high_corr_pairs
+                        if a in sol_set and b in sol_set]
+            if relevant:
+                issues = True
+                print("  ⚠  HIGH CORRELATION detected among solution variables:")
+                for a, b, r in relevant:
+                    print(f"       {a}  <->  {b}   |r| = {abs(r):.4f}")
+                print("     → Remove one variable from each correlated pair, or use")
+                print("       PCA / orthogonalisation to decorrelate predictors.")
+
+        # 2. High VIF
+        high_vif_sol = {
+            v: s for v, s in self._vif_scores.items()
+            if v in cols and s > self._vif_threshold
+        }
+        if high_vif_sol:
+            issues = True
+            print("  ⚠  HIGH VIF variables in solution:")
+            for v, s in high_vif_sol.items():
+                print(f"       {v}   VIF = {s:.1f}")
+            print("     → Remove or combine the above variables.")
+
+        # 3. Near-constant columns
+        stds = X.std(axis=0)
+        near_const = [cols[i] for i, s in enumerate(stds) if s < 1e-8]
+        if near_const:
+            issues = True
+            print(f"  ⚠  NEAR-CONSTANT variables (std ≈ 0): {near_const}")
+            print("     → Remove them; they carry no information.")
+
+        # 4. Scale disparity
+        col_ranges = X.max(axis=0) - X.min(axis=0)
+        col_ranges[col_ranges == 0] = 1.0
+        scale_ratio = col_ranges.max() / col_ranges.min()
+        if scale_ratio > 1e4:
+            issues = True
+            print(f"  ⚠  SCALE DISPARITY: max/min range ratio = {scale_ratio:.1e}")
+            print("     → Standardise variables (zero mean, unit variance).")
+
+        # 5. Condition number
+        means = X.mean(axis=0)
+        stds2 = X.std(axis=0);  stds2[stds2 == 0] = 1.0
+        Xz = (X - means) / stds2
+        try:
+            cond = np.linalg.cond(Xz)
+            if cond > 1e6:
+                issues = True
+                print(f"  ⚠  ILL-CONDITIONED design matrix: cond# = {cond:.2e}")
+                print("     → Gradient descent cannot navigate this landscape.")
+                print("       Remedies: remove collinear vars, standardise data,")
+                print("       increase ftol/gtol, or try a different solver.")
+        except Exception:
+            pass
+
+        # 6. Obs-to-parameters ratio
+        total_params = n_params + len(randvars) * 2
+        if n_cs < total_params * 5:
+            issues = True
+            print(f"  ⚠  LOW OBS/PARAM RATIO: {n_cs} situations / {total_params} params")
+            print("     → Reduce variables or random coefficients.")
+
+        # 7. Mixed-model specifics
+        if label in ('mixed_logit', 'mixed_random_regret'):
+            n_draws = getattr(self.param, 'n_draws', 0)
+            if n_draws < 200:
+                issues = True
+                print(f"  ⚠  LOW DRAW COUNT for {label}: n_draws = {n_draws}")
+                print("     → Increase n_draws (≥ 500 recommended).")
+            for var, distr in randvars.items():
+                if var in df.columns and df[var].dropna().std() < 1e-6:
+                    issues = True
+                    print(f"  ⚠  Random var '{var}' has near-zero variance in data.")
+                    print(f"     Assigning distribution '{distr}' to a constant variable")
+                    print("     yields a degenerate likelihood surface.")
+
+        # 8. RRM-specific advice
+        if label in ('random_regret', 'mixed_random_regret'):
+            print("  ℹ  RRM convergence tips:")
+            print("     • Attributes should vary across alternatives.")
+            print("     • Avoid variables identical across all alternatives.")
+            print("     • Verify id/alt/choice column mapping.")
+
+        if not issues:
+            print("  ℹ  No obvious collinearity / scale issues detected.")
+            print("     Other possible causes: flat likelihood, poor starting values,")
+            print("     insufficient iterations (maxiter), or numerical overflow in")
+            print("     exp() transforms.  Try increasing maxiter or tightening")
+            print("     ftol/gtol, or supplying better init_coeff.")
+
+        print(sep + "\n")
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Remove redundant variables from a list.          '''
@@ -1471,6 +1876,15 @@ class Search():
 
             isvars = self.select_isvars()
 
+
+        # ── Collinearity constraint: remove highly correlated / high-VIF vars
+        # Protected vars (ps_asvars) are never dropped by this filter.
+        asvars = self.remove_collinear_vars(asvars)
+        # Ensure we still have at least one variable after filtering
+        while (len(asvars) + len(isvars)) < 1:
+            asvars = self.select_asvars()
+            isvars = self.select_isvars()
+            asvars = self.remove_collinear_vars(asvars)
 
         randvars = self.select_randvars(asvars)
         bcvars, bctrans = self.select_bcvars(asvars)
@@ -2866,6 +3280,8 @@ class Search():
         # {
             self.not_converged += 1
             sol['converged'] = False
+            # ── Convergence diagnostic: explain why the model did not converge
+            self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
         # }
 
         if self.param.verbose:
@@ -3532,6 +3948,15 @@ class Search():
     def evaluate_model(self, sol):
     # {
         model_n = sol.get('model_n', '')
+
+        # ── Pre-fit collinearity / prerequisite check ────────────────
+        as_vars  = sol.get('asvars',   [])
+        is_vars  = sol.get('isvars',   [])
+        randvars = sol.get('randvars', {})
+        _all_chk = list(dict.fromkeys(as_vars + is_vars + list(randvars.keys())))
+        self._check_model_prerequisites(_all_chk, model_n)
+        # ─────────────────────────────────────────────────────────────
+
         if model_n == 'random_regret':
             return self.evaluate_rrm(sol)
         elif model_n == 'mixed_random_regret':
