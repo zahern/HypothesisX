@@ -81,4 +81,4 @@ jobs:
         # If you want to fall back to an API token instead, set a repo secret
         # named PYPI_API_TOKEN and uncomment the 'with' block below.
         # with:
-        #   password: ${{ secrets.PYPI_API_TOKEN }}
+        #   password: ${{ secrets.PYPY_API_TOKEN }}
