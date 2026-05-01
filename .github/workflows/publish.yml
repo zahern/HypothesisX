@@ -9,11 +9,30 @@ on:
     branches: [main]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Permissions – only id-token is needed for Trusted Publishing (OIDC)
+# Permissions
+# • id-token: write  – required for PyPI OIDC Trusted Publishing
+# • contents: read   – default, needed for checkout
+#
+# SETUP INSTRUCTIONS (choose one):
+# ──────────────────────────────────────────────────────────────────────────────
+# Option A – OIDC Trusted Publishing (no API token needed, most secure)
+#   1. Go to https://pypi.org/manage/project/SearchLibrium/settings/publishing/
+#   2. Add a new "GitHub Actions" trusted publisher:
+#        • Owner:     zahern
+#        • Repo:      HypothesisX
+#        • Workflow:  publish.yml
+#        • Env name:  pypi
+#   3. Keep the 'password' line below commented out.
+#
+# Option B – API token (simpler, works immediately)
+#   1. Create a PyPI API token at https://pypi.org/manage/account/token/
+#   2. Add it as a repository secret named PYPI_API_TOKEN:
+#        GitHub repo → Settings → Secrets → Actions → New repository secret
+#   3. Un-comment the 'password:' line in the publish step below.
 # ─────────────────────────────────────────────────────────────────────────────
 permissions:
   contents: read
-  id-token:  write     # required for PyPI Trusted Publishing (no API token needed)
+  id-token:  write     # required for PyPI OIDC Trusted Publishing (Option A)
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
@@ -74,11 +93,17 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Publish to PyPI (Trusted Publishing)
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        # Uses OIDC Trusted Publishing — id-token: write permission above is
-        # sufficient.  No API token is needed.
-        # If you want to fall back to an API token instead, set a repo secret
-        # named PYPI_API_TOKEN and uncomment the 'with' block below.
-        # with:
-        #   password: ${{ secrets.PYPY_API_TOKEN }}
+        # ── AUTHENTICATION ────────────────────────────────────────────────────
+        # Currently using Option B: API token stored as a repository secret.
+        #
+        # To switch to OIDC Trusted Publishing (Option A, no secret needed):
+        #   1. Go to https://pypi.org/manage/project/SearchLibrium/settings/publishing/
+        #   2. Add a GitHub Actions trusted publisher:
+        #        Owner:    zahern   Repo: HypothesisX
+        #        Workflow: publish.yml   Environment: pypi
+        #   3. Comment out the 'with' block below.
+        # ─────────────────────────────────────────────────────────────────────
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
