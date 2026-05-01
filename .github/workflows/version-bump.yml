@@ -96,6 +96,9 @@ jobs:
           # Stage both files that bumpver touches
           git add pyproject.toml src/SearchLibrium/version.txt
           git commit -m "[skip ci] Bump version ${OLD} -> ${NEW}"
-          git tag "v${NEW}"
+
+          # Force-overwrite tag in case a previous run created it but failed to push
+          git tag -f "v${NEW}"
           git push origin main
-          git push origin "v${NEW}"
+          # --force so a stale remote tag from a failed previous run is replaced
+          git push origin "v${NEW}" --force
