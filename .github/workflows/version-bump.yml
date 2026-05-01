@@ -1,11 +1,12 @@
 name: Auto version bump
 
 # Runs on every push to main.
-# Reads the current version from pyproject.toml, increments the patch number,
-# writes it back, commits "[skip ci] Bump version X → Y", and pushes a tag.
-# The tag push triggers publish.yml which builds and publishes to PyPI.
+# Uses bumpver (already configured in pyproject.toml) to increment the patch
+# version, writes the new version to pyproject.toml and
+# src/SearchLibrium/version.txt, commits "[skip ci] Bump version X → Y",
+# pushes the commit + a vX.Y.Z tag.
 #
-# Guard: if the HEAD commit message already starts with "[skip ci] Bump version"
+# Guard: if the HEAD commit message already starts with "[skip ci]"
 # (i.e. this workflow triggered itself) the job exits immediately to prevent
 # an infinite loop.
 
@@ -53,42 +54,47 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # ── 4. Read current version ────────────────────────────────────────────
+      # ── 4. Read current version (from [tool.bumpver] in pyproject.toml) ───
       - name: Read current version
         id: current
         run: |
           VERSION=$(python - <<'EOF'
           import re, sys
           text = open("pyproject.toml").read()
-          m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+          # Match 'current_version = "X.Y.Z"' inside [tool.bumpver]
+          m = re.search(r'^current_version\s*=\s*"([^"]+)"', text, re.MULTILINE)
           print(m.group(1) if m else sys.exit(1))
           EOF
           )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Current version: $VERSION"
 
-      # ── 5. Bump patch (X.Y.Z → X.Y.Z+1) ──────────────────────────────────
+      # ── 5. Bump patch using bumpver (updates pyproject.toml + version.txt) ─
+      #    --no-commit: bumpver writes the files but does not commit/tag/push.
+      #    (push = false and tag = false are also set in pyproject.toml so the
+      #    tool won't try to push or tag on its own even without the flag.)
       - name: Bump patch version
         id: bump
         run: |
           OLD="${{ steps.current.outputs.version }}"
-          # Split on '.' and increment the last component
-          IFS='.' read -r -a parts <<< "$OLD"
-          parts[2]=$(( parts[2] + 1 ))
-          NEW="${parts[0]}.${parts[1]}.${parts[2]}"
+          bumpver update --patch --no-commit
+          NEW=$(python - <<'EOF'
+          import re, sys
+          text = open("pyproject.toml").read()
+          m = re.search(r'^current_version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+          print(m.group(1) if m else sys.exit(1))
+          EOF
+          )
           echo "new_version=$NEW" >> "$GITHUB_OUTPUT"
           echo "Bumping $OLD → $NEW"
-
-          # Rewrite pyproject.toml (version = and current_version =)
-          sed -i "s/^version = \"${OLD}\"/version = \"${NEW}\"/" pyproject.toml
-          sed -i "s/^current_version = \"${OLD}\"/current_version = \"${NEW}\"/" pyproject.toml
 
       # ── 6. Commit, tag, push ───────────────────────────────────────────────
       - name: Commit and tag
         run: |
           OLD="${{ steps.current.outputs.version }}"
           NEW="${{ steps.bump.outputs.new_version }}"
-          git add pyproject.toml
+          # Stage both files that bumpver touches
+          git add pyproject.toml src/SearchLibrium/version.txt
           git commit -m "[skip ci] Bump version ${OLD} -> ${NEW}"
           git tag "v${NEW}"
           git push origin main

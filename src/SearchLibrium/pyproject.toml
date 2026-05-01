@@ -46,3 +46,17 @@ dev = [
     "mypy",
     "pre-commit",
 ]
+
+# ── bumpver configuration ───────────────────────────────────────────────────
+# Used by the GitHub Actions workflow to auto-increment the patch version on
+# every push to main.
+[bumpver]
+current_version = "0.0.72"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit = false
+tag    = false
+push   = false
+
+[bumpver.file_patterns]
+"version.txt" = ["{version}"]
+"pyproject.toml" = ['current_version = "{version}"']
