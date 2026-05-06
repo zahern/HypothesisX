@@ -86,7 +86,9 @@ try:
     from .rrm import RandomRegret
     from .mixedrrm import MixedRandomRegret
     from .ordered_logit import OrderedLogit, OrderedLogitLong
+    from .selection_models import BinaryProbit, HeckmanTwoStep
     from .latent_class import LatentClassMixedLogit
+    from .multinomial_probit import MultinomialProbit
     from .RandomP import RandomParameters
     from .constraints_builder import ConstraintBuilder, create_constraints
     from .search import Parameters
@@ -102,21 +104,27 @@ except ImportError as e:
     from rrm import RandomRegret
     from mixedrrm import MixedRandomRegret
     from ordered_logit import OrderedLogit, OrderedLogitLong
+    from selection_models import BinaryProbit, HeckmanTwoStep
     from latent_class import LatentClassMixedLogit
+    from multinomial_probit import MultinomialProbit
     from RandomP import RandomParameters
     from constraints_builder import ConstraintBuilder, create_constraints
     from search import Parameters
     from call_meta import call_siman, call_harmony, call_search, estimate_ctrl
 try:
     from .main import print_ascii_art_logo
-except:
-    from main import print_ascii_art_logo
-    
+except Exception:
+    try:
+        from main import print_ascii_art_logo
+    except Exception:
+        print_ascii_art_logo = None
 
-try:
-    print_ascii_art_logo()
-except ImportError:
-    print("Error importing print_ascii_art_logo from main module. Continuing without logo.") 
+
+if print_ascii_art_logo is not None:
+    try:
+        print_ascii_art_logo()
+    except Exception:
+        print("SearchLibrium logo skipped; optional display dependencies are missing.")
 
 #print('loaded all')
 print('Welcome to SearchLibrium')

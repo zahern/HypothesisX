@@ -1,9 +1,0 @@
-asvars =  ['gcost', 'wait', 'vcost', 'income']
-isvars =  []
-randvars =  {}
-bcvars =  []
-corvars =  []
-bctrans =  False
-asc_ind =  False
-model =  nested_logit
-model= Nested Logit
