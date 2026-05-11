@@ -1102,7 +1102,7 @@ class SA(Search):
         # {
             if overall_best_solution is None or \
                 is_better(self.best_sol.obj(0), overall_best_solution.obj(0), self.param.sign_crit(0)):
-                overall_best_solution = self.best_sol  # Update overall best solution
+                overall_best_solution = self.copy_solution(self.best_sol)  # Update overall best solution (deep copy to prevent overwriting)
             elif overall_best_solution is not None and \
                 is_worse(self.best_sol.obj(0), overall_best_solution.obj(0), self.param.sign_crit(0)):
                 self.update_best(overall_best_solution)  # Revise best solution of current SA solver

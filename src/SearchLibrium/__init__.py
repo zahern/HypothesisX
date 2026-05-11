@@ -55,7 +55,13 @@ def new_features():
            """)
 
 def get_version_from_pkg_info():
-    """Reads the version from the PKG-INFO file."""
+    """Reads the installed package version via importlib.metadata."""
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("SearchLibrium")
+    except Exception:
+        pass
+    # Fallback: read from egg-info PKG-INFO (editable installs)
     pkg_info_path = os.path.join(os.path.dirname(__file__), "../SearchLibrium.egg-info/PKG-INFO")
     try:
         with open(pkg_info_path, "r") as f:
@@ -63,7 +69,8 @@ def get_version_from_pkg_info():
                 if line.startswith("Version:"):
                     return line.split(":")[1].strip()
     except FileNotFoundError:
-        return "0.0.32"
+        pass
+    return "unknown"
 
 __version__ = get_version_from_pkg_info()
 
@@ -88,6 +95,7 @@ try:
     from .ordered_logit import OrderedLogit, OrderedLogitLong
     from .selection_models import BinaryProbit, HeckmanTwoStep
     from .latent_class import LatentClassMixedLogit
+    from .mdcev import MDCEVFitResult, MDCEVModel
     from .multinomial_probit import MultinomialProbit
     from .RandomP import RandomParameters
     from .constraints_builder import ConstraintBuilder, create_constraints
@@ -106,6 +114,7 @@ except ImportError as e:
     from ordered_logit import OrderedLogit, OrderedLogitLong
     from selection_models import BinaryProbit, HeckmanTwoStep
     from latent_class import LatentClassMixedLogit
+    from mdcev import MDCEVFitResult, MDCEVModel
     from multinomial_probit import MultinomialProbit
     from RandomP import RandomParameters
     from constraints_builder import ConstraintBuilder, create_constraints
