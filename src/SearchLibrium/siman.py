@@ -616,7 +616,7 @@ class SA(Search):
     def copy_solution(self, sol):
     # {
         logging.info('normal copy')
-        copy_sol = sol.copy()
+        copy_sol = copy.deepcopy(sol)  # Deep copy to prevent shared mutable state (lists, dicts inside solution)
         return copy_sol
     # }
 
@@ -998,15 +998,12 @@ class SA(Search):
             print("Initialized best_sol with the first solution")
             return
 
-        self.no_impr = 0
         if self.nb_crit == 1:
         # {
             if is_better(sol.obj(0), self.best_sol.obj(0), self.param.sign_crit(0)):
                 self.best_sol = self.copy_solution(sol)
-
-                print('new best')
-
                 self.no_impr = 0
+                print('new best')
         # }
         else:
             self.archive = self.update_archive(sol)
@@ -1087,7 +1084,7 @@ class SA(Search):
         # {
             print("ARCHIVE STATIC. RESTORE A NON DOMINATED SOLUTION.")
             choice = np.random.randint(len(self.archive))
-            self.current_sol = self.archive[choice]
+            self.current_sol = self.copy_solution(self.archive[choice])  # Deep copy to avoid aliasing archive entry
             self.no_impr = 0
         # }
     # }
