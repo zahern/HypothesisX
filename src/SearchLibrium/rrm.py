@@ -206,7 +206,7 @@ class RandomRegret(DiscreteChoiceModel):
 
         X, y, varnames, alts, isvars, transvars, ids, weights, panels, avail = \
             self.set_asarray(X, y, varnames, alts, isvars, transvars, ids, weights, None, avail)
-        self.nb_samples, self.nb_attr = self.X.shape
+        self.nb_samples, self.nb_attr = X.shape
         self.nb_alt = len(set(alts))
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # CHECK FOR MISTAKES IN DATA
@@ -247,6 +247,13 @@ class RandomRegret(DiscreteChoiceModel):
         self.fixedtransvars = self.transvars
         self.X, self.Xnames = self.setup_design_matrix(self.X)
 
+        # Update nb_samples to reflect per-observation count (after 3D reshape)
+        self.nb_samples = self.N
+        self.nb_attr = self.X.shape[2] if self.X.ndim == 3 else self.X.shape[1]
+        # Convert binary choice indicators (N*J,) to per-obs chosen alt index (N,)
+        y_matrix = self.y.reshape(self.N, self.J)
+        self.y = np.argmax(y_matrix, axis=1).astype(int)
+
 
 
         if self.weights is not None:
@@ -283,6 +290,7 @@ class RandomRegret(DiscreteChoiceModel):
         '''
         self.y = np.zeros((self.nb_samples), dtype=int)
         self.attrs = kwargs.get("varnames", varnames)
+        self.normalize = kwargs.get('normalize', False)
         self.initialise()
 
 

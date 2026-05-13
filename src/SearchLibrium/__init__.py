@@ -88,6 +88,7 @@ except ImportError:
 try:
     from ._choice_model import DiscreteChoiceModel
     from .multinomial_logit import MultinomialLogit
+    from .MixedLogit import MixedLogit
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from .Halton import Halton
     from .rrm import RandomRegret
@@ -107,6 +108,7 @@ try:
 except ImportError as e:
     from _choice_model import DiscreteChoiceModel
     from multinomial_logit import MultinomialLogit
+    from MixedLogit import MixedLogit
     from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from Halton import Halton
     from rrm import RandomRegret

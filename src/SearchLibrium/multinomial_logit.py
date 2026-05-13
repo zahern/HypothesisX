@@ -626,7 +626,7 @@ class MultinomialLogit(DiscreteChoiceModel):
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def scipy_bfgs_optimization(self, betas, X, y, weights, avail, maxiter, ftol, gtol, jac, return_opg, sklearn=None):
+    def scipy_bfgs_optimization(self, betas, X, y, weights, avail, maxiter, ftol, gtol, jac, return_opg=False, sklearn=None):
     # {
         
 

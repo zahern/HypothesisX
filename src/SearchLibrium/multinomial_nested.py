@@ -906,7 +906,7 @@ class NestedLogit(MultinomialLogit):
                 V_j = float(V[i, chosen_alt])  # V_{A1}
                 sumPV_g = float(sumPV_per_nest[chosen_nest_name][i])  # Σ_k P(k|A) V_k
                 logS_g = float(logS_per_nest[chosen_nest_name][i])  # ln S_A
-                T_i = float(T[i])
+                T_i = float(T[i, 0])  # T has shape (N,1) due to keepdims=True
 
                 # TERM 1: ( sumPV_g - V_j ) / lambda_g^2
                 term1 = (sumPV_g - V_j) / (lambda_g ** 2)

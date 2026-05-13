@@ -296,7 +296,7 @@ class OrderedLogit():
     def find_category(self, values: np.ndarray, thresholds: np.ndarray)->np.ndarray:
     # {
         category = np.digitize(values, thresholds)
-        return category - 1
+        return category
     # Note: Subtract - 1 to convert indexing starting from 1 to indexing starting from 0
     # }
 
@@ -699,7 +699,7 @@ class OrderedLogit():
         self.method = method
 
         if start is None:
-            start = [0] * self.params
+            start = [0] * self.nparams
             value = [1] * (self.J - 2) # These are the deltas
             set_last_elements(start, self.J - 2, value)
 
