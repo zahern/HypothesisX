@@ -12,6 +12,11 @@ from addicty import Dict
 
 import os
 
+try:
+    from banditsa import BanditSA, PerturbationBandit
+except ImportError:
+    from .banditsa import BanditSA, PerturbationBandit
+
 def new_features():
     '''ADDICTY DICT'''
     '''vars you want to ensure are included'''
