@@ -6,3 +6,42 @@ Criterions   : [['bic', -1]]
 Models       : ['multinomial', 'mixed_logit']
 tI=100, tF=0.01, steps=20, iter/step=500
 ────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 17752.0966
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 1.6 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.3144919  0.37101619 0.3144919 ]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+SEATS               -0.0188169151  0.2106093801 -0.0893450952         0.929    
+sd.SEATS             2.3447112723  0.3863638509  6.0686610996      1.29e-09 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8869.220; AIC = 17742.439; BIC = 17752.097; ADJLIK RATIO: 0.272
+
+Specification:
+asvars =  ['SEATS']
+isvars =  []
+randvars =  {'SEATS': np.str_('ln')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 
+
