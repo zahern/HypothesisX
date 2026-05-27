@@ -1,0 +1,2 @@
+step,temperature,current_obj,best_obj,n_accepted,elapsed_s
+0,100,17766.3,17766.3,0,207.4

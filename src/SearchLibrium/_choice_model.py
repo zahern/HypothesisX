@@ -391,7 +391,6 @@ class DiscreteChoiceModel(ABC):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         non_sigs = self.num_of_exceeding_pvalues(self.pvalues, 0.0)
         #print('log like is before', self.loglik)
-        print('apply p val')
         self.loglik -= non_sigs*self.pval_penalty # penalise the non-sigs
         logging.info('applying pval')
         #print('log like is', self.loglik)

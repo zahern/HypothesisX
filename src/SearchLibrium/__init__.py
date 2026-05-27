@@ -108,7 +108,8 @@ try:
     from .search import Parameters
 
     from . import misc
-    from .call_meta import call_harmony, call_siman, call_parsa, call_search, estimate_ctrl
+    from .sapbil import SAPBIL, ProbabilityMatrix
+    from .call_meta import call_harmony, call_siman, call_parsa, call_search, call_sapbil, estimate_ctrl
 
 except ImportError as e:
     from _choice_model import DiscreteChoiceModel
@@ -126,7 +127,8 @@ except ImportError as e:
     from RandomP import RandomParameters
     from constraints_builder import ConstraintBuilder, create_constraints
     from search import Parameters
-    from call_meta import call_siman, call_harmony, call_search, estimate_ctrl
+    from sapbil import SAPBIL, ProbabilityMatrix
+    from call_meta import call_siman, call_harmony, call_search, call_sapbil, estimate_ctrl
 try:
     from .main import print_ascii_art_logo
 except Exception:

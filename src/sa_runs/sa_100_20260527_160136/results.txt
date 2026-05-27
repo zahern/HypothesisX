@@ -1,0 +1,46 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_160136
+Output dir   : sa_runs\sa_100_20260527_160136
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=20, iter/step=500
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 17766.3387
+
+Model Statistics:
+
+Choice Model: MNL
+Estimation time= 0.0 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.29579481 0.36878555 0.33541964]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+COST                 0.0004928749  0.0000267678 18.4129646308             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8878.656; AIC = 17759.313; BIC = 17766.339; ADJLIK RATIO: 0.028
+
+Specification:
+asvars =  ['COST']
+isvars =  []
+randvars =  {}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  True
+model =  multinomial
+model= MNL
+

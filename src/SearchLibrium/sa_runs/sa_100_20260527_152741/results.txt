@@ -1,0 +1,119 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_152741
+Output dir   : sa_runs\sa_100_20260527_152741
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=20, iter/step=500
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 0.00036972364514298306
+**************************************************
+Estimation time= 7.4 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.33882239 0.47947584 0.18170177]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.2492752358  0.0121055883 -20.5917489491             0 ***
+AGE.TRAIN           -0.6680519315  0.0156172846 -42.7764460976             0 ***
+COST                -0.0064675816  0.0003077164 -21.0179932592             0 ***
+HEADWAY             -0.3558271034  0.0376860113 -9.4418881365             0 ***
+sd.COST              0.0241231118  0.0011258292 21.4269729775             0 ***
+sd.HEADWAY           0.3838553478  0.0335070673 11.4559518005             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -7113.120; AIC = 14238.239; BIC = 14267.211; ADJLIK RATIO: 0.415
+
+Specification:
+asvars =  ['COST', 'HEADWAY']
+isvars =  ['AGE']
+randvars =  {'COST': np.str_('t'), 'HEADWAY': np.str_('tn')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 0.00036972364514298306
+**************************************************
+Estimation time= 7.4 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.33882239 0.47947584 0.18170177]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.2492752358  0.0121055883 -20.5917489491             0 ***
+AGE.TRAIN           -0.6680519315  0.0156172846 -42.7764460976             0 ***
+COST                -0.0064675816  0.0003077164 -21.0179932592             0 ***
+HEADWAY             -0.3558271034  0.0376860113 -9.4418881365             0 ***
+sd.COST              0.0241231118  0.0011258292 21.4269729775             0 ***
+sd.HEADWAY           0.3838553478  0.0335070673 11.4559518005             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -7113.120; AIC = 14238.239; BIC = 14267.211; ADJLIK RATIO: 0.415
+
+Specification:
+asvars =  ['COST', 'HEADWAY']
+isvars =  ['AGE']
+randvars =  {'COST': np.str_('t'), 'HEADWAY': np.str_('tn')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+#Converged=32; #Not Converged=941
+#Accepted=0; #Not Accepted=20
+Bandit arm summary (sorted by posterior mean):
+  add_isfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_randfeature      mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_bcfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_bcfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_corfeature       mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_corfeature    mean=0.5000 alpha=1.00 beta=1.00 count=0
+  change_model         mean=0.0435 alpha=1.00 beta=22.00 count=14
+  change_distribution  mean=0.0055 alpha=1.00 beta=181.00 count=98
+  remove_isfeature     mean=0.0054 alpha=1.00 beta=185.00 count=92
+  remove_asfeature     mean=0.0053 alpha=1.00 beta=189.00 count=94
+  add_asfeature        mean=0.0050 alpha=1.00 beta=201.00 count=100
+  remove_randfeature   mean=0.0049 alpha=1.00 beta=205.00 count=102

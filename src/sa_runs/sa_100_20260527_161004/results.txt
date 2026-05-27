@@ -1,0 +1,47 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_161004
+Output dir   : sa_runs\sa_100_20260527_161004
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=20, iter/step=500
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 17694.8945
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 3.5 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.31544555 0.3691089  0.31544555]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+SEATS                1.6749189075  0.1929524422  8.6804752967             0 ***
+sd.SEATS             2.3145152712  0.2226572456 10.3949694731             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8840.619; AIC = 17685.237; BIC = 17694.894; ADJLIK RATIO: 0.274
+
+Specification:
+asvars =  ['SEATS']
+isvars =  []
+randvars =  {'SEATS': np.str_('u')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+

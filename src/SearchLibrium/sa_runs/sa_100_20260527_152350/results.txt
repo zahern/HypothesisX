@@ -1,0 +1,8 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_152350
+Output dir   : sa_runs\sa_100_20260527_152350
+Criterions   : [['bic', -1]]
+Models       : ['multinomial']
+tI=100, tF=0.01, steps=20, iter/step=500
+────────────────────────────────────────────────────────────

@@ -1,0 +1,55 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_154441
+Output dir   : sa_runs\sa_100_20260527_154441
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=20, iter/step=500
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 154136.07022956398
+**************************************************
+Estimation time= 6.1 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.24961987 0.5416624  0.20871774]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+HEADWAY             -0.0388023321  0.9568907564 -0.0405504304         0.968    
+COST                -1.0208690388  0.4038971783 -2.5275468452        0.0115 *  
+TIME                -0.1072708758  0.9920255244 -0.1081331812         0.914    
+sd.COST              0.4736795978  0.4450193553  1.0644022382         0.287    
+sd.TIME              0.4476337325  0.9017187558  0.4964227811          0.62    
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -29333.191; AIC = 58676.382; BIC = 58700.526; ADJLIK RATIO: -1.409
+
+Specification:
+asvars =  ['COST', 'TIME', 'HEADWAY']
+isvars =  []
+randvars =  {'COST': np.str_('ln'), 'TIME': np.str_('u')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+

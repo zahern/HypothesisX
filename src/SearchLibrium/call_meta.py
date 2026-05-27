@@ -23,11 +23,13 @@ try:
     from siman import*
     from banditsa import*
     from threshold import*
+    from sapbil import SAPBIL, ProbabilityMatrix
 except ImportError:
     from .harmony import*
     from .siman import*
     from .banditsa import*
     from .threshold import*
+    from .sapbil import SAPBIL, ProbabilityMatrix
 
 import numpy as np
 
@@ -303,6 +305,54 @@ def call_siman(parameters, init_sol=None, ctrl=None, **kwargs):
     return best
 
 
+def call_sapbil(parameters, init_sol=None, ctrl=None, **kwargs):
+    """
+    Run SA+PBIL (Simulated Annealing coupled with Population-Based Incremental
+    Learning) search.
+
+    Parameters
+    ----------
+    parameters : Parameters
+        Problem definition (variables, data, criteria, models).
+    init_sol : Solution, optional
+        Warm-start solution.  None = generate automatically.
+    ctrl : tuple, optional
+        ``(tI, tF, max_temp_steps, max_iter)``.
+        If omitted the values are estimated from the problem size.
+    **kwargs
+        ``id_num`` — run identifier (int, used in log file names).
+        Any other kwargs are forwarded to the SAPBIL constructor.
+
+    Returns
+    -------
+    Solution
+        Best converged, all-significant solution found.
+    """
+    if ctrl is None:
+        ctrl = kwargs.pop("ctrl", None)
+
+    id_num = kwargs.pop("id_num", None)
+
+    if ctrl is None:
+        ctrl = estimate_ctrl(parameters, algorithm="sa")
+        print(
+            f"[SA+PBIL] Auto-estimated hyperparameters (problem complexity "
+            f"= {_problem_size(parameters)['complexity']}):"
+        )
+    else:
+        print("[SA+PBIL] Using provided hyperparameters:")
+
+    print(_describe_ctrl(ctrl, "sa"))
+    print()
+
+    solver = SAPBIL(parameters, init_sol, ctrl, id_num, **kwargs)
+    solver.run()
+    solver.close_files()
+    best = solver.return_best()
+    _print_dashboard(solver, best, algorithm="SA+PBIL")
+    return best
+
+
 def call_banditsa(parameters, init_sol=None, ctrl=None, **kwargs):
     """
     Run Bandit-guided Simulated Annealing (Thompson Sampling on perturbation arms).
@@ -440,6 +490,8 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, **kwargs):
     algorithm = algorithm.lower().strip()
     if algorithm in ('sa', 'siman', 'simulated_annealing'):
         return call_siman(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
+    elif algorithm in ('sapbil', 'sa_pbil', 'sa+pbil', 'pbil'):
+        return call_sapbil(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     elif algorithm in ('banditsa', 'bandit_sa', 'bandit-simulated-annealing', 'bsa'):
         return call_banditsa(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     elif algorithm in ('hs', 'harmony', 'harmony_search'):
@@ -447,7 +499,7 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, **kwargs):
     else:
         raise ValueError(
             f"Unknown algorithm '{algorithm}'. "
-            f"Choose 'sa' (Simulated Annealing), 'banditsa' (BanditSA), or 'hs' (Harmony Search)."
+            f"Choose 'sa', 'sapbil', 'banditsa', or 'hs'."
         )
 
 

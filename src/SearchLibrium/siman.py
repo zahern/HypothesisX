@@ -616,7 +616,19 @@ class SA(Search):
     def copy_solution(self, sol):
     # {
         logging.info('normal copy')
-        copy_sol = copy.deepcopy(sol)  # Deep copy to prevent shared mutable state (lists, dicts inside solution)
+        # Fitted model objects contain module-level references that cannot be
+        # pickled, so deepcopy would fail when mixed/random models are used.
+        # The fitted model is read-only after estimation, so a shallow reference
+        # in the copy is safe.
+        _SKIP = ('model',)
+        saved = {k: sol.data.pop(k, None) for k in _SKIP}
+        try:
+            copy_sol = copy.deepcopy(sol)
+        finally:
+            for k, v in saved.items():  # restore originals regardless of error
+                sol.data[k] = v
+        for k, v in saved.items():     # shallow-attach to copy
+            copy_sol.data[k] = v
         return copy_sol
     # }
 

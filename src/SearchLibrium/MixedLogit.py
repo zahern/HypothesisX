@@ -51,9 +51,11 @@ class MixedLogit(DiscreteChoiceModel):
             n_vars (int): Number of variables.
         """
         if n_vars == 0:
-            return np.ndarray((1,0,1))
-        draws_s = Draws(k=n_vars, halton_opts=None)
-        draws = draws_s.generate_draws(sample_size, n_draws, n_vars)
+            return np.ndarray((1, 0, 1))
+        # Use self.halton_opts so options like antithetic/shuffled are respected.
+        opts = self.halton_opts or {}
+        draws_s = Draws(k=n_vars, halton_opts=opts)
+        draws = draws_s.generate_draws(sample_size, n_draws)
         return draws
 
 
@@ -210,7 +212,6 @@ class MixedLogit(DiscreteChoiceModel):
         means_1 = np.mean(self.y, axis=3)  # means_1[i,j] = avg(y[i,j,:])
         means_2 = np.mean(means_1, axis=1)  # means_2[i] = avg(means_1[i,:])
         self.obs_prob = np.mean(means_2, axis=0)  # obs_prob = avg(means_2[:])
-        print(f'observed probs debug{self.obs_prob}')
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # DEFINE MEMBER FUNCTIONS TO APPLY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -230,8 +231,6 @@ class MixedLogit(DiscreteChoiceModel):
         #print(f"self.rvtrans: {self.rvtransdist}")
         self.rvdist = [item for item in self.rvdist if item is not False]
         self.rvtransdist = [item for item in self.rvtransdist if item is not False]
-        print(f"self.randvars: {self.rvdist}")
-        print(f"self.rvtrans: {self.rvtransdist}")
         draws = self.generate_draws(self.N, self.n_draws, len(self.rvdist))
         drawstrans = self.generate_draws(self.N, self.n_draws, len(self.rvtransdist))
         self.draws, self.drawstrans = draws, drawstrans  # Record generated values
@@ -282,13 +281,30 @@ class MixedLogit(DiscreteChoiceModel):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
             arr = self.init_coeff[:lower]
-            rep = np.repeat(0.1, self.Kchol + self.Kbw)  # Array of 0.1s
+
+            # Better scale initialisation: use half the absolute value of the MNL
+            # mean estimates for the corresponding random variable, floored at 0.05.
+            # This gives BFGS a much better starting point than a flat 0.1 when
+            # coefficients are very small (e.g. cost in money units) or very large.
+            br_means = arr[self.Kf + 2 * self.Kftrans: self.Kf + 2 * self.Kftrans + self.Kr]
+
+            # Cholesky elements (correlated random vars) — keep at 0.1; the diagonal
+            # scaling is embedded in off-diagonal terms and is harder to infer.
+            chol_init = np.repeat(0.1, self.Kchol)
+
+            # Bandwidth (std dev) for non-correlated random vars.
+            bw_means = br_means[self.correlationLength:]
+            bw_init = np.maximum(np.abs(bw_means) * 0.5, 0.05)
+
+            rep = np.concatenate([chol_init, bw_init])
             self.init_coeff = np.concatenate((arr, rep, self.init_coeff[lower:upper],))
 
             if self.Krtrans:  # CHECK ">0"
                 # {
-                rep = np.repeat(0.1, self.Krtrans)  # An array with 0.1 repeated Krtrans times
-                self.init_coeff = np.concatenate((self.init_coeff, rep, self.init_coeff[-self.Krtrans:]))
+                # Similarly scale random-transformed std devs from MNL means.
+                rtrans_means = self.init_coeff[lower:upper]
+                rtrans_scale_init = np.maximum(np.abs(rtrans_means) * 0.5, 0.05)
+                self.init_coeff = np.concatenate((self.init_coeff, rtrans_scale_init, self.init_coeff[-self.Krtrans:]))
             # }
         # }
 

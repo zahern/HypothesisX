@@ -67,7 +67,7 @@ import scipy.stats as ss
 class Halton:
     """Class for generating Halton sequences and Halton-based draws."""
 
-    def __init__(self, primes=None, drop=100, shuffled=False):
+    def __init__(self, primes=None, drop=100, shuffled=False, antithetic=False):
         self.primes = primes or [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
                                  53, 59, 61, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109,
                                  113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173,
@@ -76,15 +76,24 @@ class Halton:
                                  307, 311]
         self.drop = drop
         self.shuffled = shuffled
+        self.antithetic = antithetic
 
     def generate_draws(self, sample_size, n_draws, n_vars):
-        """Generate Halton draws for multiple variables using different primes."""
+        """Generate Halton draws for multiple variables using different primes.
+
+        When ``antithetic=True``, draws of size ``n_draws // 2`` are generated
+        then mirrored (1 - u) to produce negatively-correlated antithetic pairs.
+        For normal-based distributions this halves variance at zero extra cost.
+        """
+        base = n_draws // 2 if self.antithetic else n_draws
         draws = [
-            self.halton_seq(sample_size * n_draws, prime=self.primes[i % len(self.primes)]).reshape(sample_size,
-                                                                                                    n_draws)
+            self.halton_seq(sample_size * base, prime=self.primes[i % len(self.primes)]).reshape(sample_size, base)
             for i in range(n_vars)
         ]
-        return np.stack(draws, axis=1)  # (N, Kr, R)
+        draws = np.stack(draws, axis=1)  # (N, Kr, R_base)
+        if self.antithetic:
+            draws = np.concatenate([draws, 1.0 - draws], axis=2)  # (N, Kr, n_draws)
+        return draws
 
     def halton_seq(self, length, prime):
         """Generates a scrambled Halton sequence for a given prime number."""
@@ -159,11 +168,17 @@ class Draws:
         draws = np.atleast_3d(draws)
         return draws
 
+    # Clip uniform draws away from 0/1 to prevent norm.ppf -> ±inf.
+    # This matters especially for antithetic draws where the complement of a
+    # small Halton value is very close to 1.
+    _PPF_CLIP = 1e-10
+
     def evaluate_distribution(self, distr, values):
         """Transform uniform values to the specified distribution."""
         for k, distr_k in enumerate(distr):
             if distr_k in ['n', 'ln', 'tn']:  # Normal-based
-                values[:, k, :] = ss.norm.ppf(values[:, k, :])
+                u = np.clip(values[:, k, :], self._PPF_CLIP, 1.0 - self._PPF_CLIP)
+                values[:, k, :] = ss.norm.ppf(u)
             elif distr_k == 't':  # Triangular
                 values_k = values[:, k, :]
                 values[:, k, :] = (np.sqrt(2 * values_k) - 1) * (values_k <= .5) + \

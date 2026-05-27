@@ -1,0 +1,55 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_153603
+Output dir   : sa_runs\sa_100_20260527_153603
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=20, iter/step=500
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 243565.8571534394
+**************************************************
+Estimation time= 7.1 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.50756039 0.21755485 0.27488477]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.1540197753  0.8613248251 -0.1788172950         0.858    
+AGE.TRAIN           -0.4419664165  0.5170347399 -0.8548099042         0.393    
+SEATS               -0.0002706513  1.0005129973 -0.0002705125             1    
+COST                -0.4427871720  0.0006434111 -688.1870398914             0 ***
+sd.COST              0.7422219802  0.0011457486 647.8052543457             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -9121.260; AIC = 18252.519; BIC = 18276.663; ADJLIK RATIO: 0.251
+
+Specification:
+asvars =  ['COST', 'SEATS']
+isvars =  ['AGE']
+randvars =  {'COST': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+

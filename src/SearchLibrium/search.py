@@ -668,6 +668,16 @@ class Parameters:
         self.allow_random = allow_random
         self.allow_bcvars, self.allow_corvars = allow_bcvars, allow_corvars
 
+        # When False (default), non-convergence only prints a brief one-liner.
+        # Set to True to see the full collinearity / scale / draw-count diagnostic.
+        self.verbose_convergence = kwargs.get('verbose_convergence', False)
+
+        # Halton draw options forwarded to MixedLogit.setup().
+        # antithetic=True (default) mirrors each draw (u → 1-u) for free variance
+        # reduction: equivalent to ~2x draws for normal-based distributions.
+        # shuffled=True applies Owen scrambling to reduce inter-dimension correlation.
+        self.halton_opts = kwargs.get('halton_opts', {'antithetic': True})
+
         self.intercept_opts = intercept_opts
         self.base_alt = base_alt
         self.val_share = val_share
@@ -1501,6 +1511,14 @@ class Search():
 
         label    = model_n or sol.get('model_n', '?')
         sep      = '─' * 62
+
+        # In quiet mode (default during search) only print a one-liner.
+        if not getattr(self.param, 'verbose_convergence', False):
+            print(f"  [no-converge] model={label}  sol#={sol.get('sol_num','?')}  "
+                  f"vars={all_vars}  "
+                  f"(set verbose_convergence=True in Parameters for full diagnostic)")
+            return
+
         print(f"\n{sep}")
         print(f"[NonConvergence Diagnostic]  model={label}  sol#={sol.get('sol_num','?')}")
         print(f"  Variables : {all_vars}")
@@ -2447,7 +2465,17 @@ class Search():
         print(f"└{sep}┘")
 
         if solution.get('model'):
-            solution['model'].summarise()
+            model = solution['model']
+            if model.converged or getattr(self.param, 'verbose_convergence', False):
+                model.summarise()
+            else:
+                # Model accepted via finite-loglik fallback but did not fully converge.
+                # Print a brief note only; avoids flooding output during search.
+                loglik = solution.get('loglik', float('nan'))
+                gnorm  = getattr(model, 'gtol_res', '?')
+                print(f"  [accepted, not fully converged]  loglik={loglik:.3f}"
+                      f"  grad_norm={gnorm}"
+                      f"  (set verbose_convergence=True in Parameters for full model table)")
         print()
 
 
@@ -3457,7 +3485,8 @@ class Search():
         return isvars, varnames, fit_intercept
 
     def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars, corvars,
-            fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params):
+            fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params,
+            halton_opts=None):
     # {
         model = MixedLogit()
         #subvarnames = varnames delete itemes in randvaras
@@ -3469,7 +3498,7 @@ class Search():
         model.setup(X=X, y=y, varnames=varnames, isvars=isvars, alts=alts, transvars=transvars, ids=ids,
             randvars=randvars, panels=panels, fit_intercept=fit_intercept, correlated_vars=corvars, n_draws=n_draws,
             init_coeff=init_coeff, weights=weights, avail=avail,  base_alt=base_alt, maxiter=maxiter,
-            ftol=ftol, gtol=gtol, save_fitted_params=save_fitted_params)
+            ftol=ftol, gtol=gtol, save_fitted_params=save_fitted_params, halton_opts=halton_opts)
         model.fit()
         
         return model
@@ -3587,13 +3616,14 @@ class Search():
         all_vars = [var for var in self.param.varnames if var in all_vars]
         X, y = self.param.df[all_vars], self.param.choices
         asc_ind = False
-        print('change this as_ind', asc_ind)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         model = self.fit_mxl(X, y, varnames=all_vars, alts=self.param.alt_var, isvars=is_vars, transvars=bc_vars,
                     ids=self.param.choice_id, panels=self.param.ind_id, randvars=rand_vars,  corvars=cor_vars,
                     init_coeff=None, fit_intercept=asc_ind, n_draws=self.param.n_draws, weights=self.param.weights,
                     avail=self.param.avail, base_alt=self.param.base_alt,  maxiter=self.param.maxiter,
-                    ftol=self.param.ftol, gtol=self.param.gtol, save_fitted_params=False)
+                    ftol=self.param.ftol, gtol=self.param.gtol,
+                    halton_opts=getattr(self.param, 'halton_opts', None),
+                    save_fitted_params=False)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         sol['model'] = model  # Store the model object
         sol['coeff'] = model.coeff_est
