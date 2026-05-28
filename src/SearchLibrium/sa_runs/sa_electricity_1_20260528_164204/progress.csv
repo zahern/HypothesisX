@@ -1,0 +1,6 @@
+step,temperature,current_obj,best_obj,n_accepted,elapsed_s
+0,1000,28568.5,28568.5,0,87.9
+SA[electricity_1] step       1/2 | T=    1000 | curr=28761.3228 | best=28568.4816 | acc=2 | t=97.4s
+1,1000,28761.3,28568.5,2,97.4
+SA[electricity_1] step       2/2 | T=       5 | curr=27789.7061 | best=27789.7061 | acc=4 | t=108.3s
+2,5,27789.7,27789.7,4,108.3

@@ -1,0 +1,111 @@
+SearchLibrium — SA+PBIL Run
+Run ID       : 101
+Started      : 20260528_084301
+Output dir   : sa_runs\sapbil_101_20260528_084301
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=1
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 20.069923552553618
+**************************************************
+Estimation time= 25.3 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.27069982 0.38164657 0.34765361]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+COST                 0.0004963451  0.0000295716 16.7845008062             0 ***
+HEADWAY             -9.4009860928  5.6656746456 -1.6592880250        0.0971 .  
+SEATS                1.4875450775  0.3007628743  4.9459065749      7.58e-07 ***
+sd.HEADWAY           5.6109152753  3.3528417312  1.6734805055        0.0942 .  
+sd.SEATS             2.2669075337  0.2079563829 10.9008797993             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8545.520; AIC = 17101.041; BIC = 17125.184; ADJLIK RATIO: 0.298
+
+Specification:
+asvars =  ['COST', 'HEADWAY', 'SEATS']
+isvars =  []
+randvars =  {'HEADWAY': np.str_('tn'), 'SEATS': np.str_('u')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 20.069923552553618
+**************************************************
+Estimation time= 25.3 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.27069982 0.38164657 0.34765361]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+COST                 0.0004963451  0.0000295716 16.7845008062             0 ***
+HEADWAY             -9.4009860928  5.6656746456 -1.6592880250        0.0971 .  
+SEATS                1.4875450775  0.3007628743  4.9459065749      7.58e-07 ***
+sd.HEADWAY           5.6109152753  3.3528417312  1.6734805055        0.0942 .  
+sd.SEATS             2.2669075337  0.2079563829 10.9008797993             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8545.520; AIC = 17101.041; BIC = 17125.184; ADJLIK RATIO: 0.298
+
+Specification:
+asvars =  ['COST', 'HEADWAY', 'SEATS']
+isvars =  []
+randvars =  {'HEADWAY': np.str_('tn'), 'SEATS': np.str_('u')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+#Converged=9; #Not Converged=17
+#Accepted=0; #Not Accepted=1
+
+SA+PBIL — probability matrix after 0 update(s):
+  Variable                 P(incl)   P(rand)   P(corr)   P(bc)  P(distr)
+  COST                       0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  TIME                       0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  HEADWAY                    0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  SEATS                      0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2

@@ -1,0 +1,9 @@
+asvars =  [np.str_('pf'), np.str_('seas'), np.str_('tod'), 'wk']
+isvars =  []
+randvars =  {'wk': np.str_('t'), 'tod': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  True
+model =  mixed_logit
+model= 

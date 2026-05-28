@@ -1,0 +1,108 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260528_123022
+Output dir   : sa_runs\sa_100_20260528_123022
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=4
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 56470.3031
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 16215402.84280341
+**************************************************
+Estimation time= 14.8 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.02117451 0.09201061 0.88681487]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+HEADWAY             -0.3672579542  1.0000000000 -0.3672579542         0.713    
+sd.HEADWAY           0.9754017892  1.0000000000  0.9754017892         0.329    
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -28228.323; AIC = 56460.646; BIC = 56470.303; ADJLIK RATIO: -1.318
+
+Specification:
+asvars =  ['HEADWAY']
+isvars =  []
+randvars =  {'HEADWAY': np.str_('ln')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 13832.0063
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 11.5 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.32912992 0.49651701 0.17435307]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.6428271986  0.0177672180 -36.1805206303             0 ***
+AGE.TRAIN           -0.3564583284  0.0183858590 -19.3876352321             0 ***
+HEADWAY             -0.0506366154  0.0029963152 -16.8996288533             0 ***
+sd.HEADWAY           0.0714050555  0.0028393962 25.1479718852             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -6902.346; AIC = 13812.691; BIC = 13832.006; ADJLIK RATIO: 0.433
+
+Specification:
+asvars =  ['HEADWAY']
+isvars =  [np.str_('AGE')]
+randvars =  {'HEADWAY': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+#Converged=23; #Not Converged=2
+#Accepted=4; #Not Accepted=0
+Bandit arm summary (sorted by posterior mean):
+  change_distribution  mean=0.8333 alpha=5.00 beta=1.00 count=3
+  add_isfeature        mean=0.7500 alpha=3.00 beta=1.00 count=1
+  add_asfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_asfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_isfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_randfeature      mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_randfeature   mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_bcfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_bcfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_corfeature       mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_corfeature    mean=0.5000 alpha=1.00 beta=1.00 count=0
+  change_model         mean=0.5000 alpha=1.00 beta=1.00 count=0

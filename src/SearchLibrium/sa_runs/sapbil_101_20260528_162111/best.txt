@@ -1,0 +1,9 @@
+asvars =  ['SEATS', 'TIME']
+isvars =  ['AGE']
+randvars =  {'TIME': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 

@@ -1,0 +1,90 @@
+SearchLibrium — SA+PBIL Run
+Run ID       : 101
+Started      : 20260528_162111
+Output dir   : sa_runs\sapbil_101_20260528_162111
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=2, iter/step=3
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 13221.2445
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 4.3 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR              0.0499196371  0.0124269992  4.0170306711      5.89e-05 ***
+AGE.TRAIN           -0.2660345486  0.0175852980 -15.1282366148             0 ***
+SEATS                0.8912032251  0.0841407408 10.5918157673             0 ***
+TIME                -0.0040236542  0.0008879748 -4.5312705060      5.86e-06 ***
+sd.TIME              0.0361034924  0.0014374114 25.1170206817             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -6593.550; AIC = 13197.101; BIC = 13221.245; ADJLIK RATIO: 0.458
+
+Specification:
+asvars =  ['TIME', 'SEATS']
+isvars =  ['AGE']
+randvars =  {'TIME': np.str_('u')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 13194.9561
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 4.4 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR              0.0421485474  0.0126169614  3.3406258547      0.000836 ***
+AGE.TRAIN           -0.2923380412  0.0184569164 -15.8389427114             0 ***
+SEATS                0.8885130771  0.0850961258 10.4412870643             0 ***
+TIME                -0.0174397151  0.0009586735 -18.1915072756             0 ***
+sd.TIME              0.0380157557  0.0015550047 24.4473570644             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -6580.406; AIC = 13170.813; BIC = 13194.956; ADJLIK RATIO: 0.459
+
+Specification:
+asvars =  ['SEATS', 'TIME']
+isvars =  ['AGE']
+randvars =  {'TIME': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+#Converged=26; #Not Converged=12
+#Accepted=1; #Not Accepted=5
+
+SA+PBIL — probability matrix after 1 update(s):
+  perturbations: accepted=1  rejected=5  not_converged=12  total=18
+  Variable                 P(incl)   P(rand)   P(corr)   P(bc)  P(distr)
+  COST                       0.375     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  TIME                       0.625     0.575     0.425   0.425  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.24
+  HEADWAY                    0.375     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  SEATS                      0.625     0.425     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2

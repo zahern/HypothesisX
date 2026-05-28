@@ -25,7 +25,7 @@ class MultinomialProbit(MultinomialLogit):
     softmax with a probit-style probability construction based on normal CDFs.
     """
 
-    def __init__(self, _jax=False):
+    def __init__(self, _jax=True):
         super(MultinomialProbit, self).__init__(_jax)
         self.descr = "Multinomial Probit (pairwise normal approximation)"
 

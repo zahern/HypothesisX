@@ -13,8 +13,8 @@ class MixedNested(MixedLogit, NestedLogit):
     Mixed Nested Logit Model.
     """
 
-    def __init__(self, _jax=False):
-        MixedLogit.__init__(self)
+    def __init__(self, _jax=True):
+        MixedLogit.__init__(self, _jax=_jax)
         self._jax = _jax
         self._set_backend(_jax)
         self.descr = "Mixed Nested Logit"

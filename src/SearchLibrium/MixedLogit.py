@@ -2,7 +2,7 @@ from typing import Optional
 import itertools
 import numpy as np
 import scipy.stats as ss
-from scipy.optimize import minimize
+from scipy.optimize import minimize, differential_evolution
 from typing import Callable, Tuple
 import inspect
 
@@ -34,8 +34,8 @@ max_comp_val, min_comp_val = 1e+20, 1e-200 # or use float('inf')
 infinity = float('inf')
 
 class MixedLogit(DiscreteChoiceModel):
-    def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u']):
-        super().__init__()
+    def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u'], _jax=True):
+        super().__init__(_jax)
         self.halton_opts = halton_opts
         self.draws_generator = Draws(k=len(distributions), halton_opts=halton_opts, rvdist=distributions)
         self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters
@@ -66,7 +66,9 @@ class MixedLogit(DiscreteChoiceModel):
               n_draws=1000, halton=True, minimise_func=None,
               batch_size=None, halton_opts=None, ftol=1e-6,
               gtol=1e-6, return_hess=True, return_grad=True, method="bfgs",
-              save_fitted_params=True, mnl_init=True):
+              save_fitted_params=True, mnl_init=True,
+              de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
+              de_polish=False):
         # {
         self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -104,6 +106,11 @@ class MixedLogit(DiscreteChoiceModel):
         self.minimise_func = minimise_func
         self.save_fitted_params = save_fitted_params
         self.mnl_init = mnl_init
+        self.de_init = de_init
+        self.de_popsize = de_popsize
+        self.de_maxiter = de_maxiter
+        self.de_tol = de_tol
+        self.de_polish = de_polish
         self.total_fun_eval = 0
         self.method = method.lower() if hasattr(method, 'lower') else method
         self.jac = self.return_grad  # scipy optimize parameter
@@ -312,6 +319,80 @@ class MixedLogit(DiscreteChoiceModel):
         if len(self.init_coeff) != n_coeff and not hasattr(self, 'class_params_spec'):
             raise ValueError("The size of init_coeff must be: " + str(n_coeff))
 
+        positive_bound = (0, infinity)
+        any_bound = (-infinity, infinity)
+        lmda_bound = (-5, 1)
+        bound_dict = {
+            "bf": (any_bound, self.Kf),
+            "br_b": (any_bound, self.Kr),
+            "chol": (any_bound, self.Kchol),
+            "br_w": (positive_bound, self.Kr - self.correlationLength),
+            "bf_trans": (any_bound, self.Kftrans),
+            "flmbda": (lmda_bound, self.Kftrans),
+            "br_trans_b": (any_bound, self.Krtrans),
+            "br_trans_w": (any_bound, self.Krtrans),
+            "rlmbda": (lmda_bound, self.Krtrans)
+        }
+        bnds = [[bound[1][0]] * bound[1][1] for bound in bound_dict.items() if bound[1][1] > 0]
+        bnds = list(itertools.chain.from_iterable(bnds))
+
+        print(f"[MXL] Starting beta seed length={n_coeff}, first_values={betas[:min(8, len(betas))]!r}")
+
+        if self.de_init:
+            print(f"[MXL] DE init enabled: popsize={self.de_popsize}, maxiter={self.de_maxiter}, tol={self.de_tol}, polish={self.de_polish}")
+            try:
+                before_de_obj = self.get_loglik_gradient(betas, self.X, self.y, self.panel_info,
+                                                        draws, drawstrans, self.weights,
+                                                        self.avail, self.batch_size)[0]
+                print(f"[MXL] DE before: obj={before_de_obj:.6g}")
+
+                def _de_obj(x):
+                    return self.get_loglik_gradient(x, self.X, self.y, self.panel_info,
+                                                    draws, drawstrans, self.weights,
+                                                    self.avail, self.batch_size)[0]
+
+                if len(bnds) == n_coeff:
+                    de_bounds = []
+                    for idx, bound in enumerate(bnds):
+                        low, high = bound
+                        if not np.isfinite(low) or not np.isfinite(high):
+                            scale = max(1.0, 10.0 * abs(betas[idx]) if idx < len(betas) else 1.0)
+                            de_bounds.append((-scale, scale))
+                        else:
+                            de_bounds.append((low, high))
+                else:
+                    de_bounds = [(-10, 10)] * n_coeff
+
+                de_result = differential_evolution(
+                    _de_obj,
+                    de_bounds,
+                    strategy='best1bin',
+                    maxiter=self.de_maxiter,
+                    popsize=self.de_popsize,
+                    tol=self.de_tol,
+                    polish=self.de_polish,
+                    disp=False,
+                    workers=1,
+                )
+                de_improved = False
+                print(f"[MXL] DE completed: success={de_result.success}, nit={de_result.nit}, message={de_result.message}")
+                if de_result.success:
+                    de_obj = self.get_loglik_gradient(de_result.x, self.X, self.y, self.panel_info,
+                                                     draws, drawstrans, self.weights,
+                                                     self.avail, self.batch_size)[0]
+                    print(f"[MXL] DE after: obj={de_obj:.6g}")
+                    de_improved = de_obj < before_de_obj
+                    if de_improved:
+                        betas = de_result.x
+                        print(f"[MXL] DE best seed first_values={betas[:min(8, len(betas))]!r}")
+                        print("[MXL] Differential evolution initialization improved the objective; starting minimise from DE seed.")
+                    else:
+                        print(f"[MXL] Differential evolution did not beat the original start ({de_obj:.6g} >= {before_de_obj:.6g}); keeping original start.")
+                if not de_improved:
+                    print(f"[MXL] Differential evolution initialization rejected because it did not improve the starting objective. Using original seed.")
+            except Exception as e:
+                print(f"[MXL] Differential evolution initialization failed: {e}")
+
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
         if dev.using_gpu:  # {
             self.X, self.y = dev.convert_array_gpu(self.X), dev.convert_array_gpu(self.y)
@@ -322,6 +403,15 @@ class MixedLogit(DiscreteChoiceModel):
             self.avail = dev.convert_array_gpu(self.avail) if self.avail is not None else None
         # }
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+        print(f"[MXL] Minimization start with betas first_values={betas[:min(8, len(betas))]!r}")
+        try:
+            before_fun = self.get_loglik_gradient(betas, self.X, self.y, self.panel_info,
+                                                 draws, drawstrans, self.weights,
+                                                 self.avail, self.batch_size)[0]
+            print(f"[MXL] Minimization obj before={before_fun:.6g}")
+        except Exception as e:
+            print(f"[MXL] Could not evaluate initial objective before minimization: {e}")
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Generate bound for L-BFGS-B method
@@ -378,6 +468,9 @@ class MixedLogit(DiscreteChoiceModel):
         options = {'gtol': self.gtol, 'maxiter': self.maxiter, 'disp': False}
         result = minimise_func(self.get_loglik_gradient, betas, jac=self.jac, method=self.method,
                                args=args, tol=self.ftol, bounds=bounds, options=options)
+        print(f"[MXL] Minimization completed: success={result.get('success', None)}, fun={result.get('fun', float('nan')):.6g}, nit={result.get('nit', '?')}")
+        if 'x' in result:
+            print(f"[MXL] Minimization final betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         if hasattr(self, 'method') and self.method == "L-BFGS-B":  # {
@@ -428,38 +521,37 @@ class MixedLogit(DiscreteChoiceModel):
     # ------------------------------------------------------------------
     @staticmethod
     def _jax_mxl_negloglik(betas, X_jax, y_jax, panel_info_jax, draws_jax,
-                            fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names):
+                            fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names,
+                            correlationLength):
         """JAX simulation-based log-likelihood for Mixed Logit (standard case).
 
         Handles fixed and random (normally/lognormally distributed) parameters.
-        Cholesky correlation structure is included via the Kchol segment.
+        Cholesky correlation structure is included via the Kchol segment;
+        uncorrelated random vars use independent std devs in Br_w.
         """
         import jax.numpy as jnp
 
         # ---- split beta vector ----
         Bf     = betas[:Kf]
         Br_b   = betas[Kf:Kf + Kr]
-        chol_v = betas[Kf + Kr:Kf + Kr + Kchol]   # cholesky lower-triangle values
+        chol_v = betas[Kf + Kr:Kf + Kr + Kchol]             # correlated cholesky elements
         Br_w   = betas[Kf + Kr + Kchol:Kf + Kr + Kchol + Kbw]  # independent std devs
 
         # ---- build cholesky matrix ----
-        tril_r, tril_c = jnp.tril_indices(Kr)
+        # Rows 0..correlationLength-1: lower-triangle from chol_v
+        # Rows correlationLength..Kr-1: diagonal from Br_w (uncorrelated)
         chol_mat = jnp.zeros((Kr, Kr))
-        # place chol values into lower triangle
-        # (static indices ok for jit since Kr is compile-time constant)
         idx = 0
-        for r in range(Kr):
+        for r in range(correlationLength):
             for c in range(r + 1):
                 chol_mat = chol_mat.at[r, c].set(chol_v[idx])
                 idx += 1
-        # diagonal of the independent block
         for k in range(Kbw):
-            chol_mat = chol_mat.at[Kr - Kbw + k, Kr - Kbw + k].set(jnp.abs(Br_w[k]))
+            diag_pos = correlationLength + k
+            chol_mat = chol_mat.at[diag_pos, diag_pos].set(jnp.abs(Br_w[k]))
 
         # ---- sample random coefficients: (N, Kr, R) ----
-        N   = X_jax.shape[0]
-        R   = draws_jax.shape[2]
-        # draws_jax: (N, Kr, R)
+        N = X_jax.shape[0]
         Br = Br_b[:, None] + jnp.einsum('kl,nlr->nkr',
                                          chol_mat,
                                          draws_jax[:, :Kr, :])   # (N, Kr, R)
@@ -475,21 +567,24 @@ class MixedLogit(DiscreteChoiceModel):
                     Br_b[k] + Br_w[k] * (draws_jax[:, k, :] - 0.5))
 
         # ---- utility ----
-        # X_jax: (N, P, J, K)
         P = X_jax.shape[1]
-        Xf = X_jax[:, :, :, fxidx]                           # (N, P, J, Kf)
+        J = X_jax.shape[2]
         Xr = X_jax[:, :, :, rvidx]                           # (N, P, J, Kr)
-
-        UB = jnp.einsum('npjk,k->npj', Xf, Bf)              # (N, P, J)
         UR = jnp.einsum('npjk,nkr->npjr', Xr, Br)           # (N, P, J, R)
-        U  = UB[:, :, :, None] + UR                          # (N, P, J, R)
+
+        if Kf > 0:
+            Xf = X_jax[:, :, :, fxidx]                       # (N, P, J, Kf)
+            UB = jnp.einsum('npjk,k->npj', Xf, Bf)           # (N, P, J)
+            U  = UB[:, :, :, None] + UR
+        else:
+            U  = UR                                           # (N, P, J, R)
 
         U   = U - jnp.max(U, axis=2, keepdims=True)
         eU  = jnp.exp(U)
         p   = eU / jnp.sum(eU, axis=2, keepdims=True)        # (N, P, J, R)
 
-        pch = jnp.sum(y_jax[:, :, :, None] * p, axis=2)     # (N, P, R) – chosen probs
-        pch = jnp.prod(pch, axis=1)                          # (N, R)    – product across panels
+        pch = jnp.sum(y_jax[:, :, :, None] * p, axis=2)     # (N, P, R)
+        pch = jnp.prod(pch, axis=1)                          # (N, R)
         pch = jnp.clip(pch, 1e-300, None)
 
         sim_p = jnp.mean(pch, axis=1)                        # (N,)
@@ -503,27 +598,38 @@ class MixedLogit(DiscreteChoiceModel):
         Falls back to standard numpy optimisation on failure.
         """
         try:
+            import os
+            os.environ.setdefault("JAX_ENABLE_X64", "True")
             import jax
+            jax.config.update("jax_enable_x64", True)
             import jax.numpy as jnp
             from scipy.optimize import minimize as sp_min
 
+            if int(self.Kr) == 0:
+                print("[JAX MXL optimizer] no random coefficients detected (Kr=0); falling back to scipy.")
+                return None
+
             # Convert static inputs once
             X_jax        = jnp.array(self.X,          dtype=jnp.float64)
-            y_jax        = jnp.array(self.y,          dtype=jnp.float64)
-            pi_jax       = jnp.array(self.panel_info, dtype=jnp.float64)
-            draws_jax    = jnp.array(draws,            dtype=jnp.float64)
+            _y_np        = np.asarray(self.y)
+            if _y_np.ndim > 3:           # stored as (N, P, J, 1) in some paths
+                _y_np = _y_np[..., 0]
+            y_jax        = jnp.array(_y_np,            dtype=jnp.float64)
+            pi_jax       = jnp.array(self.panel_info,  dtype=jnp.float64)
+            draws_jax    = jnp.array(draws,             dtype=jnp.float64)
 
             fxidx = jnp.array(self.fxidx, dtype=bool)
             rvidx = jnp.array(self.rvidx, dtype=bool)
             rvdist_names = [d for d in self.rvdist if d is not False]
 
             Kf, Kr, Kchol, Kbw = int(self.Kf), int(self.Kr), int(self.Kchol), int(self.Kbw)
+            correlationLength = int(self.correlationLength)
 
             @jax.jit
             def _neg_ll(b):
                 return self._jax_mxl_negloglik(
                     b, X_jax, y_jax, pi_jax, draws_jax,
-                    fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names)
+                    fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names, correlationLength)
 
             _val_grad = jax.jit(jax.value_and_grad(_neg_ll))
 

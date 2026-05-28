@@ -643,7 +643,7 @@ class Parameters:
             print(f'inspect choices {choices}')
 
             raise ValueError('choice set must be defined and in list format')
-        self.verbose = kwargs.get('verbose', True)
+        self.verbose = kwargs.get('verbose', False)
         if self.verbose:
             logging.info('verbose = TRUE, Will print all solutions. SET verbose = False in parameters')
         self.test_choices = test_choices
@@ -677,6 +677,11 @@ class Parameters:
         # reduction: equivalent to ~2x draws for normal-based distributions.
         # shuffled=True applies Owen scrambling to reduce inter-dimension correlation.
         self.halton_opts = kwargs.get('halton_opts', {'antithetic': True})
+        self.de_init = kwargs.get('de_init', False)
+        self.de_popsize = kwargs.get('de_popsize', 4)
+        self.de_maxiter = kwargs.get('de_maxiter', 3)
+        self.de_tol = kwargs.get('de_tol', 0.5)
+        self.de_polish = kwargs.get('de_polish', False)
 
         self.intercept_opts = intercept_opts
         self.base_alt = base_alt
@@ -774,7 +779,11 @@ class Parameters:
             pass
 
         # TODO I Think we could initialise it this way more effictively
-        acceptable_keys = ['LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest', '_jax', 'all_sig']
+        acceptable_keys = [
+            'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
+            '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
+            'de_tol', 'de_polish', 'halton_opts'
+        ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
         for key, value in kwargs.items():
@@ -962,7 +971,7 @@ class Solution(UserDict):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         self.data.setdefault('insig', None) # Insignificant variables
-        self.data.setdefault('obj', np.zeros(nb_crit) )
+        self.data.setdefault('obj', np.full(nb_crit, np.inf))
         self.data.setdefault('model', None)
         self.data.setdefault('class_num', None)
         self.data.setdefault('hash', None)
@@ -1512,11 +1521,9 @@ class Search():
         label    = model_n or sol.get('model_n', '?')
         sep      = '─' * 62
 
-        # In quiet mode (default during search) only print a one-liner.
+        # In quiet mode (default during search) simply count the failure and
+        # return — the totals are written to the results file at the end.
         if not getattr(self.param, 'verbose_convergence', False):
-            print(f"  [no-converge] model={label}  sol#={sol.get('sol_num','?')}  "
-                  f"vars={all_vars}  "
-                  f"(set verbose_convergence=True in Parameters for full diagnostic)")
             return
 
         print(f"\n{sep}")
@@ -3488,7 +3495,7 @@ class Search():
             fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params,
             halton_opts=None):
     # {
-        model = MixedLogit()
+        model = MixedLogit(_jax=getattr(self.param, '_jax', True))
         #subvarnames = varnames delete itemes in randvaras
 
 
@@ -3498,7 +3505,12 @@ class Search():
         model.setup(X=X, y=y, varnames=varnames, isvars=isvars, alts=alts, transvars=transvars, ids=ids,
             randvars=randvars, panels=panels, fit_intercept=fit_intercept, correlated_vars=corvars, n_draws=n_draws,
             init_coeff=init_coeff, weights=weights, avail=avail,  base_alt=base_alt, maxiter=maxiter,
-            ftol=ftol, gtol=gtol, save_fitted_params=save_fitted_params, halton_opts=halton_opts)
+            ftol=ftol, gtol=gtol, save_fitted_params=save_fitted_params, halton_opts=halton_opts,
+            de_init=getattr(self.param, 'de_init', False),
+            de_popsize=getattr(self.param, 'de_popsize', 4),
+            de_maxiter=getattr(self.param, 'de_maxiter', 3),
+            de_tol=getattr(self.param, 'de_tol', 0.5),
+            de_polish=getattr(self.param, 'de_polish', False))
         model.fit()
         
         return model
@@ -3700,7 +3712,7 @@ class Search():
         X_nest = self.param.df[nest_vars]
 
         # Fit the Nested Logit model
-        model = NestedLogit(_jax=self.param._jax)
+        model = NestedLogit(_jax=getattr(self.param, '_jax', True))
         model.setup(X=X, X_nest = X_nest, y=y, varnames=all_vars, isvars=is_vars,
                     alts=self.param.alt_var, ids=self.param.choice_id,
                     nests=nests, lambdas=lambdas, fit_intercept=asc_ind, return_grad=self.param.grad, return_hess=self.param.hess)

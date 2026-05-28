@@ -45,3 +45,53 @@ asc_ind =  True
 model =  mixed_logit
 model= 
 
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 12367.2145
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 2.0 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.43646238 0.3957006  0.16783702]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+TIME                -0.0214373529  0.0009704173 -22.0908597965             0 ***
+HEADWAY             -0.0315038608  0.0019917000 -15.8175731728             0 ***
+sd.TIME              0.0477896931  0.0021264886 22.4735243471             0 ***
+sd.HEADWAY           0.0429313026  0.0021907991 19.5961843095             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -6169.950; AIC = 12347.900; BIC = 12367.214; ADJLIK RATIO: 0.493
+
+Specification:
+asvars =  [np.str_('HEADWAY'), np.str_('TIME')]
+isvars =  []
+randvars =  {'TIME': np.str_('n'), 'HEADWAY': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+#Converged=510; #Not Converged=13
+#Accepted=253; #Not Accepted=245
+
+SA+PBIL — probability matrix after 253 update(s):
+  Variable                 P(incl)   P(rand)   P(corr)   P(bc)  P(distr)
+  COST                       0.050     0.411     0.050   0.050  n=0.626 ln=0.591 tn=0.358 u=0.36 t=0.468
+  TIME                       0.509     0.260     0.050   0.050  n=0.602 ln=0.234 tn=0.262 u=0.514 t=0.592
+  HEADWAY                    0.511     0.598     0.050   0.050  n=0.372 ln=0.375 tn=0.499 u=0.401 t=0.308
+  SEATS                      0.050     0.152     0.050   0.050  n=0.341 ln=0.242 tn=0.573 u=0.389 t=0.39

@@ -1,0 +1,82 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : electricity_1
+Started      : 20260528_164204
+Output dir   : sa_runs\sa_electricity_1_20260528_164204
+Criterions   : [['bic', -1]]
+Models       : ['mixed_logit']
+tI=1000, tF=5, steps=2, iter/step=2
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 28568.4816
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 2.6 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+loc                  1.1496607671  0.0475563497 24.1747058776             0 ***
+wk                   0.7257507962  0.0427829722 16.9635431639             0 ***
+cl                  -0.1049958504  0.0155013288 -6.7733451790      1.26e-11 ***
+sd.cl                0.2421164886  0.0150965508 16.0378680117             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -14272.463; AIC = 28552.926; BIC = 28568.482; ADJLIK RATIO: -12.563
+
+Specification:
+asvars =  ['cl', 'loc', 'wk']
+isvars =  []
+randvars =  {'cl': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 27789.7061
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 3.3 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+pf                  -0.5153394569  0.0227540628 -22.6482391775             0 ***
+seas                -4.7956331575  0.1805270308 -26.5646265667             0 ***
+wk                   0.2946961531  0.0525792836  5.6047958987      2.09e-08 ***
+tod                 -5.3609919983  0.2223595820 -24.1095614196             0 ***
+sd.wk               -0.7155044982  0.0576832741 -12.4040202267             0 ***
+sd.tod               1.9169136199  0.1182334516 16.2129549099             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -13877.186; AIC = 27766.373; BIC = 27789.706; ADJLIK RATIO: -12.189
+
+Specification:
+asvars =  [np.str_('pf'), np.str_('seas'), np.str_('tod'), 'wk']
+isvars =  []
+randvars =  {'wk': np.str_('t'), 'tod': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+#Converged=25; #Not Converged=0
+#Accepted=4; #Not Accepted=0

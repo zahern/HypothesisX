@@ -1,0 +1,6 @@
+step,temperature,current_obj,best_obj,n_accepted,elapsed_s
+0,100,13221.2,13221.2,0,201.3
+SA[101] step       1/2 | T=     100 | curr=13221.2445 | best=13221.2445 | acc=0 | t=223.7s
+1,100,13221.2,13221.2,0,223.7
+SA[101] step       2/2 | T=    0.01 | curr=13194.9561 | best=13194.9561 | acc=1 | t=246.7s
+2,0.01,13195,13195,1,246.7

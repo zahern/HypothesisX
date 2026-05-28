@@ -1,0 +1,89 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260528_145027
+Output dir   : sa_runs\sa_100_20260528_145027
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=4
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 17694.8945
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 5.0 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+SEATS                1.6749186848  0.1934535377  8.6579894294             0 ***
+sd.SEATS            -2.3145160188  0.2329326295 -9.9364181966             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8840.619; AIC = 17685.237; BIC = 17694.894; ADJLIK RATIO: 0.274
+
+Specification:
+asvars =  ['SEATS']
+isvars =  []
+randvars =  {'SEATS': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 17694.8945
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 5.0 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+SEATS                1.6749186848  0.1934535377  8.6579894294             0 ***
+sd.SEATS            -2.3145160188  0.2329326295 -9.9364181966             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8840.619; AIC = 17685.237; BIC = 17694.894; ADJLIK RATIO: 0.274
+
+Specification:
+asvars =  ['SEATS']
+isvars =  []
+randvars =  {'SEATS': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+#Converged=21; #Not Converged=1
+#Accepted=0; #Not Accepted=0
+Bandit arm summary (sorted by posterior mean):
+  add_asfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_asfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_isfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_isfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_randfeature      mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_randfeature   mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_bcfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_bcfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_corfeature       mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_corfeature    mean=0.5000 alpha=1.00 beta=1.00 count=0
+  change_model         mean=0.5000 alpha=1.00 beta=1.00 count=0
+  change_distribution  mean=0.5000 alpha=1.00 beta=1.00 count=0

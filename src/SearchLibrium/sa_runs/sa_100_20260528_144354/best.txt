@@ -1,0 +1,9 @@
+asvars =  ['TIME', 'HEADWAY']
+isvars =  []
+randvars =  {'HEADWAY': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  True
+model =  mixed_logit
+model= 

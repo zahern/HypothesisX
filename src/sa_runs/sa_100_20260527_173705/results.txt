@@ -1,0 +1,123 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_173705
+Output dir   : sa_runs\sa_100_20260527_173705
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=4
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 159639.9055046435
+**************************************************
+Estimation time= 13.5 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.32745976 0.31082757 0.36171267]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.0997763676  1.0000092158 -0.0997754481         0.921    
+AGE.TRAIN           -0.1789529551  0.9999884377 -0.1789550242         0.858    
+HEADWAY             -0.0563415612  0.9928997255 -0.0567444625         0.955    
+SEATS               -0.0054293229  1.0000000114 -0.0054293228         0.996    
+COST                -0.8958215333  0.8444027214 -1.0608937070         0.289    
+TIME                 0.2445253004  0.9854411640  0.2481378994         0.804    
+sd.COST              0.4869444590  0.7220894698  0.6743547433           0.5    
+sd.TIME              0.2688098025  1.0004561674  0.2686872361         0.788    
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -36625.518; AIC = 73267.036; BIC = 73305.666; ADJLIK RATIO: -2.008
+
+Specification:
+asvars =  ['COST', 'TIME', 'HEADWAY', 'SEATS']
+isvars =  ['AGE']
+randvars =  {'COST': np.str_('ln'), 'TIME': np.str_('tn')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 159639.9055046435
+**************************************************
+Estimation time= 13.5 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.32745976 0.31082757 0.36171267]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.0997763676  1.0000092158 -0.0997754481         0.921    
+AGE.TRAIN           -0.1789529551  0.9999884377 -0.1789550242         0.858    
+HEADWAY             -0.0563415612  0.9928997255 -0.0567444625         0.955    
+SEATS               -0.0054293229  1.0000000114 -0.0054293228         0.996    
+COST                -0.8958215333  0.8444027214 -1.0608937070         0.289    
+TIME                 0.2445253004  0.9854411640  0.2481378994         0.804    
+sd.COST              0.4869444590  0.7220894698  0.6743547433           0.5    
+sd.TIME              0.2688098025  1.0004561674  0.2686872361         0.788    
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -36625.518; AIC = 73267.036; BIC = 73305.666; ADJLIK RATIO: -2.008
+
+Specification:
+asvars =  ['COST', 'TIME', 'HEADWAY', 'SEATS']
+isvars =  ['AGE']
+randvars =  {'COST': np.str_('ln'), 'TIME': np.str_('tn')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+#Converged=14; #Not Converged=31
+#Accepted=0; #Not Accepted=0
+Bandit arm summary (sorted by posterior mean):
+  add_asfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_isfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_bcfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_bcfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_corfeature       mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_corfeature    mean=0.5000 alpha=1.00 beta=1.00 count=0
+  change_model         mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_asfeature     mean=0.1667 alpha=1.00 beta=5.00 count=2
+  add_randfeature      mean=0.1667 alpha=1.00 beta=5.00 count=2
+  remove_randfeature   mean=0.1667 alpha=1.00 beta=5.00 count=2
+  remove_isfeature     mean=0.1250 alpha=1.00 beta=7.00 count=3
+  change_distribution  mean=0.1250 alpha=1.00 beta=7.00 count=3

@@ -146,7 +146,7 @@ class OrderedLogit():
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, _jax=False, **kwargs):
+    def __init__(self, _jax=True, **kwargs):
     # {
         self.descr = "ORL"
         self.delta_transform = kwargs.get('dt',True)

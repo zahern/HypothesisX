@@ -1,0 +1,9 @@
+asvars =  ['RECRE', 'PRICE', 'CF_stay']
+isvars =  []
+randvars =  {'RECRE': np.str_('u'), 'PRICE': np.str_('u'), 'CF_stay': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 

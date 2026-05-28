@@ -1,0 +1,99 @@
+SearchLibrium — SA+PBIL Run
+Run ID       : 101
+Started      : 20260527_172514
+Output dir   : sa_runs\sapbil_101_20260527_172514
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=4
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 12338.5467
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 3.2 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.43556715 0.41789631 0.14653654]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+TIME                -0.0265540907  0.0011513622 -23.0631938508             0 ***
+HEADWAY             -0.0321481993  0.0019984666 -16.0864327524             0 ***
+sd.TIME              0.0447880194  0.0017259118 25.9503517000             0 ***
+sd.HEADWAY           0.0431726618  0.0021143156 20.4192132790             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -6155.616; AIC = 12319.232; BIC = 12338.547; ADJLIK RATIO: 0.494
+
+Specification:
+asvars =  ['TIME', 'HEADWAY']
+isvars =  []
+randvars =  {'TIME': np.str_('n'), 'HEADWAY': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 12338.5467
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 3.2 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.43556715 0.41789631 0.14653654]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+TIME                -0.0265540907  0.0011513622 -23.0631938508             0 ***
+HEADWAY             -0.0321481993  0.0019984666 -16.0864327524             0 ***
+sd.TIME              0.0447880194  0.0017259118 25.9503517000             0 ***
+sd.HEADWAY           0.0431726618  0.0021143156 20.4192132790             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -6155.616; AIC = 12319.232; BIC = 12338.547; ADJLIK RATIO: 0.494
+
+Specification:
+asvars =  ['TIME', 'HEADWAY']
+isvars =  []
+randvars =  {'TIME': np.str_('n'), 'HEADWAY': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+#Converged=24; #Not Converged=9
+#Accepted=9; #Not Accepted=3
+
+SA+PBIL — probability matrix after 9 update(s):
+  Variable                 P(incl)   P(rand)   P(corr)   P(bc)  P(distr)
+  COST                       0.130     0.203     0.190   0.190  n=0.163 ln=0.2 tn=0.2 u=0.181 t=0.2
+  TIME                       0.097     0.206     0.311   0.311  n=0.19 ln=0.2 tn=0.2 u=0.276 t=0.2
+  HEADWAY                    0.050     0.226     0.226   0.226  n=0.2 ln=0.172 tn=0.181 u=0.2 t=0.2
+  SEATS                      0.097     0.118     0.427   0.427  n=0.2 ln=0.19 tn=0.2 u=0.2 t=0.2

@@ -141,7 +141,7 @@ class DiscreteChoiceModel(ABC):
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, jax = False):
+    def __init__(self, jax = True):
     # {
 
         self.reset_attributes()

@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, differential_evolution
 from scipy.special import logsumexp
 
 
@@ -13,7 +13,7 @@ class LatentClassMixedLogit:
         class_maxiter=100,
         tol=1e-6,
         random_state=0,
-        _jax=False,
+        _jax=True,
         n_init=1,
     ):
         self.n_classes = int(n_classes)
@@ -190,6 +190,82 @@ class LatentClassMixedLogit:
         )
         return result.x
 
+    def _de_warm_start(
+        self,
+        popsize=6,
+        maxiter=20,
+        tol=0.01,
+        seed=None,
+        bounds_scale=5.0,
+    ):
+        """Differential Evolution warm-start for EM betas.
+
+        Minimises the negative marginal log-likelihood over the flattened
+        ``(n_classes, K)`` beta matrix.  Uses JAX for the objective if
+        enabled, otherwise falls back to the numpy path.
+
+        Returns
+        -------
+        betas0 : ndarray, shape (n_classes, K)
+        """
+        n_params = self.n_classes * self.K
+        bounds = [(-bounds_scale, bounds_scale)] * n_params
+
+        if self._jax_enabled:
+            jnp = self.jnp
+            X_b = self.X_backend          # (N, J, K)
+            y_b = self.y_backend          # (N, J)
+            av_b = self.avail_backend     # (N, J)
+            C = self.n_classes
+
+            @self.jit
+            def _jax_negll(betas_flat):
+                betas = betas_flat.reshape(C, self.K)
+                utilities = jnp.einsum("ck,njk->ncj", betas, X_b)
+                utilities = jnp.where(av_b[:, None, :] > 0, utilities, -1e10)
+                utilities = utilities - jnp.max(utilities, axis=2, keepdims=True)
+                exp_u = jnp.exp(utilities) * av_b[:, None, :]
+                denom = jnp.clip(exp_u.sum(axis=2, keepdims=True), 1e-300)
+                probs = exp_u / denom                      # (N, C, J)
+                chosen = jnp.clip((probs * y_b[:, None, :]).sum(axis=2), 1e-300)  # (N, C)
+                log_chosen = jnp.log(chosen)               # (N, C)
+                # equal class priors
+                log_prior = jnp.log(jnp.full(C, 1.0 / C))
+                log_joint = log_chosen + log_prior[None, :]
+                log_marg = self.jax_logsumexp(log_joint, axis=1)
+                return -jnp.sum(log_marg)
+
+            def _obj(betas_np):
+                return float(_jax_negll(jnp.array(betas_np, dtype=jnp.float64)))
+
+        else:
+            def _obj(betas_np):
+                betas = betas_np.reshape(self.n_classes, self.K)
+                log_choice, _ = self._log_choice_probs_np(betas)   # (N, C)
+                log_prior = np.log(np.full(self.n_classes, 1.0 / self.n_classes))
+                log_joint = log_choice + log_prior[None, :]
+                log_marg = logsumexp(log_joint, axis=1)
+                return -float(log_marg.sum())
+
+        print(
+            f"[LC-DE] Running DE: classes={self.n_classes}, K={self.K}, "
+            f"popsize={popsize}, maxiter={maxiter}, jax={self._jax_enabled}"
+        )
+        result = differential_evolution(
+            _obj,
+            bounds,
+            popsize=popsize,
+            maxiter=maxiter,
+            tol=tol,
+            seed=seed,
+            polish=False,
+        )
+        print(
+            f"[LC-DE] DE done: success={result.success}, "
+            f"negll={result.fun:.4f}, nit={result.nit}"
+        )
+        return result.x.reshape(self.n_classes, self.K)
+
     def _make_initial_betas(self, rng, betas0=None):
         if betas0 is not None:
             betas0 = np.asarray(betas0, dtype=float)
@@ -237,7 +313,30 @@ class LatentClassMixedLogit:
             "iterations": iteration,
         }
 
-    def fit(self, betas0=None, class_probs0=None):
+    def fit(self, betas0=None, class_probs0=None,
+            de_init=False, de_popsize=6, de_maxiter=20, de_tol=0.01, de_seed=None):
+        """Fit the latent class model via EM.
+
+        Parameters
+        ----------
+        betas0 : ndarray, optional
+            Initial class betas, shape (n_classes, K).
+        class_probs0 : ndarray, optional
+            Initial class shares, length n_classes.
+        de_init : bool
+            Use Differential Evolution to warm-start the EM betas (overrides
+            ``betas0`` when True).
+        de_popsize, de_maxiter, de_tol, de_seed
+            DE hyper-parameters forwarded to :meth:`_de_warm_start`.
+        """
+        if de_init:
+            betas0 = self._de_warm_start(
+                popsize=de_popsize,
+                maxiter=de_maxiter,
+                tol=de_tol,
+                seed=de_seed,
+            )
+
         best_result = None
 
         for init_idx in range(self.n_init):

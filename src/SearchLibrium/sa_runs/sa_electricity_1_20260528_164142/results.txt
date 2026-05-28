@@ -1,0 +1,8 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : electricity_1
+Started      : 20260528_164142
+Output dir   : sa_runs\sa_electricity_1_20260528_164142
+Criterions   : [['bic', -1]]
+Models       : ['mixed_logit']
+tI=1000, tF=5, steps=2, iter/step=2
+────────────────────────────────────────────────────────────

@@ -1,0 +1,8 @@
+SearchLibrium — SA+PBIL Run
+Run ID       : 101
+Started      : 20260528_162023
+Output dir   : sa_runs\sapbil_101_20260528_162023
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=2, iter/step=3
+────────────────────────────────────────────────────────────

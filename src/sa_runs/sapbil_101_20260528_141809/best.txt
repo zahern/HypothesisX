@@ -1,0 +1,9 @@
+asvars =  ['COST']
+isvars =  ['AGE']
+randvars =  {'COST': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 

@@ -1,0 +1,84 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : berlin_1
+Started      : 20260528_164555
+Output dir   : sa_runs\sa_berlin_1_20260528_164555
+Criterions   : [['bic', -1]]
+Models       : ['mixed_logit']
+tI=1000, tF=0.1, steps=2, iter/step=2
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 4823.8608
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 2.7 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+PRICE               -0.3807481001  0.0173122950 -21.9929304979             0 ***
+BIKELANE             0.4248678122  0.0602155882  7.0557778341      1.72e-12 ***
+RECRE               -2.1596123475  0.3481112281 -6.2037997428      5.51e-10 ***
+CF_stay              7.1706721534  1.4710556198  4.8745078411      1.09e-06 ***
+sd.RECRE             1.4364325962  0.2563752284  5.6028525273      2.11e-08 ***
+sd.CF_stay           8.6022802254  1.2360682840  6.9593891673      3.42e-12 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -2394.382; AIC = 4800.765; BIC = 4823.861; ADJLIK RATIO: 0.301
+
+Specification:
+asvars =  ['RECRE', 'PRICE', 'CF_stay', 'BIKELANE']
+isvars =  []
+randvars =  {'RECRE': np.str_('ln'), 'CF_stay': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 4665.9879
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 2.7 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+RECRE                0.4677214194  0.0525603581  8.8987487212             0 ***
+PRICE               -0.2694377801  0.0290967807 -9.2600546798             0 ***
+CF_stay              6.8957960977  1.1468477241  6.0128262476      1.82e-09 ***
+sd.RECRE             0.3967146069  0.0645646271  6.1444574952      8.02e-10 ***
+sd.PRICE             0.4138217006  0.0323360790 12.7975225693             0 ***
+sd.CF_stay           6.7341142002  0.9304832725  7.2372222042      4.58e-13 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -2315.446; AIC = 4642.892; BIC = 4665.988; ADJLIK RATIO: 0.324
+
+Specification:
+asvars =  ['RECRE', 'PRICE', 'CF_stay']
+isvars =  []
+randvars =  {'RECRE': np.str_('u'), 'PRICE': np.str_('u'), 'CF_stay': np.str_('n')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+#Converged=25; #Not Converged=4
+#Accepted=3; #Not Accepted=1

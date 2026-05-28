@@ -24,7 +24,7 @@ except ImportError:
 class BinaryProbit(DiscreteChoiceModel):
     """Binary probit estimated with JAX autodiff and scipy L-BFGS-B."""
 
-    def __init__(self, _jax=False):
+    def __init__(self, _jax=True):
         super(BinaryProbit, self).__init__(_jax)
         self.descr = "Binary Probit"
         self.result = None
@@ -133,7 +133,7 @@ class _OLSResult:
 class HeckmanTwoStep(DiscreteChoiceModel):
     """Heckman selection model using JAX probit + closed-form OLS second stage."""
 
-    def __init__(self, _jax=False):
+    def __init__(self, _jax=True):
         super(HeckmanTwoStep, self).__init__(_jax)
         self.descr = "Heckman Two-Step"
         self.selection_result = None

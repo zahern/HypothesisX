@@ -1,0 +1,105 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260527_171928
+Output dir   : sa_runs\sa_100_20260527_171928
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=4
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 15760.1172
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 5.2 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.3055682  0.54449339 0.14993841]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.1293170761  0.0089083457 -14.5163963178             0 ***
+AGE.TRAIN           -0.3201924795  0.0134494785 -23.8070554518             0 ***
+TIME                -0.0041038170  0.0003112790 -13.1837246653             0 ***
+SEATS                1.0650247490  0.1899592179  5.6065968299      2.06e-08 ***
+sd.SEATS             2.3125329502  0.2287700287 10.1085485860             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -7862.987; AIC = 15735.974; BIC = 15760.117; ADJLIK RATIO: 0.354
+
+Specification:
+asvars =  ['TIME', 'SEATS']
+isvars =  ['AGE']
+randvars =  {'SEATS': np.str_('u')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 14868.7608
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 3.6 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.41981977 0.39521113 0.1849691 ]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+TIME                -0.0138669316  0.0003856046 -35.9615310220             0 ***
+HEADWAY             -0.0181435838  0.0016116852 -11.2575233024             0 ***
+sd.HEADWAY           0.0429982640  0.0017856426 24.0799948579             0 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -7424.137; AIC = 14854.275; BIC = 14868.761; ADJLIK RATIO: 0.390
+
+Specification:
+asvars =  [np.str_('HEADWAY'), 'TIME']
+isvars =  []
+randvars =  {'HEADWAY': np.str_('u')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 
+
+#Converged=23; #Not Converged=10
+#Accepted=11; #Not Accepted=1
+Bandit arm summary (sorted by posterior mean):
+  remove_isfeature     mean=0.8124 alpha=4.33 beta=1.00 count=3
+  change_distribution  mean=0.7749 alpha=3.44 beta=1.00 count=2
+  add_asfeature        mean=0.7500 alpha=3.00 beta=1.00 count=2
+  remove_asfeature     mean=0.7500 alpha=3.00 beta=1.00 count=2
+  add_isfeature        mean=0.7500 alpha=3.00 beta=1.00 count=2
+  add_randfeature      mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_bcfeature        mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_bcfeature     mean=0.5000 alpha=1.00 beta=1.00 count=0
+  add_corfeature       mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_corfeature    mean=0.5000 alpha=1.00 beta=1.00 count=0
+  change_model         mean=0.5000 alpha=1.00 beta=1.00 count=0
+  remove_randfeature   mean=0.3125 alpha=1.00 beta=2.20 count=1

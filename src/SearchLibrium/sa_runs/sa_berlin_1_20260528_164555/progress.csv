@@ -1,0 +1,6 @@
+step,temperature,current_obj,best_obj,n_accepted,elapsed_s
+0,1000,4823.86,4823.86,0,113.1
+SA[berlin_1] step       1/2 | T=    1000 | curr=4665.9879 | best=4665.9879 | acc=2 | t=121.3s
+1,1000,4665.99,4665.99,2,121.3
+SA[berlin_1] step       2/2 | T=     0.1 | curr=4665.9879 | best=4665.9879 | acc=3 | t=130.0s
+2,0.1,4665.99,4665.99,3,130.0

@@ -12,7 +12,7 @@ class NestedLogit(MultinomialLogit):
     Handles nested structure of alternatives.
     """
 
-    def __init__(self, _jax = False):
+    def __init__(self, _jax = True):
         super(NestedLogit, self).__init__(_jax)
         self.descr = "Nested Logit"
         self.robust = False

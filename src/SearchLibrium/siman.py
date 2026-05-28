@@ -263,9 +263,11 @@ def safe_deepcopy(obj):
 '''Function for Fancy Printing'''
 def star(func):
     def inner(*args, **kwargs):
+        result = func(*args, **kwargs)
         print("*" * 15)
-        print(func(*args, **kwargs))
+        print(result)
         print("*" * 15)
+        return result
 
     return inner
 
@@ -497,71 +499,104 @@ class SA(Search):
     def choose_starting_solution(self, N_trials=20):
         """
         Generate multiple starting solutions, calculate the starting temperature (tI)
-        for each generated solution, and take the average temperature over all trials.
+        from converged solutions, and return a valid initial solution.
 
         Parameters:
-        - N_trials: Number of independent solutions to generate for temperature calculation.
+        - N_trials: Number of independent solutions to generate for temperature estimation.
 
         Returns:
-        - sol: The last generated starting solution.
+        - sol: A converged starting solution.
         """
         print(f"SA[{str(self.idnum)}] - Generating {N_trials} independent solutions for temperature calculation")
 
-        delta_Es_all = []  # Store all ΔE values across trials for final averaging
-        temperatures = []  # Store tI values for each generated solution
+        temperatures = []  # Store tI values for each generated trial
 
+        # Generate a valid initial starting solution
+        base_sol = None
+        for attempt in range(1, N_trials + 1):
+            sol = self.generate_solution()
+            sol = self.repair_solution_for_clarity(sol)
+            sol, converged = self.evaluate(sol)
+            if converged:
+                base_sol = sol
+                break
+            print(f"Starting solution trial {attempt}: did not converge, retrying.")
 
+        if base_sol is None:
+            print(f"No converged initial solution found after {N_trials} attempts; using last generated solution.")
+            base_sol = sol
 
-        # Generate a new independent starting solution
-        sol = self.generate_solution()
-        sol = self.repair_solution_for_clarity(sol)
-        sol, converged = self.evaluate(sol)
-
-
+        base_obj = base_sol.obj(0)
         delta_Es = []
-        # Perform perturbations for the current solution
-        for _ in range(N_trials):
-            perturbed_sol = self.copy_solution(sol)
-            #perturbed_sol = self.perturb_solution(perturbed_sol)
-            #perturbed_sol, converged_ = self.evaluate(perturbed_sol)
-            perturbed_sol_ = self.generate_solution()
-            perturbed_sol_ = self.repair_solution_for_clarity(perturbed_sol_)
-            sol, converged_ = self.evaluate(perturbed_sol_)
+        base_sig = self.setup_signature(base_sol)
 
-            if not converged_:
-                print(f"Trial {_ + 1}: Perturbed solution did not converge, skipping perturbation.")
+        def propose_solution(solution):
+            if solution is None:
+                return None
+
+            choices = []
+            l_a = len(self.param.asvarnames) if self.param.asvarnames is not None else 0
+            l_b = len(self.param.isvarnames) if self.param.isvarnames is not None else 0
+
+            if self.param.asvarnames is not None:
+                choices.extend([self.perturb_asfeature] * l_a)
+            if self.param.isvarnames is not None:
+                choices.extend([self.perturb_isfeature] * l_b)
+            if self.param.allow_random and self.param.asvarnames is not None:
+                choices.extend([self.perturb_randfeature] * l_a)
+            if solution['randvars'] and self.param.allow_random:
+                choices.extend([self.perturb_distribution] * max(1, l_a))
+            if self.param.avail_models is not None and len(self.param.avail_models) > 1:
+                choices.append(self.perturb_model_t)
+            if self.param.ps_bctrans is not None and self.param.allow_bcvars:
+                choices.append(self.perturb_bcfeature)
+            if self.param.ps_cor is not None and self.param.allow_corvars:
+                choices.append(self.perturb_corfeature)
+
+            if not choices:
+                return None
+
+            perturbations = np.random.randint(1, 6)
+            max_attempts = 15
+            for _ in range(max_attempts):
+                candidate = self.copy_solution(solution)
+                for _ in range(perturbations):
+                    choice = np.random.choice(choices)
+                    result = choice(candidate)
+                    if result is not None:
+                        candidate = result
+
+                candidate = self.apply_constraints(candidate)
+                candidate = self.repair_solution_for_clarity(candidate)
+                if self.setup_signature(candidate) != base_sig:
+                    return candidate
+                perturbations = min(perturbations + 1, 8)
+            return None
+
+        for trial in range(1, N_trials + 1):
+            proposed_sol = propose_solution(base_sol)
+            if proposed_sol is None:
+                print(f"Trial {trial}: Could not generate a new proposed solution, skipping temperature calculation.")
                 continue
 
-            # Calculate objective function differences
-            before = [sol.obj(i) for i in range(self.nb_crit)]
-            after = [perturbed_sol.obj(i) for i in range(self.nb_crit)]
+            proposed_sol, converged = self.evaluate(proposed_sol)
+            if not converged:
+                print(f"Trial {trial}: Proposed solution did not converge, skipping temperature calculation.")
+                continue
 
-            # Calculate ΔE for the first criterion (or extend for multi-objective)
-            delta_E = after[0] - before[0]
-            if delta_E > 0:  # Only consider "worse" solutions
+            delta_E = proposed_sol.obj(0) - base_obj
+            if delta_E > 0:
                 delta_Es.append(delta_E)
 
         if delta_Es:
-            # Calculate temperature for this solution
             avg_delta_E = np.mean(delta_Es)
-            tI = -avg_delta_E / np.log(0.5)
-            temperatures.append(tI)
-            delta_Es_all.extend(delta_Es)  # Accumulate ΔE values across trials
-            print(f"Trial {_ + 1}: Calculated temperature tI = {tI}")
+            self.tI = -avg_delta_E / np.log(0.5)
+            print(f"Calculated temperature tI = {self.tI}")
         else:
-            print(f"Trial {_ + 1}: No worse solutions found, skipping temperature calculation.")
-
-        if not temperatures:
-            # Fallback if no temperatures were calculated
-            print("No valid temperatures calculated across all trials. Using default starting temperature.")
+            print("No worse converged proposed solutions found during temperature sampling. Using default starting temperature.")
             self.tI = 1.0
-        else:
-            # Average temperature across all trials
-            self.tI = np.mean(temperatures)
-            print(f"Final averaged starting temperature: tI = {self.tI}")
 
-        # Return the last valid generated solution
-        return sol
+        return base_sol
     # }
     def repair_solution_for_clarity(self, solution):
         '''
@@ -728,12 +763,16 @@ class SA(Search):
     # {
         """ Evaluate Metropolis function for each objective """
         crits = self.param.criterions
-        #crits[1] = -1 btw
 
         after = np.array(after, dtype=np.float64)
         before = np.array(before, dtype=np.float64)
 
-        #crits = np.array(crits, dtype=np.float64)
+        # If the current (before) objectives are NaN or infinite the current
+        # solution is considered infinitely bad; always accept a finite
+        # replacement so the search is not permanently stuck.
+        if not np.all(np.isfinite(before)):
+            return bool(np.all(np.isfinite(after)))
+
         # Note: crit[1] is the sign and equivalent to crits[i][1]
         rn = np.random.rand()
 

@@ -673,8 +673,11 @@ class SAPBIL(SA):
     def finalise(self):
         super().finalise()
 
+        total = self.accepted + self.not_accepted + self.not_converged
         header = (
             f"\nSA+PBIL — probability matrix after {self._pbil_updates} update(s):\n"
+            f"  perturbations: accepted={self.accepted}  rejected={self.not_accepted}"
+            f"  not_converged={self.not_converged}  total={total}\n"
             f"  {'Variable':<22s}  {'P(incl)':>8s}  {'P(rand)':>8s}  "
             f"{'P(corr)':>8s}  {'P(bc)':>6s}  P(distr)"
         )

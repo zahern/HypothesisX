@@ -1,0 +1,59 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : 100
+Started      : 20260528_111247
+Output dir   : sa_runs\sa_100_20260528_111247
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=4
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 0.0
+
+Model Statistics:
+
+Choice Model: 
+--------------------------------------------------
+WARNING: Convergence was not reached during estimation. The given estimates may not be reliable
+gtol: 0.0001
+Final gradient norm: 6.9683714452494305
+**************************************************
+Estimation time= 21.2 seconds
+
+Proportion of alternatives: observed choice
+[0.28306878 0.58164983 0.13528139]
+
+Proportion of alternatives: predicted choice
+[0.32057495 0.521996   0.15742905]
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.5196443664  0.0160829595 -32.3102452140             0 ***
+AGE.TRAIN           -0.5964542330  0.0217064674 -27.4781806219             0 ***
+COST                 0.0003148896  0.0000351264  8.9644791290             0 ***
+TIME                -0.1242811626  0.0078562309 -15.8194386614             0 ***
+HEADWAY             -0.0388678053  0.0020943154 -18.5587163393             0 ***
+SEATS                0.5638886140  0.1407343736  4.0067582609      6.16e-05 ***
+sd.TIME              0.1310388916  0.0084066796 15.5874731000             0 ***
+sd.HEADWAY           0.0522667460  0.0021830902 23.9416337459             0 ***
+sd.SEATS             1.6469639874  0.2012173093  8.1850015435      2.22e-16 ***
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -6652.746; AIC = 13323.492; BIC = 13366.951; ADJLIK RATIO: 0.453
+
+Specification:
+asvars =  ['COST', 'TIME', 'HEADWAY', 'SEATS']
+isvars =  ['AGE']
+randvars =  {'TIME': np.str_('tn'), 'HEADWAY': np.str_('u'), 'SEATS': np.str_('t')}
+bcvars =  []
+corvars =  []
+bctrans =  True
+asc_ind =  True
+model =  mixed_logit
+model= 
+

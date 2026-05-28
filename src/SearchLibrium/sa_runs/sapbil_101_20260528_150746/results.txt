@@ -1,0 +1,88 @@
+SearchLibrium — SA+PBIL Run
+Run ID       : 101
+Started      : 20260528_150746
+Output dir   : sa_runs\sapbil_101_20260528_150746
+Criterions   : [['bic', -1]]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=3, iter/step=4
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 16048.0573
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 30.0 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.1648613351  0.0076659789 -21.5055815027             0 ***
+AGE.TRAIN           -0.4190288534  0.0097355503 -43.0411060288             0 ***
+SEATS               -4.3092555964  4.2749527702 -1.0080241416         0.313    
+sd.SEATS            10.9428693038 10.2304284205  1.0696393987         0.285    
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8010.371; AIC = 16028.742; BIC = 16048.057; ADJLIK RATIO: 0.342
+
+Specification:
+asvars =  ['SEATS']
+isvars =  ['AGE']
+randvars =  {'SEATS': np.str_('ln')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+════════════════════════════════════════════════════════════
+  Final Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 16048.0573
+
+Model Statistics:
+
+Choice Model: 
+Estimation time= 30.0 seconds
+
+Table.
+---------------------------------------------------------------------------
+Coefficient                         Estimate      Std.Err.         z-val         P>|z|
+---------------------------------------------------------------------------
+AGE.CAR             -0.1648613351  0.0076659789 -21.5055815027             0 ***
+AGE.TRAIN           -0.4190288534  0.0097355503 -43.0411060288             0 ***
+SEATS               -4.3092555964  4.2749527702 -1.0080241416         0.313    
+sd.SEATS            10.9428693038 10.2304284205  1.0696393987         0.285    
+---------------------------------------------------------------------------
+Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+LOGLIK = -8010.371; AIC = 16028.742; BIC = 16048.057; ADJLIK RATIO: 0.342
+
+Specification:
+asvars =  ['SEATS']
+isvars =  ['AGE']
+randvars =  {'SEATS': np.str_('ln')}
+bcvars =  []
+corvars =  []
+bctrans =  False
+asc_ind =  False
+model =  mixed_logit
+model= 
+
+#Converged=20; #Not Converged=1
+#Accepted=0; #Not Accepted=0
+
+SA+PBIL — probability matrix after 0 update(s):
+  perturbations: accepted=0  rejected=0  not_converged=1  total=1
+  Variable                 P(incl)   P(rand)   P(corr)   P(bc)  P(distr)
+  COST                       0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  TIME                       0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  HEADWAY                    0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
+  SEATS                      0.500     0.500     0.500   0.500  n=0.2 ln=0.2 tn=0.2 u=0.2 t=0.2
