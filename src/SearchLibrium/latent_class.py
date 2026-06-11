@@ -1,6 +1,25 @@
 import numpy as np
 from scipy.optimize import minimize, differential_evolution
 from scipy.special import logsumexp
+from scipy.stats import norm as _scipy_norm
+
+
+def _pval_str(pv: float) -> str:
+    if pv < 0.001:
+        return "< 0.001"
+    return f"{pv:.4f}"
+
+
+def _sig_stars(pv: float) -> str:
+    if pv < 0.001:
+        return "***"
+    if pv < 0.01:
+        return " **"
+    if pv < 0.05:
+        return "  *"
+    if pv < 0.1:
+        return "  ."
+    return ""
 
 
 class LatentClassMixedLogit:
@@ -405,8 +424,24 @@ class LatentClassMixedLogit:
         max_classes=5,
         criterion="bic",
         warm_start=True,
+        de_init=False,
+        de_popsize=6,
+        de_maxiter=20,
+        de_tol=0.01,
+        de_seed=None,
         **kwargs,
     ):
+        """Search over number of latent classes, optionally using DE warm-start.
+
+        Parameters
+        ----------
+        de_init : bool
+            Use Differential Evolution to warm-start betas for each class count.
+            When combined with ``warm_start=True``, DE runs only for ``min_classes``
+            and subsequent counts inherit from the prior model (split-share init).
+        de_popsize, de_maxiter, de_tol, de_seed
+            DE hyper-parameters forwarded to :meth:`_de_warm_start`.
+        """
         fitted_models = []
         best_model = None
         prev_model = None
@@ -418,10 +453,20 @@ class LatentClassMixedLogit:
 
             betas0 = None
             class_probs0 = None
+            use_de = de_init
             if warm_start and prev_model is not None and prev_model.n_classes + 1 == n_classes:
                 betas0, class_probs0 = prev_model.make_next_class_start()
+                use_de = False  # warm-start from previous model; skip DE for this count
 
-            model.fit(betas0=betas0, class_probs0=class_probs0)
+            model.fit(
+                betas0=betas0,
+                class_probs0=class_probs0,
+                de_init=use_de,
+                de_popsize=de_popsize,
+                de_maxiter=de_maxiter,
+                de_tol=de_tol,
+                de_seed=de_seed,
+            )
             model.get_loglik_null()
             fitted_models.append(model)
 
@@ -433,20 +478,373 @@ class LatentClassMixedLogit:
         best_model.search_results = fitted_models
         return best_model, fitted_models
 
-    def summarise(self):
-        print("Model: Latent Class Mixed Logit")
-        print(f"Classes: {self.n_classes}")
-        print(f"Converged: {self.converged}")
-        print(f"Iterations: {self.total_iter}")
-        print(f"Log-Likelihood: {self.loglik:.6f}")
+    # ------------------------------------------------------------------
+    # Internal helpers for numerical standard errors
+    # ------------------------------------------------------------------
+
+    def _full_loglik(self, params: np.ndarray) -> float:
+        """Log-likelihood at full parameter vector [phi_1..phi_{C-1}, beta_flat]."""
+        C = self.n_classes
+        K = self.K
+        n_phi = C - 1
+
+        if C > 1:
+            phi_full = np.append(params[:n_phi], 0.0)
+            pi = np.exp(phi_full - logsumexp(phi_full))
+        else:
+            pi = np.ones(1)
+
+        betas = params[n_phi:].reshape(C, K)
+        _, choice_probs_all = self._log_choice_probs_np(betas)
+        log_chosen = np.log(
+            np.clip(
+                (choice_probs_all * self.y[:, np.newaxis, :]).sum(axis=2),
+                1e-300, None,
+            )
+        )
+        log_joint = log_chosen + np.log(np.clip(pi, 1e-300, None))[np.newaxis, :]
+        return float(logsumexp(log_joint, axis=1).sum())
+
+    def _numerical_hessian(self, params: np.ndarray, eps: float = 1e-4) -> np.ndarray:
+        """Numerical Hessian of the log-likelihood via central finite differences.
+
+        Uses O(h^2) accuracy.  Requires 2P + 4*P*(P-1)/2 function evaluations.
+        """
+        P = len(params)
+        H = np.zeros((P, P))
+        f0 = self._full_loglik(params)
+
+        for i in range(P):
+            ei = np.zeros(P)
+            ei[i] = eps
+            H[i, i] = (
+                self._full_loglik(params + ei)
+                - 2.0 * f0
+                + self._full_loglik(params - ei)
+            ) / (eps * eps)
+
+        for i in range(P):
+            for j in range(i + 1, P):
+                ei = np.zeros(P); ei[i] = eps
+                ej = np.zeros(P); ej[j] = eps
+                val = (
+                    self._full_loglik(params + ei + ej)
+                    - self._full_loglik(params + ei - ej)
+                    - self._full_loglik(params - ei + ej)
+                    + self._full_loglik(params - ei - ej)
+                ) / (4.0 * eps * eps)
+                H[i, j] = H[j, i] = val
+
+        return H
+
+    def _delta_method_share_se(
+        self, cov_phi: np.ndarray, pi: np.ndarray
+    ) -> np.ndarray:
+        """Delta-method SE for class shares from the logit-parameter covariance.
+
+        For pi_c = softmax(phi)_c  (phi_C ≡ 0),  the Jacobian is
+            d pi_c / d phi_j  =  pi_c * (delta_{cj} - pi_j)   j = 1..C-1
+        so  Var(pi_c) = J_c' cov_phi J_c.
+
+        Returns se_pi : ndarray, shape (C,)
+        """
+        C = len(pi)
+        if C == 1:
+            return np.zeros(1)
+
+        se_pi = np.zeros(C)
+        for c in range(C):
+            # Jacobian d pi_c / d phi_j for j = 0..C-2
+            jac = np.array(
+                [pi[c] * ((1.0 if c == j else 0.0) - pi[j]) for j in range(C - 1)]
+            )
+            var_c = jac @ cov_phi @ jac
+            se_pi[c] = np.sqrt(max(var_c, 0.0))
+        return se_pi
+
+    # ------------------------------------------------------------------
+    # Public SE computation
+    # ------------------------------------------------------------------
+
+    def compute_standard_errors(self, eps: float = 1e-4):
+        """Compute standard errors via the observed information matrix (Hessian).
+
+        The Hessian of the log-likelihood is computed numerically by central
+        finite differences.  The covariance is  cov = (-H)^{-1}.
+
+        This is more reliable than OPG near convergence: OPG suffers from
+        near-singular J'J when posteriors are sharp (most observations
+        assigned to one class with high confidence).
+
+        The full parameter vector is::
+
+            [ln(pi_1/pi_C), ..., ln(pi_{C-1}/pi_C),   class-share logits
+             beta_{1,1}, ..., beta_{1,K},              class 1 coefficients
+             ...,
+             beta_{C,1}, ..., beta_{C,K}]              class C coefficients
+
+        Returns
+        -------
+        dict with keys:
+            params, se, t_stats, p_values, ci_lo, ci_hi, param_names, cov,
+            se_pi, ci_lo_pi, ci_hi_pi,   <- probability-scale class share SEs
+            cond_number, se_method
+        """
+        C = self.n_classes
+        K = self.K
+        pi = self.class_probs  # (C,)
+        n_phi = C - 1
+
+        # ── Assemble full parameter vector ────────────────────────────────────
+        if C > 1:
+            phi_vals = (
+                np.log(np.clip(pi[:C - 1], 1e-300, None))
+                - np.log(np.clip(pi[-1], 1e-300, None))
+            )
+        else:
+            phi_vals = np.empty(0)
+
+        params = np.concatenate([phi_vals, self.class_betas.ravel()])
+
+        # ── Numerical Hessian → covariance ───────────────────────────────────
+        H = self._numerical_hessian(params, eps=eps)
+        info = -H  # observed information matrix (should be positive definite)
+
+        cond_number = np.nan
+        cov = None
+        se_method = "hessian"
+
+        try:
+            eigvals = np.linalg.eigvalsh(info)
+            cond_number = float(eigvals.max() / max(eigvals.min(), 1e-300))
+
+            # Regularise if nearly singular (condition number > 1e10)
+            if eigvals.min() < 1e-8 * eigvals.max():
+                ridge = 1e-6 * eigvals.max()
+                info_reg = info + ridge * np.eye(len(params))
+                cov = np.linalg.inv(info_reg)
+                se_method = "hessian (ridge-regularised)"
+            else:
+                cov = np.linalg.inv(info)
+        except np.linalg.LinAlgError:
+            cov = np.linalg.pinv(info)
+            se_method = "hessian (pinv fallback)"
+
+        if cov is None:
+            cov = np.linalg.pinv(info)
+
+        se = np.sqrt(np.clip(np.diag(cov), 0.0, None))
+
+        # ── OPG cross-check (used only for diagnostics) ───────────────────────
+        _, choice_probs_all = self._log_choice_probs_np(self.class_betas)
+        log_chosen = np.log(
+            np.clip(
+                (choice_probs_all * self.y[:, np.newaxis, :]).sum(axis=2),
+                1e-300, None,
+            )
+        )
+        log_joint = log_chosen + np.log(np.clip(pi, 1e-300, None))[np.newaxis, :]
+        log_marg  = logsumexp(log_joint, axis=1, keepdims=True)
+        posterior = np.exp(log_joint - log_marg)
+
+        if C > 1:
+            score_phi = posterior[:, :C - 1] - pi[np.newaxis, :C - 1]
+        else:
+            score_phi = np.zeros((self.N, 0))
+
+        resid = self.y[:, np.newaxis, :] - choice_probs_all
+        score_beta = np.einsum(
+            "ncj,njk->nck", resid * posterior[:, :, np.newaxis], self.X
+        ).reshape(self.N, C * K)
+
+        score = np.hstack([score_phi, score_beta]) if C > 1 else score_beta
+        opg_diag = np.zeros(len(params))
+        try:
+            JtJ = score.T @ score
+            cov_opg = np.linalg.pinv(JtJ)
+            opg_diag = np.sqrt(np.clip(np.diag(cov_opg), 0.0, None))
+        except Exception:
+            pass
+
+        # ── Inference ────────────────────────────────────────────────────────
+        t_stats  = np.where(se > 1e-12, params / se, 0.0)
+        p_values = 2.0 * (1.0 - _scipy_norm.cdf(np.abs(t_stats)))
+        ci_lo    = params - 1.96 * se
+        ci_hi    = params + 1.96 * se
+
+        # ── Delta-method SEs on probability scale ─────────────────────────────
+        cov_phi  = cov[:n_phi, :n_phi] if n_phi > 0 else np.zeros((0, 0))
+        se_pi    = self._delta_method_share_se(cov_phi, pi)
+        ci_lo_pi = np.clip(pi - 1.96 * se_pi, 0.0, 1.0)
+        ci_hi_pi = np.clip(pi + 1.96 * se_pi, 0.0, 1.0)
+
+        # ── Names ─────────────────────────────────────────────────────────────
+        phi_names  = [f"ln(pi_{c + 1}/pi_{C})" for c in range(n_phi)]
+        beta_names = [
+            f"class_{c + 1}_{name}"
+            for c in range(C)
+            for name in self.varnames
+        ]
+        param_names = phi_names + beta_names
+
+        return {
+            "params":      params,
+            "se":          se,
+            "t_stats":     t_stats,
+            "p_values":    p_values,
+            "ci_lo":       ci_lo,
+            "ci_hi":       ci_hi,
+            "param_names": param_names,
+            "cov":         cov,
+            # Probability-scale class-share inference
+            "se_pi":       se_pi,
+            "ci_lo_pi":    ci_lo_pi,
+            "ci_hi_pi":    ci_hi_pi,
+            # Diagnostics
+            "cond_number": cond_number,
+            "se_method":   se_method,
+            "opg_se":      opg_diag,
+        }
+
+    def summarise(self, compute_se=True):
+        """Print a full econometric-style model summary.
+
+        Parameters
+        ----------
+        compute_se : bool
+            Compute Hessian-based standard errors and print inference table (default True).
+        """
+        C = self.n_classes
+        K = self.K
+        sep  = "=" * 76
+
+        # ── Model-fit header ──────────────────────────────────────────────────
+        print()
+        print(sep)
+        print(f"  Latent Class Logit  ({C} class{'es' if C != 1 else ''})")
+        print(sep)
+        print(f"  Log-Likelihood   : {self.loglik:.6f}")
         if self.loglik_null is not None:
-            print(f"Null Log-Likelihood: {self.loglik_null:.6f}")
-        print(f"AIC: {self.aic:.6f}")
-        print(f"BIC: {self.bic:.6f}")
-        print("Class shares:")
-        for idx, share in enumerate(self.class_probs, start=1):
-            print(f"  class_{idx}: {share:.6f}")
-        print("Coefficients:")
-        for idx, beta in enumerate(self.class_betas, start=1):
-            for name, value in zip(self.varnames, beta):
-                print(f"  class_{idx}_{name}: {value:.6f}")
+            rho2 = 1.0 - self.loglik / self.loglik_null
+            print(f"  Null Log-Lik.    : {self.loglik_null:.6f}")
+            print(f"  McFadden Rho-sq  : {rho2:.4f}")
+        print(f"  AIC              : {self.aic:.4f}")
+        print(f"  BIC              : {self.bic:.4f}")
+        print(f"  Observations     : {self.N}")
+        print(f"  Parameters       : {self.num_params}")
+        conv_str = "Yes" if self.converged else "NO  (hit maxiter)"
+        print(f"  Converged        : {conv_str}  (EM iterations: {self.total_iter})")
+        print(sep)
+
+        # ── Try Hessian-based standard errors ─────────────────────────────────
+        stats = None
+        if compute_se:
+            try:
+                stats = self.compute_standard_errors()
+            except Exception as exc:
+                print(f"  [WARNING] Standard errors could not be computed: {exc}")
+
+        if stats is None:
+            # Fall back to coefficients-only table
+            print("  Class Shares:")
+            for idx, share in enumerate(self.class_probs, start=1):
+                print(f"    class_{idx}: {share:.6f}")
+            print("  Coefficients:")
+            for c_idx, beta in enumerate(self.class_betas, start=1):
+                for name, value in zip(self.varnames, beta):
+                    print(f"    class_{c_idx}_{name}: {value:.6f}")
+            return
+
+        params   = stats["params"]
+        se       = stats["se"]
+        t_stats  = stats["t_stats"]
+        p_values = stats["p_values"]
+        ci_lo    = stats["ci_lo"]
+        ci_hi    = stats["ci_hi"]
+        se_pi    = stats["se_pi"]
+        ci_lo_pi = stats["ci_lo_pi"]
+        ci_hi_pi = stats["ci_hi_pi"]
+        opg_se   = stats["opg_se"]
+        n_phi    = C - 1
+
+        # ── SE-method diagnostics ─────────────────────────────────────────────
+        cond = stats["cond_number"]
+        print(f"  SE method        : {stats['se_method']}")
+        if not np.isnan(cond):
+            cond_warn = "  [HIGH - SEs may be unreliable]" if cond > 1e8 else ""
+            print(f"  Info-matrix cond : {cond:.3e}{cond_warn}")
+        print(sep)
+
+        col_hdr = (
+            f"  {'Parameter':<22}  {'Coeff':>9}  {'Hess.SE':>9}"
+            f"  {'t-stat':>7}  {'p-value':>8}  {'[OPG.SE]':>9}  95% CI (coeff)"
+        )
+        col_sep = (
+            f"  {'-'*22}  {'-'*9}  {'-'*9}"
+            f"  {'-'*7}  {'-'*8}  {'-'*9}  {'-'*22}"
+        )
+
+        def _row(name, idx):
+            pv    = _pval_str(p_values[idx])
+            stars = _sig_stars(p_values[idx])
+            opg   = f"({opg_se[idx]:.4f})" if idx < len(opg_se) and opg_se[idx] > 0 else ""
+            return (
+                f"  {name:<22}  {params[idx]:>9.4f}  {se[idx]:>9.4f}"
+                f"  {t_stats[idx]:>7.3f}  {pv:>8}  {opg:>9}"
+                f"  [{ci_lo[idx]:>7.4f}, {ci_hi[idx]:>7.4f}] {stars}"
+            )
+
+        # ── Class-share parameters ────────────────────────────────────────────
+        if n_phi > 0:
+            print()
+            print("  CLASS SHARE PARAMETERS")
+            print()
+            print(f"  {'':22}  {'--- Logit scale ---':^38}  {'--- Probability scale ---':^30}")
+            share_hdr = (
+                f"  {'Parameter':<22}  {'log-odds':>9}  {'Hess.SE':>9}"
+                f"  {'t-stat':>7}  {'p-value':>8}"
+                f"  {'Share':>7}  {'Odds':>7}  {'SE(pi)':>7}  95% CI (prob)"
+            )
+            share_sep = (
+                f"  {'-'*22}  {'-'*9}  {'-'*9}"
+                f"  {'-'*7}  {'-'*8}"
+                f"  {'-'*7}  {'-'*7}  {'-'*7}  {'-'*22}"
+            )
+            print(share_hdr)
+            print(share_sep)
+            for i in range(n_phi):
+                phi_i   = params[i]
+                odds_i  = float(np.exp(phi_i))
+                share_i = float(self.class_probs[i])
+                pv      = _pval_str(p_values[i])
+                stars   = _sig_stars(p_values[i])
+                print(
+                    f"  {stats['param_names'][i]:<22}  {phi_i:>9.4f}  {se[i]:>9.4f}"
+                    f"  {t_stats[i]:>7.3f}  {pv:>8}"
+                    f"  {share_i:>7.4f}  {odds_i:>7.4f}  {se_pi[i]:>7.4f}"
+                    f"  [{ci_lo_pi[i]:.4f}, {ci_hi_pi[i]:.4f}] {stars}"
+                )
+            # Base class row (reference, no free parameter)
+            base_c = C
+            print(
+                f"  {'(base: class_' + str(base_c) + ')':22}  {'  0 (ref)':>9}  {'   ---':>9}"
+                f"  {'   ---':>7}  {'     ---':>8}"
+                f"  {self.class_probs[C-1]:>7.4f}  {'  1.000':>7}  {se_pi[C-1]:>7.4f}"
+                f"  [{ci_lo_pi[C-1]:.4f}, {ci_hi_pi[C-1]:.4f}]"
+            )
+
+        # ── Per-class coefficient tables ──────────────────────────────────────
+        for c in range(C):
+            print()
+            print(f"  CLASS {c + 1} COEFFICIENTS  (share = {self.class_probs[c]:.4f})")
+            print(col_hdr)
+            print(col_sep)
+            offset = n_phi + c * K
+            for k in range(K):
+                print(_row(self.varnames[k], offset + k))
+
+        print()
+        print("  Significance:  *** p<0.001   ** p<0.01   * p<0.05   . p<0.1")
+        print("  SE: observed information (Hessian).  [OPG.SE] shown for comparison.")
+        print("  Note: high SE / low t-stat may indicate near-unidentified parameters.")
+        print(sep)
