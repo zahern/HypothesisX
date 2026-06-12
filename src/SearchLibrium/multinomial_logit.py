@@ -2,9 +2,7 @@
 IMPLEMENTATION: MULTINOMIAL AND CONDITIONAL LOGIT MODEL 
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 from sklearn.preprocessing import RobustScaler
-from sympy import false
 from addicty import  Dict
-from sympy.physics.units import length
 
 """
 BACKGROUND - MULTINOMIAL LOGIT
@@ -644,7 +642,7 @@ class MultinomialLogit(DiscreteChoiceModel):
                 with timer("Minimization"):
                     self.return_grad = True
                     jac = True
-                    self.robust = false
+                    self.robust = False
                     result = minimize(self.get_loglik_and_gradient, betas,
                                  args=args, jac=jac,
                                  method=self.method, tol=ftol, options=options)
@@ -653,7 +651,7 @@ class MultinomialLogit(DiscreteChoiceModel):
                 with timer("Minimization"):
                     result = self.optimize(betas, X, y, weights, avail)
                     print(result.fun)
-                    self.robust = false
+                    self.robust = False
                 #result = jax.scipy.optimize.minimize(self.get_loglik_and_gradient, betas, args=args, method = 'BFGS')
                 #print(result.fun)
 
