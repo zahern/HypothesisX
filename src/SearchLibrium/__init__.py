@@ -12,6 +12,8 @@ from addicty import Dict
 
 import os
 
+from . import misc
+
 try:
     from banditsa import BanditSA, PerturbationBandit
 except ImportError:

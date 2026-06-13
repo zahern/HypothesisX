@@ -85,7 +85,7 @@ except ImportError:
     from .rrm import RandomRegret
     from .mixedrrm import MixedRandomRegret
     from .ordered_logit import OrderedLogitLong
-    from . import misc, NestedLogit
+    from . import misc
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
 
 ''' ---------------------------------------------------------- '''

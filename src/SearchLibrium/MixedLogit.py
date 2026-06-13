@@ -591,6 +591,25 @@ class MixedLogit(DiscreteChoiceModel):
         sim_p = jnp.clip(sim_p, 1e-300, None)
         return -jnp.sum(jnp.log(sim_p))
 
+    # ------------------------------------------------------------------
+    # Per-shape JIT cache: avoids recompilation when the same (N, P, J,
+    # Kf, Kr, Kchol, Kbw) combination is visited again during GA search.
+    # Cleared by _clear_jit_cache() when memory pressure is high.
+    # ------------------------------------------------------------------
+    _mxl_jit_cache: dict = {}
+
+    @classmethod
+    def _clear_jit_cache(cls):
+        """Drop all cached JIT-compiled MXL functions to free XLA memory."""
+        import gc
+        cls._mxl_jit_cache.clear()
+        try:
+            import jax
+            jax.clear_caches()
+        except Exception:
+            pass
+        gc.collect()
+
     def optimize_jax(self, betas, draws, drawstrans):
         """JAX-accelerated optimisation for the Mixed Logit model.
 
@@ -625,17 +644,26 @@ class MixedLogit(DiscreteChoiceModel):
             Kf, Kr, Kchol, Kbw = int(self.Kf), int(self.Kr), int(self.Kchol), int(self.Kbw)
             correlationLength = int(self.correlationLength)
 
-            @jax.jit
-            def _neg_ll(b):
-                return self._jax_mxl_negloglik(
-                    b, X_jax, y_jax, pi_jax, draws_jax,
+            # ── per-shape JIT cache ────────────────────────────────
+            # Key only on shape; data arrays are passed as explicit
+            # arguments so the same compiled function works for any
+            # concrete data of matching shape.
+            _N = X_jax.shape[0]
+            _P = X_jax.shape[1] if X_jax.ndim > 1 else 1
+            _J = X_jax.shape[2] if X_jax.ndim > 2 else 1
+            _cache_key = (_N, _P, _J, Kf, Kr, Kchol, Kbw)
+            _compiled = self._mxl_jit_cache.get(_cache_key)
+            if _compiled is None:
+                _fn = lambda b, _X, _y, _pi, _dr: self._jax_mxl_negloglik(
+                    b, _X, _y, _pi, _dr,
                     fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names, correlationLength)
-
-            _val_grad = jax.jit(jax.value_and_grad(_neg_ll))
+                _compiled = jax.jit(jax.value_and_grad(_fn))
+                self._mxl_jit_cache[_cache_key] = _compiled
+            # ────────────────────────────────────────────────────────
 
             def _obj(betas_np):
                 b    = jnp.array(betas_np, dtype=jnp.float64)
-                v, g = _val_grad(b)
+                v, g = _compiled(b, X_jax, y_jax, pi_jax, draws_jax)
                 return float(v), np.array(g, dtype=np.float64)
 
             result = sp_min(

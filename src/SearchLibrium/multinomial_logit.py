@@ -869,6 +869,25 @@ class MultinomialLogit(DiscreteChoiceModel):
         loglik  = jnp.sum(y_jax * jnp.log(p))
         return -loglik
 
+    # ------------------------------------------------------------------
+    # Per-shape JIT cache: avoids recompilation when the same (n_rows,
+    # Kf, Kftrans) combination is visited again during GA search.
+    # Cleared by _clear_jit_cache() when memory pressure is high.
+    # ------------------------------------------------------------------
+    _jit_cache: dict = {}
+
+    @classmethod
+    def _clear_jit_cache(cls):
+        """Drop all cached JIT-compiled functions to free XLA memory."""
+        import gc
+        cls._jit_cache.clear()
+        try:
+            import jax
+            jax.clear_caches()
+        except Exception:
+            pass
+        gc.collect()
+
     def optimize(self, betas, X, y, weights=None, avail=None):
         """JAX-accelerated optimisation using value_and_grad + scipy BFGS.
 
@@ -879,25 +898,30 @@ class MultinomialLogit(DiscreteChoiceModel):
             import jax.numpy as jnp
             from scipy.optimize import minimize as sp_min
 
-            X_jax    = jnp.array(X,    dtype=jnp.float64)
-            y_jax    = jnp.array(y,    dtype=jnp.float64)
+            X_jax     = jnp.array(X,    dtype=jnp.float64)
+            y_jax     = jnp.array(y,    dtype=jnp.float64)
             avail_jax = jnp.array(avail, dtype=jnp.float64) if avail is not None else None
 
-            fxidx      = jnp.array(self.fxidx,      dtype=bool)
-            fxtransidx = jnp.array(self.fxtransidx, dtype=bool)
+            fxidx       = jnp.array(self.fxidx,      dtype=bool)
+            fxtransidx  = jnp.array(self.fxtransidx, dtype=bool)
             Kf, Kftrans = int(self.Kf), int(self.Kftrans)
 
-            @jax.jit
-            def _neg_ll(b):
-                return self._jax_mnl_negloglik(
-                    b, X_jax, y_jax, avail_jax,
-                    fxidx, fxtransidx, Kf, Kftrans)
-
-            _val_grad = jax.jit(jax.value_and_grad(_neg_ll))
+            # ── per-shape JIT cache ────────────────────────────────
+            # Key only on shape; the actual data is passed as explicit
+            # arguments so JAX traces once per shape and accepts any
+            # concrete array of matching shape at call time.
+            _cache_key = (X.shape[0], Kf, Kftrans)
+            _compiled = self._jit_cache.get(_cache_key)
+            if _compiled is None:
+                _fn = lambda b, _X, _y, _av: self._jax_mnl_negloglik(
+                    b, _X, _y, _av, fxidx, fxtransidx, Kf, Kftrans)
+                _compiled = jax.jit(jax.value_and_grad(_fn))
+                self._jit_cache[_cache_key] = _compiled
+            # ────────────────────────────────────────────────────────
 
             def _obj(betas_np):
                 b     = jnp.array(betas_np, dtype=jnp.float64)
-                v, g  = _val_grad(b)
+                v, g  = _compiled(b, X_jax, y_jax, avail_jax)
                 return float(v), np.array(g, dtype=np.float64)
 
             result = sp_min(
