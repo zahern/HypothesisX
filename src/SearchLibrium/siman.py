@@ -335,7 +335,7 @@ class SA(Search):
 
         self.start_time = time.time()
         # Set parameters:
-        self.max_time = kwargs.get('max_time', 360)    # Maximum Allowable Run Time (Terminate
+        self.max_time = kwargs.get('max_time', 43200)    # Maximum Allowable Run Time (12 h default)
         self.max_total_iter = kwargs.get('max_total_iter', 1000)
         self.tI = tI                # Starting temperature
         self.tF = tF                # Final temperature
@@ -596,6 +596,10 @@ class SA(Search):
             print("No worse converged proposed solutions found during temperature sampling. Using default starting temperature.")
             self.tI = 1.0
 
+        # Recompute the cooling rate to match the (possibly new) tI
+        if self.tI > 0 and self.max_temp_steps > 1:
+            self.rate = np.exp((1.0 / (self.max_temp_steps - 1)) * np.log(self.tF / self.tI))
+
         return base_sol
     # }
     def repair_solution_for_clarity(self, solution):
@@ -674,10 +678,16 @@ class SA(Search):
     # {
         self.start = time.time()
         self.no_impr, self.step = 0, 0
-        self.t = self.tI  # Set current temperature
 
         if self.current_sol == None:
             self.current_sol = self.choose_starting_solution()
+            # choose_starting_solution may have updated self.tI via
+            # temperature calibration, so set self.t afterwards.
+        self.t = self.tI  # Set current temperature
+
+        # Reset the timer so max_time only governs the SA search
+        # iterations, not the calibration phase above.
+        self.start_time = time.time()
 
         # ----------------------------------------------------------
         if self.current_sol is None:
@@ -1449,7 +1459,10 @@ class SA(Search):
     def revise_tI(self, new_tI):
     # {
         self.tI = new_tI
-        self.rate = np.exp((1.0 / self.max_temp_steps) * np.log(self.tF/self.tI))
+        if self.max_temp_steps > 1:
+            self.rate = np.exp((1.0 / (self.max_temp_steps - 1)) * np.log(self.tF / self.tI))
+        else:
+            self.rate = 1.0
     # }
  # }
 
