@@ -102,44 +102,34 @@ def get_hessian(x, func, eps=1e-8):
 # }
 
 ''' ---------------------------------------------------------- '''
-''' Function. Generates a halton sequence efficiently          '''
 ''' ---------------------------------------------------------- '''
+''' Function. Generates scrambled Sobol draws                 '''
+''' ---------------------------------------------------------- '''
+def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False):
+    try:
+        from scipy.stats.qmc import Sobol
+        total = sample_size * n_draws
+        # Round up to next power of 2 for best Sobol balance
+        p2 = 1
+        while p2 < total:
+            p2 <<= 1
+        sobol = Sobol(d=n_vars, scramble=True)
+        flat = sobol.random(p2)[:total]
+        draws = flat.reshape(sample_size, n_draws, n_vars).transpose(0, 2, 1)
+    except (ImportError, Exception):
+        import warnings
+        warnings.warn("Sobol unavailable — falling back to uniform random draws")
+        draws = np.random.uniform(size=(sample_size, n_vars, n_draws))
+    if shuffled:
+        draws = draws.reshape(sample_size, -1)
+        np.random.shuffle(draws)
+        draws = draws.reshape(sample_size, n_vars, n_draws)
+    return draws
+
+
 def halton_seq(length, prime=3, drop=100, shuffled=False):
-# {
-    """ Memory is efficiently handled by creating a single array ``seq`` that is iteratively
-    filled without using intermediate arrays. """
-
-    # This code generates a sequence based on a prime number and then optionally shuffles it
-    req_length = length + drop
-    seq = np.zeros(req_length)
-    seq_idx, t = 1, 1
-    while seq_idx < req_length:
-    # {
-        d = 1/prime**t  # Calculate the decrement based on the prime number and t
-        seq_size = seq_idx # Keep track of the current size of the sequence
-
-        # Iterate over the sequence to fill it
-        for i in range(1, prime):
-        # {
-            if seq_idx >= req_length: break
-
-            # Calculate the maximum sequence to copy based on the remaining length
-            max_seq = min(req_length - seq_idx, seq_size)
-
-            # Fill the sequence with the new values
-            seq[seq_idx: seq_idx+max_seq] = seq[:max_seq] + d*i
-
-            # Update the sequence index
-            seq_idx += max_seq
-            i += 1
-        # }
-        t += 1  # Increment t for the next iteration
-    # }
-    seq = seq[drop:length+drop] # Trim the sequence to the desired length
-    if shuffled: # Shuffle the sequence if required
-        np.random.shuffle(seq)
-    return seq
-# }
+    """Compatibility wrapper — now uses scrambled Sobol."""
+    return _sobol_generate(1, length, 1, shuffled=shuffled).ravel()
 
 ''' ---------------------------------------------------------- '''
 ''' CLASS FOR ESTIMATION OF MIXED LOGIT MODELS                 '''
@@ -502,7 +492,8 @@ class MixedLogit(DiscreteChoiceModel):
 
         betas = np.repeat(0.1, n_coeff) if self.init_coeff is None else self.init_coeff
         if len(self.init_coeff) != n_coeff and not hasattr(self, 'class_params_spec'):
-            raise ValueError("The size of init_coeff must be: " + str(n_coeff))
+            self.init_coeff = None
+            betas = np.repeat(0.1, n_coeff)
 
         #'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
         if dev.using_gpu:  # {
@@ -1483,19 +1474,7 @@ class MixedLogit(DiscreteChoiceModel):
     ''' -------------------------------------------------------------- '''
     def generate_halton_draws(self, sample_size, n_draws, n_vars, shuffled=False, drop=100, primes=None):
     # {
-        if primes is None:  # {
-            primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
-                      53, 59, 61, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109,
-                      113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173,
-                      179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233,
-                      239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293,
-                      307, 311]
-        # }
-
-        draws = [halton_seq(sample_size * n_draws, prime=primes[i % len(primes)],
-            shuffled=shuffled, drop=drop).reshape(sample_size, n_draws) for i in range(n_vars)]
-        draws = np.stack(draws, axis=1)
-        return draws  # (N,Kr,R)
+        return _sobol_generate(sample_size, n_draws, n_vars, shuffled=shuffled)  # (N,Kr,R)
     # }
 
     ''' ------------------------------------------------------------- '''

@@ -1021,7 +1021,12 @@ class SA(Search):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Evaluate the new specification
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        new_sol, converged = self.evaluate(new_sol)
+        try:
+            new_sol, converged = self.evaluate(new_sol)
+        except Exception as exc:
+            logging.warning("SA: evaluation failed — %s", exc)
+            self.not_converged += 1
+            return self.current_sol
 
         # IMPORTANT: only accept solutions that have converged
         if not converged:

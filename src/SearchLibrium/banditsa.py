@@ -236,15 +236,35 @@ class BanditSA(SA):
                 )
             return self.current_sol
 
-        new_sol, converged = self.evaluate(new_sol)
-        if not converged:
+        try:
+            new_sol, converged = self.evaluate(new_sol)
+        except Exception as exc:
+            logging.warning("BanditSA: evaluation failed — %s  (arm=%s)",
+                            exc, self._actions[arm_idx][0] if arm_idx is not None else "?")
             self.not_converged += 1
             reward = self._compute_bandit_reward(curr_score[0], curr_score[0], False, False)
-            self.bandit.update(arm_idx, reward)
+            if arm_idx is not None:
+                self.bandit.update(arm_idx, reward)
             self.bandit_history.append(
                 {
                     "step": int(self.step),
-                    "arm": self._actions[arm_idx][0],
+                    "arm": self._actions[arm_idx][0] if arm_idx is not None else "?",
+                    "accepted": False,
+                    "converged": False,
+                    "reward": float(reward),
+                    "reason": "eval_error",
+                }
+            )
+            return self.current_sol
+        if not converged:
+            self.not_converged += 1
+            reward = self._compute_bandit_reward(curr_score[0], curr_score[0], False, False)
+            if arm_idx is not None:
+                self.bandit.update(arm_idx, reward)
+            self.bandit_history.append(
+                {
+                    "step": int(self.step),
+                    "arm": self._actions[arm_idx][0] if arm_idx is not None else "?",
                     "accepted": False,
                     "converged": False,
                     "reward": float(reward),
@@ -265,11 +285,12 @@ class BanditSA(SA):
             self.not_accepted += 1
 
         reward = self._compute_bandit_reward(curr_score[0], new_score[0], accepted, converged)
-        self.bandit.update(arm_idx, reward)
+        if arm_idx is not None:
+            self.bandit.update(arm_idx, reward)
         self.bandit_history.append(
             {
                 "step": int(self.step),
-                "arm": self._actions[arm_idx][0],
+                "arm": self._actions[arm_idx][0] if arm_idx is not None else "?",
                 "accepted": bool(accepted),
                 "converged": bool(converged),
                 "reward": float(reward),

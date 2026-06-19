@@ -317,7 +317,8 @@ class MixedLogit(DiscreteChoiceModel):
 
         betas = np.repeat(0.1, n_coeff) if self.init_coeff is None else self.init_coeff
         if len(self.init_coeff) != n_coeff and not hasattr(self, 'class_params_spec'):
-            raise ValueError("The size of init_coeff must be: " + str(n_coeff))
+            self.init_coeff = None
+            betas = np.repeat(0.1, n_coeff)
 
         positive_bound = (0, infinity)
         any_bound = (-infinity, infinity)
