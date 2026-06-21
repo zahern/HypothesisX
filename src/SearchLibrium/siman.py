@@ -335,8 +335,8 @@ class SA(Search):
 
         self.start_time = time.time()
         # Set parameters:
-        self.max_time = kwargs.get('max_time', 43200)    # Maximum Allowable Run Time (12 h default)
-        self.max_total_iter = kwargs.get('max_total_iter', 1000)
+        self.max_time = kwargs.get('max_time', float('inf'))          # Maximum Allowable Run Time (no limit by default)
+        self.max_total_iter = kwargs.get('max_total_iter', 100000)     # Maximum total temperature steps
         self.tI = tI                # Starting temperature
         self.tF = tF                # Final temperature
         self.max_temp_steps = max_temp_steps    # Maximum number of temperature steps
