@@ -88,12 +88,31 @@ class MixedLogit(DiscreteChoiceModel):
         return values
 
     def generate_draws_halton(self, sample_size, n_draws):
-        """Generate Halton draws, returns (draws, drawstrans) tuple with raw uniform values."""
+        """Generate Halton/Sobol draws (respects halton_opts configuration)."""
+        # Use the Halton class from draws_generator which was configured with halton_opts
+        # This ensures Sobol configuration (use_sobol=True/False) is properly applied
         draws, drawstrans = [], []
-        if self.randvars:
-            draws = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvidx))
-        if self.randtransvars:
-            drawstrans = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvtransidx))
+
+        if hasattr(self, 'draws_generator') and self.draws_generator is not None:
+            # Use configured Halton/Sobol generator
+            halton_gen = self.draws_generator.halton  # This respects use_sobol setting
+
+            if self.randvars:
+                n_vars_r = int(np.sum(self.rvidx))
+                if n_vars_r > 0:
+                    draws = halton_gen.generate_draws(sample_size, n_draws, n_vars_r)
+
+            if self.randtransvars:
+                n_vars_rt = int(np.sum(self.rvtransidx))
+                if n_vars_rt > 0:
+                    drawstrans = halton_gen.generate_draws(sample_size, n_draws, n_vars_rt)
+        else:
+            # Fallback to direct Halton generation (default behavior)
+            if self.randvars:
+                draws = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvidx))
+            if self.randtransvars:
+                drawstrans = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvtransidx))
+
         return draws, drawstrans
 
     def generate_draws_random(self, sample_size, n_draws):
@@ -168,6 +187,13 @@ class MixedLogit(DiscreteChoiceModel):
         self.jac = self.return_grad  # scipy optimize parameter
         self.n_draws = n_draws
         self.batch_size = min(n_draws, batch_size) if batch_size is not None else n_draws
+        self.halton_opts = halton_opts  # Store halton options for draw generation
+
+        # CRITICAL FIX: Recreate draws_generator with proper halton_opts
+        # The __init__ creates it with halton_opts=None, but setup() gets the actual options
+        # Must recreate here to ensure Sobol/Halton configuration is properly applied
+        self.draws_generator = Draws(k=len(randvars or {}), halton_opts=halton_opts)
+
         self.randvarsdict = randvars  # random variables not transformed
 
 
