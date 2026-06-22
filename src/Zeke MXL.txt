@@ -1,0 +1,34 @@
+from SearchLibrium.MixedLogit import MixedLogit
+
+df = pd.read_csv('Berlin_Data.csv')
+
+df['PRICE'] = df['PRICE'] * -1
+varnames   = ['RECRE', 'PRICE', 'CF', 'CF_car', 'CF_stay', 'CF_pt', 'CF_age', 'CF_male',  'BIKELANE', 'BIKESEP', 'DIST6', 'DIST3', 'FREQ_HIGHER', 'FREQ_HIGHEST', 'UNGUARDED', 'GUARDED']
+choice_id  = df['csn']
+ind_id     = df['ID_1']
+choice_var = df['Choice_']
+alt_var    = df['Scenario']
+choice_set = ['1', '2', '3']
+base_alt   = None
+R          = 200
+gTol       = 1e-6
+fTol       = 1e-8
+
+model = MixedLogit()
+model.setup(
+    X=df[varnames],
+    y=choice_var,
+    varnames=varnames,
+    ids=choice_id,
+    panels=ind_id,
+    alts=alt_var,
+    base_alt=base_alt,
+    fit_intercept=False,
+    n_draws=R,
+    avail=None,
+    gtol=gTol,
+    ftol=fTol,
+    randvars={'RECRE': 'n', 'PRICE': 'ln', 'BIKELANE': 'n', 'BIKESEP': 'n', 'DIST6': 'n', 'DIST3': 'n', 'FREQ_HIGHER': 'n', 'FREQ_HIGHEST': 'n', 'UNGUARDED': 'n', 'GUARDED': 'n'},
+)
+model.fit()
+model.summarise()

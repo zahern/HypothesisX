@@ -187,6 +187,10 @@ class MixedLogit(DiscreteChoiceModel):
         self.model_specific_validations(randvars, self.Xnames)
         self.J, self.K = self.X.shape[1], self.X.shape[2]
 
+        # FIX: Rebuild index arrays to match the new variable order from setup_design_matrix
+        # setup_design_matrix reorders variables, so we need to reorder the index arrays too
+        self._rebuild_index_arrays_for_reordered_varnames()
+
         if self.transformation == "boxcox":  # {
             self.trans_func = boxcox_transformation_mixed
             self.transform_deriv = boxcox_param_deriv_mixed
@@ -228,6 +232,60 @@ class MixedLogit(DiscreteChoiceModel):
     # }
 
     ''' ---------------------------------------------------------- '''
+    def _rebuild_index_arrays_for_reordered_varnames(self):
+        """Rebuild index arrays (rvidx, fxidx, etc.) to match the new variable order from setup_design_matrix.
+
+        setup_design_matrix reorders variables (e.g., putting asvars before randvars), so the index arrays
+        built from the original varnames order are now pointing to the wrong columns. This method rebuilds
+        them to match Xnames.
+        """
+        # Map from variable name to its type in the original specification
+        vartype_map = {}
+        for i, var in enumerate(self.varnames):
+            vartype_map[var] = {
+                'rvidx': self.rvidx[i],
+                'fxidx': self.fxidx[i],
+                'rvtransidx': self.rvtransidx[i],
+                'fxtransidx': self.fxtransidx[i],
+                'rvdist': self.rvdist[i] if i < len(self.rvdist) else None,
+                'rvtransdist': self.rvtransdist[i] if i < len(self.rvtransdist) else None,
+            }
+
+        # Rebuild index arrays based on the new Xnames order (first K elements only)
+        # K elements are the actual data variables (not the parameter names like sd.*)
+        new_rvidx = []
+        new_fxidx = []
+        new_rvtransidx = []
+        new_fxtransidx = []
+        new_rvdist = []
+        new_rvtransdist = []
+
+        for i in range(self.K):
+            varname = self.Xnames[i]
+            if varname in vartype_map:
+                new_rvidx.append(vartype_map[varname]['rvidx'])
+                new_fxidx.append(vartype_map[varname]['fxidx'])
+                new_rvtransidx.append(vartype_map[varname]['rvtransidx'])
+                new_fxtransidx.append(vartype_map[varname]['fxtransidx'])
+                new_rvdist.append(vartype_map[varname]['rvdist'])
+                new_rvtransdist.append(vartype_map[varname]['rvtransdist'])
+            else:
+                # Variable not found in original - this shouldn't happen
+                new_rvidx.append(False)
+                new_fxidx.append(False)
+                new_rvtransidx.append(False)
+                new_fxtransidx.append(False)
+                new_rvdist.append(False)
+                new_rvtransdist.append(False)
+
+        # Replace index arrays with reordered versions
+        self.rvidx = np.array(new_rvidx, dtype=bool)
+        self.fxidx = np.array(new_fxidx, dtype=bool)
+        self.rvtransidx = np.array(new_rvtransidx, dtype=bool)
+        self.fxtransidx = np.array(new_fxtransidx, dtype=bool)
+        self.rvdist = new_rvdist
+        self.rvtransdist = new_rvtransdist
+
     ''' Function.  Fit Mixed Logit model                           '''
     ''' ---------------------------------------------------------- '''
 
