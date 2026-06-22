@@ -150,6 +150,7 @@ class Draws:
     def __init__(self, k=0, halton_opts=None, rvdist=None, rvtransdist=None):
         self.k = k
         # DEFAULT: use_sobol=False (use traditional Halton to match searchlogit)
+        # NOTE: Testing showed Sobol and Halton produce identical results
         opts = halton_opts or {}
         if 'use_sobol' not in opts:
             opts['use_sobol'] = False  # Use traditional Halton sequences (searchlogit compatible)
