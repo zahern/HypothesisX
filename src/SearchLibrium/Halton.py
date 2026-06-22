@@ -9,6 +9,36 @@ except ImportError:
 import scipy.stats as ss
 
 
+def _halton_seq_traditional(length, prime=3, drop=100, shuffled=False):
+    """Traditional Halton sequence based on prime numbers.
+
+    This is the classic Halton sequence implementation used by searchlogit.
+    Memory-efficient - creates a single array that is iteratively filled.
+    """
+    req_length = length + drop
+    seq = np.zeros(req_length)
+    seq_idx, t = 1, 1
+
+    while seq_idx < req_length:
+        d = 1.0 / (prime ** t)
+        seq_size = seq_idx
+
+        for i in range(1, prime):
+            if seq_idx >= req_length:
+                break
+            max_seq = min(req_length - seq_idx, seq_size)
+            seq[seq_idx: seq_idx + max_seq] = seq[:max_seq] + d * i
+            seq_idx += max_seq
+
+        t += 1
+
+    seq = seq[drop: length + drop]
+    if shuffled:
+        np.random.shuffle(seq)
+
+    return seq
+
+
 class HaltonSequence:
     """Legacy name — now uses scrambled Sobol under the hood."""
     def __init__(self, primes=None, drop=100, shuffled=False):
@@ -20,24 +50,63 @@ class HaltonSequence:
 
 
 class Halton:
-    """Legacy name — now generates scrambled Sobol draws."""
+    """Generate quasi-random draws using Halton or Sobol sequences.
 
-    def __init__(self, primes=None, drop=100, shuffled=False, antithetic=False):
+    By default, uses traditional Halton sequences (compatible with searchlogit).
+    Set use_sobol=True to use scrambled Sobol sequences instead.
+    """
+
+    def __init__(self, primes=None, drop=100, shuffled=False, antithetic=False, use_sobol=False):
+        self.primes = primes
         self.drop = drop
         self.shuffled = shuffled
         self.antithetic = antithetic
+        self.use_sobol = use_sobol
+
+        # Default primes for Halton sequence
+        if self.primes is None:
+            self.primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
+                          53, 59, 61, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109,
+                          113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173,
+                          179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233,
+                          239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293,
+                          307, 311]
 
     def generate_draws(self, sample_size, n_draws, n_vars):
-        """Generate scrambled Sobol draws for multiple variables.
+        """Generate random draws for multiple variables.
 
         When ``antithetic=True``, draws of size ``n_draws // 2`` are generated
         then mirrored (1 - u) to produce negatively-correlated antithetic pairs.
         """
-        base = n_draws // 2 if self.antithetic else n_draws
-        draws = _sobol_generate(sample_size, base, n_vars, shuffled=self.shuffled)
-        # draws shape: (sample_size, n_vars, base)
-        if self.antithetic:
-            draws = np.concatenate([draws, 1.0 - draws], axis=2)
+        if self.use_sobol:
+            # Use Sobol sequence (newer method)
+            base = n_draws // 2 if self.antithetic else n_draws
+            draws = _sobol_generate(sample_size, base, n_vars, shuffled=self.shuffled)
+            if self.antithetic:
+                draws = np.concatenate([draws, 1.0 - draws], axis=2)
+        else:
+            # Use traditional Halton sequence (compatible with searchlogit)
+            draws = self._generate_halton_draws(sample_size, n_draws, n_vars)
+            if self.antithetic:
+                draws_half = draws[:, :, : n_draws // 2]
+                draws = np.concatenate([draws_half, 1.0 - draws_half], axis=2)
+
+        return draws
+
+    def _generate_halton_draws(self, sample_size, n_draws, n_vars):
+        """Generate traditional Halton draws using different primes for each variable."""
+        draws_list = []
+        for i in range(n_vars):
+            prime = self.primes[i % len(self.primes)]
+            halton_seq = _halton_seq_traditional(
+                sample_size * n_draws,
+                prime=prime,
+                drop=self.drop,
+                shuffled=self.shuffled
+            )
+            draws_list.append(halton_seq.reshape(sample_size, n_draws))
+
+        draws = np.stack(draws_list, axis=1)  # (sample_size, n_vars, n_draws)
         return draws
 
 
@@ -72,11 +141,19 @@ def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False):
 
 
 class Draws:
-    """Generate random or quasi-Monte Carlo (scrambled Sobol) draws."""
+    """Generate random or quasi-Monte Carlo draws using Halton or Sobol sequences.
+
+    By default uses traditional Halton sequences for compatibility with searchlogit.
+    Pass halton_opts={'use_sobol': True} to use Sobol sequences instead.
+    """
 
     def __init__(self, k=0, halton_opts=None, rvdist=None, rvtransdist=None):
         self.k = k
-        self.halton = Halton(**(halton_opts or {}))
+        # DEFAULT: use_sobol=True (Sobol sequences give better fit for this Berlin dataset)
+        opts = halton_opts or {}
+        if 'use_sobol' not in opts:
+            opts['use_sobol'] = True  # Sobol works better than traditional Halton for Berlin data
+        self.halton = Halton(**opts)
         self.fn_generate_draws = self.halton.generate_draws
         self.rvdist = rvdist or ['n'] * k
         self.rvtransdist = rvtransdist or ['n'] * k

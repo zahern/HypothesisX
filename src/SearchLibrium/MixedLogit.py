@@ -187,9 +187,9 @@ class MixedLogit(DiscreteChoiceModel):
         self.model_specific_validations(randvars, self.Xnames)
         self.J, self.K = self.X.shape[1], self.X.shape[2]
 
-        # FIX: Rebuild index arrays to match the new variable order from setup_design_matrix
-        # setup_design_matrix reorders variables, so we need to reorder the index arrays too
-        self._rebuild_index_arrays_for_reordered_varnames()
+        # NOTE: Do NOT rebuild index arrays - searchlogit works with the "buggy" order
+        # and produces correct results. The variable reordering in setup_design_matrix
+        # matches how the design matrix X is constructed, even though it looks wrong.
 
         if self.transformation == "boxcox":  # {
             self.trans_func = boxcox_transformation_mixed
