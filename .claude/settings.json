@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\\" -Recurse -Name \"progress.csv\" | ForEach-Object { Write-Host \"--- $_\"; Get-Content \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\$_\" })"
+    ]
+  }
+}

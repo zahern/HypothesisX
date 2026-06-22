@@ -1194,8 +1194,8 @@ class SA(Search):
         #if (self.step) % 2:
         #    self.best_sol = self.improve(self.best_sol)  # Apply local improvement
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        self.report_progress(self.progress_file)  # Report current state
-        self.report_progress()  # Report to the screen
+        self.report_progress(self.results_file)  # text narrative → results.txt
+        self.report_progress()                   # CSV row → progress.csv + text to stdout
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.t = self.rate * self.t  # Reduce the temperature accordingly
 

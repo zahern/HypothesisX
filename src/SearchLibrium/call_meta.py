@@ -94,20 +94,20 @@ def estimate_ctrl(parameters, algorithm='sa'):
 
         if c < 50:
             tI, tF            = 500,   0.01
-            max_temp_steps    = 50
-            max_iter          = 10
+            max_temp_steps    = 100
+            max_iter          = 20
         elif c < 200:
             tI, tF            = 1000,  0.001
-            max_temp_steps    = 100
-            max_iter          = 15
+            max_temp_steps    = 200
+            max_iter          = 30
         elif c < 600:
             tI, tF            = 2000,  0.001
-            max_temp_steps    = 150
-            max_iter          = 20
+            max_temp_steps    = 250
+            max_iter          = 40
         else:
             tI, tF            = 5000,  0.0001
-            max_temp_steps    = 250
-            max_iter          = 30
+            max_temp_steps    = 300
+            max_iter          = 50
 
         ctrl = (tI, tF, max_temp_steps, max_iter)
 
