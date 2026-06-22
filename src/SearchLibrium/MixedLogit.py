@@ -41,22 +41,63 @@ class MixedLogit(DiscreteChoiceModel):
         self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters
         self.softmax_r = True
 
-    def generate_draws(self, sample_size, n_draws, n_vars):
-        """
-        Generates random draws for the mixed logit model.
+    def generate_draws(self, sample_size, n_draws, halton=True):
+        """Generate random or Halton draws, return both draws and drawstrans."""
+        draws, drawstrans = [], []
 
-        Parameters:
-            sample_size (int): Number of samples.
-            n_draws (int): Number of draws per sample.
-            n_vars (int): Number of variables.
-        """
+        if self.randvars:
+            draws = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvidx))
+        if self.randtransvars:
+            drawstrans = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvtransidx))
+
+        self.rvdist = [item for item in self.rvdist if item is not False]
+        self.rvtransdist = [item for item in self.rvtransdist if item is not False]
+
+        if isinstance(draws, list) and len(draws) == 0:
+            draws = np.ndarray((1, 0, 1))
+        else:
+            draws = self.evaluate_distribution(self.rvdist, draws)
+            draws = np.atleast_3d(draws)
+
+        if isinstance(drawstrans, list) and len(drawstrans) == 0:
+            drawstrans = np.ndarray((1, 0, 1))
+        else:
+            drawstrans = self.evaluate_distribution(self.rvtransdist, drawstrans)
+            drawstrans = np.atleast_3d(drawstrans)
+
+        return draws, drawstrans
+
+    def generate_halton_draws(self, sample_size, n_draws, n_vars):
+        """Generate Halton draws for multiple random variables using different primes."""
         if n_vars == 0:
-            return np.ndarray((1, 0, 1))
-        # Use self.halton_opts so options like antithetic/shuffled are respected.
-        opts = self.halton_opts or {}
-        draws_s = Draws(k=n_vars, halton_opts=opts)
-        draws = draws_s.generate_draws(sample_size, n_draws)
+            return []
+        primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
+                  53, 59, 61, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109,
+                  113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173,
+                  179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233,
+                  239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293,
+                  307, 311]
+
+        from SearchLibrium.Halton import _halton_seq_traditional as halton_seq
+        draws = [halton_seq(sample_size * n_draws, prime=primes[i % len(primes)],
+                 drop=100, shuffled=False).reshape(sample_size, n_draws) for i in range(n_vars)]
+        draws = np.stack(draws, axis=1)
         return draws
+
+    def evaluate_distribution(self, distr, values):
+        """Transform uniform [0,1] draws to specified distributions."""
+        if isinstance(values, list) or values.size == 0:
+            return values
+        for k, distr_k in enumerate(distr):
+            if distr_k in ['n', 'ln', 'tn']:
+                values[:, k, :] = ss.norm.ppf(values[:, k, :])
+            elif distr_k == 't':
+                values_k = values[:, k, :]
+                values[:, k, :] = (np.sqrt(2 * values_k) - 1) * (values_k <= .5) + \
+                                  (1 - np.sqrt(2 * (1 - values_k))) * (values_k > .5)
+            elif distr_k == 'u':
+                values[:, k, :] = 2 * values[:, k, :] - 1
+        return values
 
 
     def setup(self, X, y, varnames=None, alts=None, isvars=None, transvars=None,
@@ -292,15 +333,10 @@ class MixedLogit(DiscreteChoiceModel):
     def fit(self):
         # {
         # Generate draws:
-        #print(f"self.randvars: {self.randvars}")
-        #print(f"self.rvtrans: {self.rvtransdist}")
         self.rvdist = [item for item in self.rvdist if item is not False]
         self.rvtransdist = [item for item in self.rvtransdist if item is not False]
-        draws = self.generate_draws(self.N, self.n_draws, len(self.rvdist))
-        drawstrans = self.generate_draws(self.N, self.n_draws, len(self.rvtransdist))
+        draws, drawstrans = self.generate_draws(self.N, self.n_draws, self.halton)
         self.draws, self.drawstrans = draws, drawstrans  # Record generated values
-
-        # QUERY: WHY NOT USE self.draws and self.drawstrans below?
 
         # 2x Kftrans - mean and lambda, 3x Krtrans - mean, s.d., lambda
         # Kchol, Kbw - relate to random variables, non-transformed
