@@ -149,10 +149,10 @@ class Draws:
 
     def __init__(self, k=0, halton_opts=None, rvdist=None, rvtransdist=None):
         self.k = k
-        # DEFAULT: use_sobol=True (Sobol sequences give better fit for this Berlin dataset)
+        # DEFAULT: use_sobol=False (use traditional Halton to match searchlogit)
         opts = halton_opts or {}
         if 'use_sobol' not in opts:
-            opts['use_sobol'] = True  # Sobol works better than traditional Halton for Berlin data
+            opts['use_sobol'] = False  # Use traditional Halton sequences (searchlogit compatible)
         self.halton = Halton(**opts)
         self.fn_generate_draws = self.halton.generate_draws
         self.rvdist = rvdist or ['n'] * k

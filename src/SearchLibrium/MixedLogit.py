@@ -41,30 +41,18 @@ class MixedLogit(DiscreteChoiceModel):
         self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters
         self.softmax_r = True
 
-    def generate_draws(self, sample_size, n_draws, halton=True):
-        """Generate random or Halton draws, return both draws and drawstrans."""
-        draws, drawstrans = [], []
+    def generate_draws(self, sample_size, n_draws, halton=True, chol_mat=None):
+        """Generate random or Halton draws via fn_generate_draws, apply distributions, return tuple."""
+        args = (sample_size, n_draws)
+        draws, drawstrans = self.fn_generate_draws(*args)
 
-        if self.randvars:
-            draws = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvidx))
-        if self.randtransvars:
-            drawstrans = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvtransidx))
-
+        # Filter out any False values from the lists
         self.rvdist = [item for item in self.rvdist if item is not False]
         self.rvtransdist = [item for item in self.rvtransdist if item is not False]
-
-        if isinstance(draws, list) and len(draws) == 0:
-            draws = np.ndarray((1, 0, 1))
-        else:
-            draws = self.evaluate_distribution(self.rvdist, draws)
-            draws = np.atleast_3d(draws)
-
-        if isinstance(drawstrans, list) and len(drawstrans) == 0:
-            drawstrans = np.ndarray((1, 0, 1))
-        else:
-            drawstrans = self.evaluate_distribution(self.rvtransdist, drawstrans)
-            drawstrans = np.atleast_3d(drawstrans)
-
+        draws = self.evaluate_distribution(self.rvdist, draws)  # Evaluate distributions
+        draws = np.atleast_3d(draws)
+        drawstrans = self.evaluate_distribution(self.rvtransdist, drawstrans)  # Evaluate distributions
+        drawstrans = np.atleast_3d(drawstrans)
         return draws, drawstrans
 
     def generate_halton_draws(self, sample_size, n_draws, n_vars):
@@ -99,6 +87,29 @@ class MixedLogit(DiscreteChoiceModel):
                 values[:, k, :] = 2 * values[:, k, :] - 1
         return values
 
+    def generate_draws_halton(self, sample_size, n_draws):
+        """Generate Halton draws, returns (draws, drawstrans) tuple with raw uniform values."""
+        draws, drawstrans = [], []
+        if self.randvars:
+            draws = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvidx))
+        if self.randtransvars:
+            drawstrans = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvtransidx))
+        return draws, drawstrans
+
+    def generate_draws_random(self, sample_size, n_draws):
+        """Generate random uniform draws, returns (draws, drawstrans) tuple with raw uniform values."""
+        draws, drawstrans = [], []
+        if self.randvars:
+            draws = self.get_random_draws(sample_size, n_draws, np.sum(self.rvidx))
+        if self.randtransvars:
+            drawstrans = self.get_random_draws(sample_size, n_draws, np.sum(self.rvtransidx))
+        return draws, drawstrans
+
+    def get_random_draws(self, sample_size, n_draws, n_vars):
+        """Generate random uniform draws between 0 and 1."""
+        if n_vars == 0:
+            return []
+        return np.random.uniform(size=(sample_size, n_vars, n_draws))
 
     def setup(self, X, y, varnames=None, alts=None, isvars=None, transvars=None,
               transformation="boxcox", ids=None, weights=None, avail=None,
@@ -267,8 +278,10 @@ class MixedLogit(DiscreteChoiceModel):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # DEFINE MEMBER FUNCTIONS TO APPLY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-       # self.fn_generate_draws: DrawsFunction = self.generate_draws_halton if halton else self.generate_draws_random
+        from typing import Callable, Tuple
+        Args, Result = Tuple[int, int], Tuple[np.ndarray, np.ndarray]
+        DrawsFunction = Callable[[Args], Result]
+        self.fn_generate_draws: DrawsFunction = self.generate_draws_halton if halton else self.generate_draws_random
 
     # }
 
@@ -333,8 +346,6 @@ class MixedLogit(DiscreteChoiceModel):
     def fit(self):
         # {
         # Generate draws:
-        self.rvdist = [item for item in self.rvdist if item is not False]
-        self.rvtransdist = [item for item in self.rvtransdist if item is not False]
         draws, drawstrans = self.generate_draws(self.N, self.n_draws, self.halton)
         self.draws, self.drawstrans = draws, drawstrans  # Record generated values
 
@@ -382,31 +393,13 @@ class MixedLogit(DiscreteChoiceModel):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
             arr = self.init_coeff[:lower]
-
-            # Better scale initialisation: use half the absolute value of the MNL
-            # mean estimates for the corresponding random variable, floored at 0.05.
-            # This gives BFGS a much better starting point than a flat 0.1 when
-            # coefficients are very small (e.g. cost in money units) or very large.
-            br_means = arr[self.Kf + 2 * self.Kftrans: self.Kf + 2 * self.Kftrans + self.Kr]
-
-            # Cholesky elements (correlated random vars) — keep at 0.1; the diagonal
-            # scaling is embedded in off-diagonal terms and is harder to infer.
-            chol_init = np.repeat(0.1, self.Kchol)
-
-            # Bandwidth (std dev) for non-correlated random vars.
-            bw_means = br_means[self.correlationLength:]
-            bw_init = np.maximum(np.abs(bw_means) * 0.5, 0.05)
-
-            rep = np.concatenate([chol_init, bw_init])
+            # Use simple initialization matching searchlogit for better convergence
+            rep = np.repeat(0.1, self.Kchol + self.Kbw)
             self.init_coeff = np.concatenate((arr, rep, self.init_coeff[lower:upper],))
 
-            if self.Krtrans:  # CHECK ">0"
-                # {
-                # Similarly scale random-transformed std devs from MNL means.
-                rtrans_means = self.init_coeff[lower:upper]
-                rtrans_scale_init = np.maximum(np.abs(rtrans_means) * 0.5, 0.05)
-                self.init_coeff = np.concatenate((self.init_coeff, rtrans_scale_init, self.init_coeff[-self.Krtrans:]))
-            # }
+            if self.Krtrans:
+                rep = np.repeat(0.1, self.Krtrans)
+                self.init_coeff = np.concatenate((self.init_coeff, rep, self.init_coeff[-self.Krtrans:]))
         # }
 
         betas = np.repeat(0.1, n_coeff) if self.init_coeff is None else self.init_coeff
