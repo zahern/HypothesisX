@@ -46,14 +46,14 @@ def new_features():
 
            Returns:
                Dict with keys:
-                   ps_nest_vars → variables always included in nests
-                   ps_alt_vars → alternative optional variables
-                   force_include → variables that must always be included
-                   force_exclude → variables that must never be included
-                   force_random → dict of variables that must have random parameters with distributions
-                   never_random → variables that must never have random parameters
-                   latent_class_constraints → constraints for latent class models
-                   mixed_model_constraints → constraints for mixed models
+                   ps_nest_vars: variables always included in nests
+                   ps_alt_vars: alternative optional variables
+                   force_include -> variables that must always be included
+                   force_exclude -> variables that must never be included
+                   force_random -> dict of variables that must have random parameters with distributions
+                   never_random -> variables that must never have random parameters
+                   latent_class_constraints -> constraints for latent class models
+                   mixed_model_constraints -> constraints for mixed models
 
            Example usage:
                from yourpackage import new_features
