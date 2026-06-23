@@ -784,9 +784,16 @@ class MixedLogit(DiscreteChoiceModel):
                 v, g = _compiled(b, X_jax, y_jax, pi_jax, draws_jax)
                 return float(v), np.array(g, dtype=np.float64)
 
+            # Build options dict based on method
+            opts = {'maxiter': self.maxiter, 'disp': False}
+            if self.method in ['bfgs', 'l-bfgs-b']:
+                opts['gtol'] = self.gtol
+                opts['ftol'] = self.ftol
+            elif self.method == 'slsqp':
+                opts['ftol'] = self.ftol  # SLSQP uses ftol, not gtol
+
             result = sp_min(
-                _obj, betas, jac=True, method='BFGS',
-                options={'maxiter': self.maxiter, 'gtol': self.gtol, 'disp': False})
+                _obj, betas, jac=True, method=self.method, options=opts)
             return result
 
         except Exception as e:
