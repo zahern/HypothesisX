@@ -1356,9 +1356,8 @@ class MixedLogit(DiscreteChoiceModel):
             # First reshape Br, creating a first and third dimension so dimension (1, Kr, 1)
             # Second, compute Br[i,:,j] = tmp[i,:,j] + Br_b[0,:,0]  for all values of i and j
 
-            # Filter out False values (for fixed variables) - same as JAX version at line 759
-            rvdist_filtered = [d for d in self.rvdist if d is not False]
-            Br = self.draws_generator.apply_distribution(Br, rvdist_filtered)
+            # apply_distribution - rvdist is already filtered in generate_draws()
+            Br = self.draws_generator.apply_distribution(Br, self.rvdist)
             self.Br = Br  # save Br to use later
             Xr = X[:, :, :, self.rvidx]
             XBr = dev.cust_einsum('npjk,nkr -> npjr', Xr, Br).astype(float)  # (N, P, J, R)
