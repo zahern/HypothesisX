@@ -11,6 +11,7 @@ src/SearchLibrium/__init__.py
 src/SearchLibrium/__main__.py
 src/SearchLibrium/_choice_model.py
 src/SearchLibrium/_device.py
+src/SearchLibrium/banditsa.py
 src/SearchLibrium/boxcox_functions.py
 src/SearchLibrium/call_meta.py
 src/SearchLibrium/constraints_builder.py
@@ -29,10 +30,14 @@ src/SearchLibrium/multinomial_probit.py
 src/SearchLibrium/ordered_logit.py
 src/SearchLibrium/ordered_logit_mixed.py
 src/SearchLibrium/rrm.py
+src/SearchLibrium/sapbil.py
 src/SearchLibrium/search.py
 src/SearchLibrium/selection_models.py
 src/SearchLibrium/setup.py
 src/SearchLibrium/siman.py
+src/SearchLibrium/test_lc_de.py
+src/SearchLibrium/test_mario_searches.py
+src/SearchLibrium/test_sapbil_vs_banditsa.py
 src/SearchLibrium/threshold.py
 src/SearchLibrium/version.txt
 src/SearchLibrium.egg-info/PKG-INFO

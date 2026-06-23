@@ -141,10 +141,10 @@ def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False):
 
 
 class Draws:
-    """Generate random or quasi-Monte Carlo draws using Halton or Sobol sequences.
+    """Generate random or quasi-Monte Carlo draws using Sobol or Halton sequences.
 
-    By default uses traditional Halton sequences for compatibility with searchlogit.
-    Pass halton_opts={'use_sobol': True} to use Sobol sequences instead.
+    By default uses scrambled Sobol sequences (better low-discrepancy properties).
+    Pass halton_opts={'use_sobol': False} to revert to traditional Halton sequences.
     """
 
     def __init__(self, k=0, halton_opts=None, rvdist=None, rvtransdist=None):

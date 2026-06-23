@@ -1,8 +1,0 @@
-README.md
-pyproject.toml
-SearchLibrium/SearchLibrium.egg-info/PKG-INFO
-SearchLibrium/SearchLibrium.egg-info/SOURCES.txt
-SearchLibrium/SearchLibrium.egg-info/dependency_links.txt
-SearchLibrium/SearchLibrium.egg-info/entry_points.txt
-SearchLibrium/SearchLibrium.egg-info/requires.txt
-SearchLibrium/SearchLibrium.egg-info/top_level.txt

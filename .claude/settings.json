@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Get-ChildItem \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\\" -Recurse -Name \"progress.csv\" | ForEach-Object { Write-Host \"--- $_\"; Get-Content \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\$_\" })"
+      "PowerShell(Get-ChildItem \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\\" -Recurse -Name \"progress.csv\" | ForEach-Object { Write-Host \"--- $_\"; Get-Content \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\$_\" })",
+      "Read(//z/search_sl/**)",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\('Z:/search_sl/run_search.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ],
+    "additionalDirectories": [
+      "Z:\\search_sl"
     ]
   }
 }
