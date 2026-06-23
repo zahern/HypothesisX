@@ -268,7 +268,7 @@ class MixedLogit(DiscreteChoiceModel):
         self.model_specific_validations(randvars, self.Xnames)
         self.J, self.K = self.X.shape[1], self.X.shape[2]
 
-        # Rebuild index arrays to match the variable reordering from setup_design_matrix
+        # CRITICAL: Rebuild index arrays to match the variable reordering from setup_design_matrix
         # setup_design_matrix reorders variables, so rvidx must match the new column order in X
         self._rebuild_index_arrays_for_reordered_varnames()
 
