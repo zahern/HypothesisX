@@ -189,10 +189,12 @@ class MixedLogit(DiscreteChoiceModel):
         self.batch_size = min(n_draws, batch_size) if batch_size is not None else n_draws
         self.halton_opts = halton_opts  # Store halton options for draw generation
 
-        # CRITICAL FIX: Recreate draws_generator with proper halton_opts
+        # CRITICAL FIX: Recreate draws_generator with proper halton_opts AND rvdist
         # The __init__ creates it with halton_opts=None, but setup() gets the actual options
         # Must recreate here to ensure Sobol/Halton configuration is properly applied
-        self.draws_generator = Draws(k=len(randvars or {}), halton_opts=halton_opts)
+        # AND to pass the correct random variable distributions (e.g., 'ln' for lognormal)
+        rvdist = list(randvars.values()) if randvars else []
+        self.draws_generator = Draws(k=len(randvars or {}), halton_opts=halton_opts, rvdist=rvdist)
 
         self.randvarsdict = randvars  # random variables not transformed
 
