@@ -193,7 +193,8 @@ class MixedLogit(DiscreteChoiceModel):
         # The __init__ creates it with halton_opts=None, but setup() gets the actual options
         # Must recreate here to ensure Sobol/Halton configuration is properly applied
         # AND to pass the correct random variable distributions (e.g., 'ln' for lognormal)
-        rvdist = list(randvars.values()) if randvars else []
+        # IMPORTANT: Order rvdist by varnames order, not dictionary order
+        rvdist = [randvars[var] for var in varnames if var in randvars] if randvars else []
         self.draws_generator = Draws(k=len(randvars or {}), halton_opts=halton_opts, rvdist=rvdist)
 
         self.randvarsdict = randvars  # random variables not transformed
