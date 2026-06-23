@@ -363,12 +363,18 @@ class DiscreteChoiceModel(ABC):
         # }
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Compute lambda_mask
+        # Compute lambda_mask (for nested logit models)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Lambda parameters are tested against H0=1 (not H0=0)
+        # because lambda represents nesting strength (1=standard logit)
         lambda_mask = [1 if "lambda" in x else 0 for x in coeff_names]
 
+        # If length mismatch, pad with 0s (assume non-lambda params for extras)
         if len(lambda_mask) != len(self.coeff_est):
-            lambda_mask = np.ones_like(self.coeff_est)
+            lambda_mask = np.concatenate([
+                lambda_mask,
+                np.zeros(len(self.coeff_est) - len(lambda_mask))
+            ])
 
 
 
