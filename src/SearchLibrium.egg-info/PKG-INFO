@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: SearchLibrium
-Version: 0.0.105
+Version: 0.0.109
 Summary: A Python package for econometric models driven by search
 Author: Alexander Paz Prithvi Beeramole, Robert Burdett
 Author-email: Zeke Ahern <z.ahern@qut.edu.au>
@@ -14,9 +14,9 @@ Classifier: Programming Language :: Python :: 3.10
 Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: 3.12
 Classifier: Topic :: Scientific/Engineering :: Mathematics
-Requires-Python: >=3.10
+Requires-Python: >=3.9
 Description-Content-Type: text/markdown
-Requires-Dist: numpy>2.0.0
+Requires-Dist: numpy<2.0.0
 Requires-Dist: pandas>=2.0.0
 Requires-Dist: scipy>=1.10
 Requires-Dist: scikit-learn>=1.3.1
