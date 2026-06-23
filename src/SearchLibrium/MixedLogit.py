@@ -135,7 +135,7 @@ class MixedLogit(DiscreteChoiceModel):
               randvars=None, panels=None, base_alt=None, fit_intercept=False,
               init_coeff=None, maxiter=1000, correlated_vars=None,
               n_draws=1000, halton=True, minimise_func=None,
-              batch_size=None, halton_opts=None, ftol=1e-8,
+              batch_size=None, halton_opts=None, ftol=1e-12,
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
