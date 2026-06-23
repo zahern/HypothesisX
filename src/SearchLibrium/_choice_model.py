@@ -375,7 +375,8 @@ class DiscreteChoiceModel(ABC):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Compute z-values
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        self.zvalues = np.nan_to_num((self.coeff_est - lambda_mask) / self.stderr)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            self.zvalues = np.nan_to_num((self.coeff_est - lambda_mask) / self.stderr)
         self.zvalues = truncate(self.zvalues, -1e+5, 1e+5)  # Set maximum (and minimum) limits
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
