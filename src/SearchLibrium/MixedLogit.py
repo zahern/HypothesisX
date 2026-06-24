@@ -36,6 +36,7 @@ infinity = float('inf')
 class MixedLogit(DiscreteChoiceModel):
     def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u'], _jax=True):
         super().__init__(_jax)
+        self.descr = "Mixed Logit"
         self.halton_opts = halton_opts
         self.draws_generator = Draws(k=len(distributions), halton_opts=halton_opts, rvdist=distributions)
         self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters

@@ -1319,20 +1319,24 @@ class SA(Search):
 
     def log_decision(self, sol, file=None):
     # {
-        print("asvars = ", sol['asvars'], file=file)
-        print("isvars = ", sol['isvars'], file=file)
-        print("randvars = ", sol['randvars'], file=file)
-        print("bcvars = ", sol['bcvars'], file=file)
-        print("corvars = ", sol['corvars'], file=file)
-        print("bctrans = ", sol['bctrans'], file=file)
-        print("asc_ind = ", sol['asc_ind'], file=file)
+        def _clean(v):
+            if isinstance(v, (list, tuple)):
+                return [str(x) for x in v]
+            if isinstance(v, dict):
+                return {str(k): str(val) for k, val in v.items()}
+            return v
 
-
-        print("model = ", sol['model_n'], file=file)
-
-
-        #print("member_params_spec_is = ", sol['member_params_spec_is'], file=file)
-        print("model=", sol['model'].descr, file=file)                                         
+        print("asvars   = ", _clean(sol['asvars']),   file=file)
+        print("isvars   = ", _clean(sol['isvars']),   file=file)
+        print("randvars = ", _clean(sol['randvars']), file=file)
+        print("bcvars   = ", _clean(sol['bcvars']),   file=file)
+        print("corvars  = ", _clean(sol['corvars']),  file=file)
+        print("bctrans  = ", sol['bctrans'],           file=file)
+        print("asc_ind  = ", sol['asc_ind'],           file=file)
+        print("model    = ", sol['model_n'],            file=file)
+        model = sol.get('model')
+        if model is not None and hasattr(model, 'descr') and model.descr:
+            print("model descr =", model.descr, file=file)
     # }
 
     ''' ---------------------------------------------------------- '''

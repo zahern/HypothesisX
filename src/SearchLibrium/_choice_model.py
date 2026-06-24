@@ -1162,35 +1162,33 @@ class DiscreteChoiceModel(ABC):
 
         print("", file=file)
         print("Table.", file=file)
-        fmt = "{:19} {:13.10f} {:13.10f} {:13.10f} {:13.3g} {:3}"
-        coeff_name_str_length = 30
+        COL_NAME = 32
+        fmt = f"{{:{COL_NAME}}} {{:13.6f}} {{:13.6f}} {{:10.4f}} {{:11.4g}} {{:3}}"
+        SEP = "-" * (COL_NAME + 13 + 13 + 10 + 11 + 8)
 
+        print(SEP, file=file)
+        print(f"{'Coefficient':{COL_NAME}} {'Estimate':>13} {'Std.Err.':>13} {'z-val':>10} {'P>|z|':>11}",
+              file=file)
+        print(SEP, file=file)
 
-        print("-" * 75, file=file)
-        print("{:30} {:>13} {:>13} {:>13} {:>13}"
-              .format("Coefficient", "Estimate", "Std.Err.", "z-val", "P>|z|"), file=file)
-        print("-" * 75, file=file)
-
-
-        # Dictionary to map p-value thresholds to significance symbols
         significance_symbols = {0.001: "***", 0.01: "**", 0.05: "*", 0.1: ".", 1.01: ""}
-        sig_sim_items = significance_symbols.items()
 
-        # Iterate through the coefficients
+        pvalues  = self.pvalues  if self.pvalues  is not None else [float("nan")] * len(self.coeff_est)
+        stderr   = self.stderr   if self.stderr   is not None else [float("nan")] * len(self.coeff_est)
+        zvalues  = self.zvalues  if self.zvalues  is not None else [float("nan")] * len(self.coeff_est)
+
         for i, coeff in enumerate(self.coeff_est):
-        # {
-            # Get the corresponding significance symbol
-            try:
-                signif = next(symbol for threshold, symbol in sig_sim_items if self.pvalues[i] < threshold)
-            except Exception as e:
-                print(e)
-                signif = ""
-            tmp = self.coeff_names[i][:coeff_name_str_length]
-            print(fmt.format(tmp, self.coeff_est[i], self.stderr[i], self.zvalues[i], self.pvalues[i], signif), file=file)
-        # }
+            pv = float(pvalues[i])
+            signif = next(
+                (sym for thr, sym in significance_symbols.items() if pv < thr),
+                ""
+            )
+            name = str(self.coeff_names[i])[:COL_NAME]
+            se   = float(stderr[i])
+            zv   = float(zvalues[i])
+            print(fmt.format(name, float(coeff), se, zv, pv, signif), file=file)
 
-
-        print("-" * 75, file=file)
+        print(SEP, file=file)
         print("Significance:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1", file=file)
         print("", file=file)
 
@@ -1200,10 +1198,10 @@ class DiscreteChoiceModel(ABC):
             text += f"MAE= {self.mae:0.3f};"
 
         loglik_null = self.get_loglik_null()
-        adjust_lik_ratio = 1 - (self.aic / loglik_null)
-        self.adjust_lik_ratio = adjust_lik_ratio
+        mcfadden_adj_r2 = 1 - (self.aic / loglik_null)   # equiv. 1-(LL-k)/LL_null
+        self.adjust_lik_ratio = mcfadden_adj_r2
 
-        text += f" ADJLIK RATIO: {adjust_lik_ratio:.3f}"
+        text += f" McFadden Adj.R²: {mcfadden_adj_r2:.4f}"
         print(text, file=file)
     # }
 
