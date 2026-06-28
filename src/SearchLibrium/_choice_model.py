@@ -561,7 +561,7 @@ class DiscreteChoiceModel(ABC):
         # {
             if (isinstance(self.correlated_vars, list)):
             # {
-                nb_corvars = len(self.correlated_vars)
+                nb_corvars = len([v for v in self.correlated_vars if v in randvars])
                 self.correlationLength = nb_corvars
                 self.Kbw = self.Kr - nb_corvars
                 self.Kchol = int((nb_corvars * (nb_corvars + 1)) / 2)
@@ -859,40 +859,15 @@ class DiscreteChoiceModel(ABC):
         # random variable standard deviations, useful for cholesky matrix
         if (self.correlated_vars):
             if (isinstance(self.correlated_vars, list)):
-                self.correlationLength = len(self.correlated_vars)
-                self.Kbw = self.Kr - len(self.correlated_vars)
-            else:
-                self.correlationLength = self.Kr
-                self.Kbw = 0
-        if (self.correlated_vars):
-            if (isinstance(self.correlated_vars, list)):
-                # Kchol, permutations of specified params in correlation list
-                self.Kchol = int((len(self.correlated_vars) *
-                                 (len(self.correlated_vars)+1))/2)
-            else:
-                # i.e. correlation = True, Kchol permutations of rand vars
-                self.Kchol = int((len(self.randvars) *
-                                 (len(self.randvars)+1))/2)
-
-
-        if (self.correlated_vars):
-        # {
-            if (isinstance(self.correlated_vars, list)):
-            # {
-                nb_corvars = len(self.correlated_vars)
+                nb_corvars = len([v for v in self.correlated_vars if v in randvars])
                 self.correlationLength = nb_corvars
                 self.Kbw = self.Kr - nb_corvars
                 self.Kchol = int((nb_corvars * (nb_corvars + 1)) / 2)
-                # i.e., Kchol => # permutations of specified params in correlation list
-            # }
-            else: # {
+            else:
                 self.correlationLength = self.Kr
                 self.Kbw = 0
                 nb_randvars = len(self.randvars)
                 self.Kchol = int((nb_randvars * (nb_randvars + 1)) / 2)
-                # i.e., correlated_vars = True, Kchol => permutations of rand vars
-            # }
-        # }
 
 
         # Create design matrix

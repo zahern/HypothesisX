@@ -1093,7 +1093,17 @@ class MixedLogit(DiscreteChoiceModel):
                     is_correlated = True
 
             if self.rvidx[ii_offset]:  # {
-                rv_val = chol[chol_count] if is_correlated else Br_w[rv_count]
+                if is_correlated:
+                    rv_val = chol[chol_count]
+                else:
+                    if rv_count >= len(Br_w):
+                        raise IndexError(
+                            f"construct_chol_mat: rv_count={rv_count} out of bounds "
+                            f"for Br_w (size {len(Br_w)}). "
+                            f"var={var}, Kr={self.Kr}, Kbw={self.Kbw}, "
+                            f"correlated_vars={getattr(self, 'correlated_vars', None)}"
+                        )
+                    rv_val = Br_w[rv_count]
                 chol_mat_temp[rv_count_all, rv_count_all] = rv_val
                 rv_count_all += 1
                 if is_correlated:
@@ -1103,8 +1113,23 @@ class MixedLogit(DiscreteChoiceModel):
             # }
 
             if self.rvtransidx[ii_offset]:  # {
-                is_correlated = isinstance(self.correlated_vars, bool) and self.correlated_vars
-                rv_val = chol[chol_count] if is_correlated else Brtrans_w[rv_trans_count]
+                is_correlated = False
+                if hasattr(self, 'correlated_vars') and self.correlated_vars:
+                    if hasattr(self.correlated_vars, 'append'):
+                        if var in self.correlated_vars:
+                            is_correlated = True
+                    else:
+                        is_correlated = True
+                if is_correlated:
+                    rv_val = chol[chol_count]
+                else:
+                    if rv_trans_count >= len(Brtrans_w):
+                        raise IndexError(
+                            f"construct_chol_mat: rv_trans_count={rv_trans_count} out of bounds "
+                            f"for Brtrans_w (size {len(Brtrans_w)}). "
+                            f"var={var}, Krtrans={self.Krtrans}"
+                        )
+                    rv_val = Brtrans_w[rv_trans_count]
                 chol_mat_temp[-num_rvtrans_total + rv_trans_count_all, -num_rvtrans_total + rv_trans_count_all] = rv_val
                 rv_trans_count_all += 1
 

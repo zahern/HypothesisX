@@ -3,10 +3,17 @@
     "allow": [
       "PowerShell(Get-ChildItem \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\\" -Recurse -Name \"progress.csv\" | ForEach-Object { Write-Host \"--- $_\"; Get-Content \"Z:\\\\search_sl\\\\results\\\\banditsa\\\\berlin\\\\$_\" })",
       "Read(//z/search_sl/**)",
-      "PowerShell(python -c \"import ast; ast.parse\\(open\\('Z:/search_sl/run_search.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\('Z:/search_sl/run_search.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Read(//z/latent_class_metacount/**)",
+      "PowerShell(pip show metacountregressor 2>&1)",
+      "PowerShell(python -c \"import metacountregressor; print\\(metacountregressor.__file__\\)\" 2>&1)",
+      "PowerShell(python -c \"from metacountregressor.main_hpc import experiment_washington; print\\('OK'\\)\" 2>&1)",
+      "Read(//c/Users/ahernz/source/MetaCount/metacountregressor/**)"
     ],
     "additionalDirectories": [
-      "Z:\\search_sl"
+      "Z:\\search_sl",
+      "C:\\Users\\ahernz\\source\\MetaCount\\metacountregressor",
+      "z:\\latent_class_metacount"
     ]
   }
 }
