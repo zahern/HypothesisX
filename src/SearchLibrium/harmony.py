@@ -815,7 +815,7 @@ class HarmonySearch(Search):
         if self.nb_crit > 1:
         # {
             if self.param.avail is not None:
-                avail = np.row_stack((self.param.avail, self.param.test_avail))
+                avail = np.vstack((self.param.avail, self.param.test_avail))
 
             if self.param.avail_latent is not None:
             # {
@@ -823,7 +823,7 @@ class HarmonySearch(Search):
                 for ii, avail_latent_ii in enumerate(self.param.avail_latent):
                     # {
                     if avail_latent_ii is not None:
-                        avail_latent[ii] = np.row_stack((avail_latent_ii, self.param.test_avail_latent[ii]))
+                        avail_latent[ii] = np.vstack((avail_latent_ii, self.param.test_avail_latent[ii]))
                 # }
             # }
 

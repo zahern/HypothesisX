@@ -2212,7 +2212,7 @@ class Search():
         for sol in solutions: # {
             bool_arr = []
             for i, val_i in copied_new_sol.items(): # {
-                if hasattr(sol[i], 'dtype') and sol[i].dtype == 'O': # {
+                if hasattr(sol[i], 'dtype') and sol[i].dtype == np.object_: # {
                     obj_arr1 = np.concatenate(sol[i])
                     obj_arr2 = np.concatenate(val_i)
                     bool_arr.append(len(obj_arr1) == len(obj_arr2) and np.all(obj_arr1 == obj_arr2))
