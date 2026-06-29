@@ -300,6 +300,25 @@ class LatentClassMixedLogit:
             raise ValueError("class_probs0 must have length n_classes.")
         return self._normalize_class_probs(class_probs0)
 
+    def _em_step(self, betas, class_probs):
+        """Single E+M step. Returns (new_betas, new_class_probs, loglik, posterior)."""
+        log_choice, _ = self._log_choice_probs_np(betas)
+        log_joint = log_choice + np.log(np.clip(class_probs, 1e-300, None))[None, :]
+        log_denom = logsumexp(log_joint, axis=1, keepdims=True)
+        posterior = np.exp(log_joint - log_denom)
+        loglik = float(log_denom.sum())
+        new_class_probs = self._normalize_class_probs(posterior.mean(axis=0))
+        new_betas = betas.copy()
+        for c in range(self.n_classes):
+            new_betas[c] = self._weighted_m_step(betas[c], posterior[:, c])
+        return new_betas, new_class_probs, loglik, posterior
+
+    def _squarem_loglik(self, betas, class_probs):
+        """Log-likelihood at (betas, class_probs) without running the M-step."""
+        log_choice, _ = self._log_choice_probs_np(betas)
+        log_joint = log_choice + np.log(np.clip(class_probs, 1e-300, None))[None, :]
+        return float(logsumexp(log_joint, axis=1).sum())
+
     def _fit_em_once(self, rng, betas0=None, class_probs0=None):
         betas = self._make_initial_betas(rng, betas0=betas0)
         class_probs = self._make_initial_class_probs(class_probs0=class_probs0)
@@ -332,9 +351,105 @@ class LatentClassMixedLogit:
             "iterations": iteration,
         }
 
+    def _fit_squarem_once(self, rng, betas0=None, class_probs0=None):
+        """Fit via SQUAREM-accelerated EM (Varadhan & Roland 2008).
+
+        Each outer iteration uses two EM steps to build a squared extrapolation
+        that typically reaches the fixed-point in far fewer EM calls than
+        standard EM.  Convergence is monitored via log-likelihood change.
+
+        Returns the same dict as ``_fit_em_once``, plus key ``em_calls`` (total
+        number of E+M steps executed, for fair comparison with standard EM).
+        """
+        betas = self._make_initial_betas(rng, betas0=betas0)
+        class_probs = self._make_initial_class_probs(class_probs0=class_probs0)
+
+        n_beta = self.n_classes * self.K
+
+        def _pack(b, cp):
+            return np.concatenate([b.ravel(), cp])
+
+        def _unpack(theta):
+            b = theta[:n_beta].reshape(self.n_classes, self.K)
+            cp = self._normalize_class_probs(theta[n_beta:])
+            return b, cp
+
+        theta = _pack(betas, class_probs)
+        prev_loglik = -np.inf
+        converged = False
+        posterior = np.full((self.N, self.n_classes), 1.0 / self.n_classes)
+        em_calls = 0
+
+        for outer_iter in range(1, self.maxiter + 1):
+            b0, cp0 = _unpack(theta)
+
+            b1, cp1, ll1, _p1 = self._em_step(b0, cp0)
+            em_calls += 1
+            theta1 = _pack(b1, cp1)
+
+            b2, cp2, ll2, post2 = self._em_step(b1, cp1)
+            em_calls += 1
+            theta2 = _pack(b2, cp2)
+
+            r = theta1 - theta
+            v = theta2 - 2.0 * theta1 + theta
+            norm_v = np.linalg.norm(v)
+
+            if norm_v < 1e-14:
+                # v negligible — no extrapolation gain; accept two standard steps
+                theta = theta2
+                loglik = ll2
+                posterior = post2
+            else:
+                alpha = min(-np.linalg.norm(r) / norm_v, -1.0)
+
+                # Step-halving: shrink |α − (−1)| by half each attempt
+                accepted = False
+                b_p, cp_p, ll_p = b2, cp2, ll2  # default fallback
+                for _ in range(10):
+                    theta_prop = theta - 2.0 * alpha * r + alpha ** 2 * v
+                    b_cand, cp_cand = _unpack(theta_prop)
+                    ll_cand = self._squarem_loglik(b_cand, cp_cand)
+                    if np.isfinite(ll_cand) and ll_cand >= ll1:
+                        b_p, cp_p, ll_p = b_cand, cp_cand, ll_cand
+                        accepted = True
+                        break
+                    alpha = (alpha + (-1.0)) / 2.0  # halve toward α = −1
+
+                if accepted:
+                    theta = _pack(b_p, cp_p)
+                    loglik = ll_p
+                    # recompute posterior at the accepted extrapolated point
+                    log_choice, _ = self._log_choice_probs_np(b_p)
+                    log_joint = log_choice + np.log(np.clip(cp_p, 1e-300, None))[None, :]
+                    log_denom = logsumexp(log_joint, axis=1, keepdims=True)
+                    posterior = np.exp(log_joint - log_denom)
+                else:
+                    # Fall back to two standard EM steps
+                    theta = theta2
+                    loglik = ll2
+                    posterior = post2
+
+            if abs(loglik - prev_loglik) < self.tol:
+                converged = True
+                break
+            prev_loglik = loglik
+
+        b_final, cp_final = _unpack(theta)
+        return {
+            "betas": b_final,
+            "class_probs": cp_final,
+            "posterior": posterior,
+            "loglik": loglik,
+            "converged": converged,
+            "iterations": em_calls,  # EM-equivalent step count for fair comparison
+            "em_calls": em_calls,
+        }
+
     def fit(self, betas0=None, class_probs0=None,
-            de_init=False, de_popsize=6, de_maxiter=20, de_tol=0.01, de_seed=None):
-        """Fit the latent class model via EM.
+            de_init=False, de_popsize=6, de_maxiter=20, de_tol=0.01, de_seed=None,
+            em_method="squarem"):
+        """Fit the latent class model via EM or SQUAREM-accelerated EM.
 
         Parameters
         ----------
@@ -347,7 +462,13 @@ class LatentClassMixedLogit:
             ``betas0`` when True).
         de_popsize, de_maxiter, de_tol, de_seed
             DE hyper-parameters forwarded to :meth:`_de_warm_start`.
+        em_method : {'standard', 'squarem'}
+            EM solver.  ``'squarem'`` applies the Squared Extrapolation Method
+            (Varadhan & Roland 2008) to accelerate convergence.
         """
+        if em_method not in ("standard", "squarem"):
+            raise ValueError(f"em_method must be 'standard' or 'squarem', got {em_method!r}")
+
         if de_init:
             betas0 = self._de_warm_start(
                 popsize=de_popsize,
@@ -357,13 +478,14 @@ class LatentClassMixedLogit:
             )
 
         best_result = None
+        _fit_once = self._fit_squarem_once if em_method == "squarem" else self._fit_em_once
 
         for init_idx in range(self.n_init):
             seed = self.random_state + init_idx
             rng = np.random.default_rng(seed)
             init_betas = betas0 if init_idx == 0 else None
             init_probs = class_probs0 if init_idx == 0 else None
-            result = self._fit_em_once(rng, betas0=init_betas, class_probs0=init_probs)
+            result = _fit_once(rng, betas0=init_betas, class_probs0=init_probs)
             if best_result is None or result["loglik"] > best_result["loglik"]:
                 best_result = result
 
@@ -373,6 +495,7 @@ class LatentClassMixedLogit:
         self.loglik = best_result["loglik"]
         self.converged = best_result["converged"]
         self.total_iter = best_result["iterations"]
+        self.em_method = em_method
         self.coeff_est = self.class_betas.ravel()
         self.coeff_names = [
             f"class_{class_idx + 1}_{name}"
