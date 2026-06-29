@@ -246,10 +246,12 @@ class MultinomialLogit(DiscreteChoiceModel):
         transformation="boxcox", ids=None, weights=None, avail=None,
         base_alt=None, fit_intercept=False, init_coeff=None, maxiter=2000,
         ftol=1e-6, gtol=1e-6, return_grad=True, return_hess=True,
-        method="bfgs", scipy_optimisation=True):
+        method="bfgs", scipy_optimisation=True, l2_penalty=0.0):
     # {
 
-
+        self.l2_penalty = float(l2_penalty)
+        if self.l2_penalty > 0:
+            self.reassign_penalty(self.l2_penalty * 0.5)
         self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # RECAST AS NUMPY NDARRAY
@@ -341,6 +343,78 @@ class MultinomialLogit(DiscreteChoiceModel):
 
 
     # }
+
+    def wide_setup(self, X_wide, y_chosen, varnames, n_alts,
+                   ids=None, empirical_init=False, **setup_kw):
+        """
+        Setup accepting wide-format data (one row per case, features shared
+        across alternatives) instead of the standard long format.
+
+        Parameters
+        ----------
+        X_wide : ndarray (N, F)
+            Feature matrix - one row per case.  All features are treated as
+            alternative-INVARIANT (isvars).
+        y_chosen : ndarray (N,) int
+            Chosen alternative index per case in [0, n_alts-1].
+        varnames : list[str]
+            Feature names matching X_wide columns.
+        n_alts : int
+            Number of alternatives (K).
+        ids : ndarray (N,) int, optional
+            Case identifiers.  Defaults to np.arange(N).
+        empirical_init : bool
+            If True, initialise betas from empirical log-shares rather than
+            zeros - better warm-start for imbalanced alternatives.
+        **setup_kw
+            Forwarded to self.setup().
+        """
+        N = len(y_chosen)
+        K = int(n_alts)
+        if ids is None:
+            ids = np.arange(N, dtype=np.int32)
+        else:
+            ids = np.asarray(ids, dtype=np.int32)
+
+        rows = []
+        for alt in range(K):
+            chunk = np.zeros((N, X_wide.shape[1] + 2))
+            chunk[:, :X_wide.shape[1]] = X_wide
+            chunk[:, -2] = float(alt)
+            chunk[:, -1] = (y_chosen == alt).astype(float)
+            rows.append(chunk)
+        long = np.vstack(rows)
+        ids_long = np.tile(ids, K)
+
+        sort_idx = np.lexsort((long[:, -2].astype(np.int32), ids_long))
+        X_long = long[sort_idx, :-2].astype(float)
+        y_long = long[sort_idx, -1].astype(float)
+        ids_sorted = ids_long[sort_idx]
+        alts = np.arange(K, dtype=np.int32)
+        full_varnames = list(varnames)
+
+        if empirical_init and 'init_coeff' not in setup_kw:
+            counts = np.bincount(y_chosen.astype(int), minlength=K).astype(float)
+            counts = np.maximum(counts, 1.0)
+            log_shares = np.log(counts / counts.sum())
+            init_intercepts = log_shares[1:] - log_shares[0]
+            init = np.zeros((K - 1) * len(full_varnames))
+            for k in range(K - 1):
+                init[k * len(full_varnames)] = init_intercepts[k]
+            setup_kw['init_coeff'] = init
+
+        setup_kw.pop('empirical_init', None)
+
+        self.setup(
+            X=X_long, y=y_long,
+            varnames=full_varnames,
+            alts=alts,
+            isvars=full_varnames,
+            ids=ids_sorted,
+            base_alt=0,
+            **setup_kw,
+        )
+        return self
 
 
     def predict_setup(self, X_new, varnames, est_coeff, avail_new=None, isvars = None, ids = None, transvars = None, alts =None, y = None, J = None, base_alt=None, fit_intercept=True):
@@ -552,6 +626,8 @@ class MultinomialLogit(DiscreteChoiceModel):
             loglik = loglik * weights[:, 0]  # doesn't matter which column
         loglik = np.sum(loglik)         # Sum up the elements
         if not self.return_grad:
+            if self.l2_penalty > 0:
+                loglik = loglik - 0.5 * self.l2_penalty * np.dot(betas, betas)
             return (-loglik, )
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Individual contribution to the gradient
@@ -597,6 +673,8 @@ class MultinomialLogit(DiscreteChoiceModel):
 
             self.Hinv = self.function_hessian(grad)  # Conditionally compute Hinv based upon return_hess flag
             grad = np.sum(grad, axis=0)     # Compute grad_[i] = sum(j, grad[i][j])
+            if self.l2_penalty > 0 and self.return_grad:
+                grad = grad - self.l2_penalty * betas
             self.gtol_res = np.linalg.norm(grad, ord=np.inf)  # Compute the norm of "grad"
 
         penalty = self.regularize_loglik(betas)
