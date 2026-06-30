@@ -21,7 +21,7 @@ export default function App() {
     appData is the main one, it contains most things the app will use to store data
     it was chosen to do this in one big object as importing 20 unique states and setters
     got a bit cumbersome. The drawback of this approac is its harder to set individual
-    variables but in the end its still easier to do it this way.
+    variables but in the end its still easier to do it this way. 
   */
   const [appData, setAppData] = useState(() => ({
     /* Behaviour variables */
@@ -30,7 +30,7 @@ export default function App() {
     step:                 0,
     uploaded:             false,
     file:                 {name:"", rows:0, cols:0},
-
+  
     /* Model and data choices variables */
     model:                "MXL",
     mixedModels:          ["MXL", "MXRRM"],
@@ -52,7 +52,7 @@ export default function App() {
     running:              false,
     done:                 false,
     draws:                1000,
-
+    
     /* Search exclusive variables*/
     criterion:            "bic",
     allowRandom:          true,
@@ -70,7 +70,7 @@ export default function App() {
   const [csv, setCsv]             = useState()
 
   useEffect(() => {
-    document.documentElement.setAttribute("dcm-studio-theme", appData.theme)
+    document.documentElement.setAttribute("data-theme", appData.theme)
     localStorage.setItem("dcm-studio-theme", appData.theme)
   }, [appData.theme])
 

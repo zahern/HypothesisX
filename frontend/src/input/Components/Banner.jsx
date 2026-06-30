@@ -18,3 +18,4 @@ export default function Banner({appData, setAppData}) {
     </div>
   )
 }
+

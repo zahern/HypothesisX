@@ -23,7 +23,7 @@
   --row_hover: #11141b;
 }
 
-:root[dcm-studio-theme="light"] {
+:root[data-theme="light"] {
   --bg: #ffffff;
   --bg_select: #f1f5f9;
   --border: #e2e8f0;
@@ -88,7 +88,7 @@ input[type="checkbox"]:disabled {
   cursor: not-allowed;
 }
 
-:root[dcm-studio-theme="light"] input[type="checkbox"]:disabled {
+:root[data-theme="light"] input[type="checkbox"]:disabled {
   filter: brightness(0.85);
 }
 
