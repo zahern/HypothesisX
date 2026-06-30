@@ -1222,6 +1222,12 @@ class Search():
         self.idnum = idnum
         self.local_impr = 0
 
+        # ── Latent class feature toggles ────────────────────────────────
+        self.optimise_class = kwargs.get('optimise_class', False)
+        self.optimise_membership = kwargs.get('optimise_membership', False)
+        self.fixed_solution = kwargs.get('fixed_solution', None)
+        self.LCC_CLASS = kwargs.get('LCC_CLASS', None)
+
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         asvars_new = self.create_dummy_column(self.param.asvarnames)
         asvars_new = self.remove_redundant_asvars(asvars_new, self.param.trans_asvars, self.param.asvarnames)
@@ -2598,6 +2604,214 @@ class Search():
             solution = self.local_search(candidates, make_change, solution, copy_solution)
         return solution
     # }
+
+    def add_member_paramfeature(self, new_param, solution):
+        """Add a variable to the membership equation parameters."""
+        member_params_spec = solution['member_params_spec']
+
+        if member_params_spec is None or len(member_params_spec) == 0:
+            member_params_spec = np.array([[new_param]], dtype=object)
+        else:
+            available_arrays = [
+                i for i, arr in enumerate(member_params_spec)
+                if new_param not in arr
+            ]
+            if len(available_arrays) == 0:
+                import re
+                member_params_spec = replace_item_if_exists(
+                    member_params_spec, new_param, new_param
+                )
+            else:
+                choose_add = np.random.choice(available_arrays)
+                base_string = ''.join(filter(str.isalpha, str(new_param)))
+                converted_list = [
+                    ''.join(filter(str.isalpha, str(item)))
+                    for item in member_params_spec[choose_add]
+                ]
+                if base_string in converted_list:
+                    matching_indices = [
+                        index for index, item in enumerate(converted_list)
+                        if item == base_string
+                    ][0]
+                    member_params_spec[choose_add][matching_indices] = new_param
+                else:
+                    member_params_spec[choose_add] = np.sort(
+                        np.append(member_params_spec[choose_add], new_param)
+                    )
+
+        solution['member_params_spec'] = member_params_spec
+
+    def perturb_add_member_paramfeature(self, solution):
+        """Randomly add a variable to the membership equation."""
+        member_params_spec = solution.get('member_params_spec', None)
+
+        if member_params_spec is None or len(member_params_spec) == 0:
+            all_vars = getattr(self.param, 'mem_vars', None)
+            if all_vars is None:
+                all_vars = list(self.param.varnames)
+            candidate = np.random.choice(all_vars)
+            self.add_member_paramfeature(candidate, solution)
+            return solution
+
+        if len(member_params_spec) > 1:
+            for _ in range(4):
+                pick = np.random.choice(range(len(member_params_spec)))
+                all_vars = getattr(self.param, 'mem_vars', None)
+                if all_vars is None:
+                    all_vars = list(self.param.varnames)
+                candidates = [
+                    var for var in all_vars
+                    if var not in member_params_spec[pick]
+                ]
+                if len(candidates) > 0:
+                    member_param = np.random.choice(candidates)
+                    self.add_member_paramfeature(member_param, solution)
+                    break
+        return solution
+
+    def remove_member_paramfeature(self, rem_param, solution):
+        """Remove a variable from the membership equation."""
+        member_params_spec = solution.get('member_params_spec', None)
+        if member_params_spec is None:
+            return
+        for i in range(len(member_params_spec)):
+            member_params_spec[i] = np.array([
+                p for p in member_params_spec[i] if p != rem_param
+            ], dtype=object)
+        solution['member_params_spec'] = member_params_spec
+
+    def perturb_remove_member_paramfeature(self, solution):
+        """Randomly remove a variable from the membership equation."""
+        member_params_spec = solution.get('member_params_spec', None)
+        if member_params_spec is None:
+            return solution
+
+        flat = []
+        for arr in member_params_spec:
+            flat.extend(list(arr))
+        if len(flat) == 0:
+            return solution
+
+        remove_member = np.random.choice(list(set(flat)))
+        self.remove_member_paramfeature(remove_member, solution)
+        return solution
+
+    def perturb_member_paramfeature(self, solution):
+        """Add or remove a membership equation variable with equal probability."""
+        member_params_spec = solution.get('member_params_spec', None)
+        if member_params_spec is None:
+            return self.perturb_add_member_paramfeature(solution)
+
+        flat = []
+        for arr in member_params_spec:
+            flat.extend(list(arr))
+        if np.random.rand() <= 0.5 or len(flat) <= 1:
+            return self.perturb_add_member_paramfeature(solution)
+        else:
+            return self.perturb_remove_member_paramfeature(solution)
+
+    # ── Class-parameter perturbation (which vars belong to which class) ──
+
+    def add_class_paramfeature(self, new_param, solution):
+        """Add a variable to a class's specification."""
+        class_params_spec = solution.get('class_params_spec', None)
+        if class_params_spec is None:
+            class_params_spec = np.array([[new_param]], dtype=object)
+            solution['class_params_spec'] = class_params_spec
+            return
+
+        available = [i for i, arr in enumerate(class_params_spec)
+                     if new_param not in arr]
+        if len(available) == 0:
+            import re
+            class_params_spec = replace_item_if_exists(
+                class_params_spec, new_param, new_param
+            )
+        else:
+            choose = np.random.choice(available)
+            base = ''.join(filter(str.isalpha, str(new_param)))
+            converted = [''.join(filter(str.isalpha, str(item))) for item in class_params_spec[choose]]
+            if base in converted:
+                idx = [i for i, item in enumerate(converted) if item == base][0]
+                class_params_spec[choose][idx] = new_param
+            else:
+                class_params_spec[choose] = np.sort(
+                    np.append(class_params_spec[choose], new_param)
+                )
+        solution['class_params_spec'] = class_params_spec
+
+    def perturb_add_class_paramfeature(self, solution):
+        """Randomly add a variable to a class specification."""
+        class_params_spec = solution.get('class_params_spec', None)
+        if class_params_spec is None:
+            candidate = np.random.choice(list(self.param.varnames))
+            self.add_class_paramfeature(candidate, solution)
+            return solution
+
+        for _ in range(4):
+            pick = np.random.choice(range(len(class_params_spec)))
+            all_vars = list(self.param.varnames)
+            candidates = [v for v in all_vars if v not in class_params_spec[pick]]
+            if candidates:
+                self.add_class_paramfeature(np.random.choice(candidates), solution)
+                break
+        return solution
+
+    def remove_class_paramfeature(self, rem_var, solution):
+        """Remove a variable from class specifications."""
+        class_params_spec = solution.get('class_params_spec', None)
+        if class_params_spec is None:
+            return
+        rem_from = [i for i, arr in enumerate(class_params_spec) if rem_var in arr]
+        if not rem_from:
+            return
+        choose = np.random.choice(rem_from)
+        arr = class_params_spec[choose]
+        if len(arr) > 1:
+            class_params_spec[choose] = np.sort(
+                np.delete(np.asarray(arr), np.where(np.asarray(arr) == rem_var)[0][0])
+            )
+        solution['class_params_spec'] = class_params_spec
+
+    def perturb_remove_class_paramfeature(self, solution):
+        """Randomly remove a variable from a class specification."""
+        class_params_spec = solution.get('class_params_spec', None)
+        if class_params_spec is None:
+            return solution
+
+        all_vars = []
+        for arr in class_params_spec:
+            all_vars.extend(list(arr))
+        all_vars = list(set(all_vars))
+        if not all_vars:
+            return solution
+
+        counts = {v: sum(1 for arr in class_params_spec if v in arr) for v in all_vars}
+        removable = [v for v, c in counts.items() if c < len(class_params_spec)]
+        if not removable:
+            return solution
+
+        self.remove_class_paramfeature(np.random.choice(removable), solution)
+        return solution
+
+    def perturb_class_paramfeature(self, solution):
+        """Add or remove a class specification variable with equal probability."""
+        class_params_spec = solution.get('class_params_spec', None)
+        if class_params_spec is None:
+            return self.perturb_add_class_paramfeature(solution)
+
+        all_vars = []
+        for arr in class_params_spec:
+            all_vars.extend(list(arr))
+        all_vars = list(set(all_vars))
+        counts = {v: sum(1 for arr in class_params_spec if v in arr) for v in all_vars}
+        removable = [v for v, c in counts.items() if c < len(class_params_spec)]
+
+        if not removable or np.random.rand() <= 0.5:
+            return self.perturb_add_class_paramfeature(solution)
+        else:
+            return self.perturb_remove_class_paramfeature(solution)
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Randomly select randvar not already in solution  '''
     ''' ---------------------------------------------------------- '''
@@ -3515,6 +3729,85 @@ class Search():
         
         return model
     # }
+
+    def fit_lcm(self, X, y, varnames, class_params_spec, member_params_spec=None,
+                num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-6,
+                gtol_membership_func=1e-5, avail=None, avail_latent=None,
+                intercept_opts=None, weights=None, seed=None,
+                alts=None, ftol_lccm=1e-6, base_alt=None):
+        """Fit a latent class multinomial logit model with optional membership equation.
+
+        Uses the modern ``LatentClassMixedLogit`` from ``latent_class.py``.
+        """
+        try:
+            from .latent_class import LatentClassMixedLogit
+        except ImportError:
+            from SearchLibrium.latent_class import LatentClassMixedLogit
+
+        optimise_membership = getattr(self, 'optimise_membership', False)
+        if optimise_membership and member_params_spec is None:
+            optimise_membership = False
+
+        model = LatentClassMixedLogit(
+            n_classes=num_classes,
+            maxiter=maxiter,
+            class_maxiter=100,
+            tol=gtol,
+            random_state=seed if seed is not None else 0,
+            optimise_membership=optimise_membership,
+            membership_maxiter=100,
+        )
+
+        membership_vars = None
+        if member_params_spec is not None:
+            if hasattr(member_params_spec, 'shape') and member_params_spec.ndim > 1:
+                membership_vars = list(np.unique(np.concatenate(member_params_spec)))
+            else:
+                membership_vars = list(np.unique(member_params_spec))
+
+        X_df = X
+        if hasattr(X, 'values'):
+            X_arr = X.values
+        else:
+            X_arr = np.asarray(X, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+
+        model.setup(
+            X=X_arr, y=y_arr,
+            varnames=list(varnames),
+            ids=ids,
+            alts=alts if alts is not None else np.ones(len(y_arr), dtype=int),
+            avail=avail,
+            membership_vars=membership_vars,
+            member_params_spec=member_params_spec,
+        )
+        model.fit(em_method="squarem")
+        model.get_loglik_null()
+        return model
+
+    def fit_lcmm(self, X, y, varnames, isvars=None, class_params_spec=None,
+                 member_params_spec=None, num_classes=2, alts=None, ids=None,
+                 panels=None, bcvars=None, randvars=None, corvars=None,
+                 maxiter=50, gtol=1e-6, avail=None, weights=None):
+        """Fit a latent class mixed logit model.
+
+        Currently delegates to ``fit_lcm`` since the modern
+        ``LatentClassMixedLogit`` does not yet support random
+        parameters per class.  The membership equation is fully supported.
+        """
+        return self.fit_lcm(
+            X=X, y=y, varnames=varnames,
+            class_params_spec=class_params_spec,
+            member_params_spec=member_params_spec,
+            num_classes=num_classes,
+            ids=ids,
+            transvars=bcvars,
+            maxiter=maxiter,
+            gtol=gtol,
+            avail=avail,
+            weights=weights,
+            alts=alts,
+        )
 
     def fit_nested(self, X, y, varnames, isvars, alts, ids, nests, lambdas, lambdas_mapping, fit_intercept):
         #model = MuNestedLogit(X, y, varnames, isvars, alts, ids, nests, lambdas, fit_intercept)
