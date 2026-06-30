@@ -84,6 +84,13 @@ body {
   cursor: not-allowed;
 }
 
+/* marks a select whose value clashes with another role selector */
+.dup_input {
+  border-color: #eab308;
+  background: #eab30822;
+  color: #eab308;
+}
+
 input[type="checkbox"]:disabled {
   cursor: not-allowed;
 }
@@ -340,13 +347,13 @@ thead tr:nth-child(even) {
   border-bottom: 1px solid var(--border);
 }
 
-tbody th, td {
+td {
   padding: 8px 4px;
   border-bottom: 1px solid var(--border_soft);
   height: 28px;
 }
 
-tbody th {
+tbody td.row_name {
   display: flex;
   align-items: center;
   gap: 10px;

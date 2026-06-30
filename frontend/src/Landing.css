@@ -166,3 +166,17 @@
   .landing-grid { grid-template-columns: 1fr; }
   .landing-banner { padding: 12px 16px; }
 }
+
+.app_copyright {
+  position: fixed;
+  left: 12px;
+  bottom: 8px;
+  font-size: 12px;
+  color: #64748b;
+  pointer-events: none;
+  z-index: 1000;
+}
+
+:root[dcm-studio-theme="light"] .app_copyright {
+  color: #94a3b8;
+}

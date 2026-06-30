@@ -36,7 +36,7 @@ export function VarTableHeader({ cols, bulkCells }) {
       </tr>
       <tr>
         {bulkCells.map((cell, i) => (
-          <th key={i} scope="col">{cell}</th>
+          <th class="center" key={i} scope="col">{cell}</th>
         ))}
       </tr>
     </thead>
@@ -45,7 +45,7 @@ export function VarTableHeader({ cols, bulkCells }) {
 
 export function VarTableRow({ variable, dotBlue, dotGreen, textClass, prefix, cells }) {
   /*
-    One body row: name <th> with status dot + emoji prefix, then caller-supplied <td>s.
+    One body row: name <td> with status dot + emoji prefix, then caller-supplied <td>s.
 
     variable  -> variable object (uses .name)
     dotBlue   -> bool, applies td_blue to the status dot
@@ -56,10 +56,10 @@ export function VarTableRow({ variable, dotBlue, dotGreen, textClass, prefix, ce
   */
   return (
     <tr>
-      <th scope="row">
+      <td class="row_name">
         <div class={`table_dot ${dotBlue ? "td_blue" : ""} ${dotGreen ? "td_green" : ""}`} />
         <span class={`table_text ${textClass || ""}`}>{`${prefix || ""}${variable.name}`}</span>
-      </th>
+      </td>
       {cells}
     </tr>
   )

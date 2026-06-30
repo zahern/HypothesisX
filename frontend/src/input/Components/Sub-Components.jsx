@@ -100,19 +100,20 @@ export function Toggle({ label, active, onChange }) {
   );
 }
 
-export function SelectField({ label, value, onChange, options, hint, disabled }) {
+export function SelectField({ label, value, onChange, options, hint, disabled, highlight }) {
   /*
     generates a box with options to be selected from
 
     label     ->  label to be placed above a selection field
-    value     ->  react useState variable 
+    value     ->  react useState variable
     onChange  ->  react useState setter variable
-    options   ->  list of strigns or objects like {value:"", label""} containing 
+    options   ->  list of strigns or objects like {value:"", label""} containing
                   information for options for the selection box
     hint      ->  extra infromation that can be displayed underneth the box
     disabled  ->  boolean denoting if the box is disabled
+    highlight ->  boolean, when true marks the box yellow (e.g. duplicate selection)
   */
-  
+
   // internal function so assume well formed inputs
   if (typeof options[0] === "string") {
     options = options.map((v, _) => {return {value: v, label: v}})
@@ -122,10 +123,10 @@ export function SelectField({ label, value, onChange, options, hint, disabled })
     <div>
       {label && <div class="label">{label}</div>}
       <select
-        value={value} 
-        onChange={e => onChange(e.target.value)} 
+        value={value}
+        onChange={e => onChange(e.target.value)}
         disabled={disabled}
-        class={disabled ? "generic_input disabled_input" : "generic_input"}
+        class={`generic_input ${disabled ? "disabled_input" : ""} ${highlight && value !== SENTINEL ? "dup_input" : ""}`}
       >
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
@@ -351,6 +352,14 @@ export function DataOptions({appData, setAppData}) {
     appData.choiceVar, appData.avVar
   ])]
 
+  // role columns picked by more than one selector -> highlight those selectors yellow
+  // ("None" is the unset/optional value and is not treated as a clash)
+  const roleCounts = {}
+  for (const v of [appData.choiceId, appData.indId, appData.altVar, appData.choiceVar, appData.avVar]) {
+    if (v && v !== "None") roleCounts[v] = (roleCounts[v] || 0) + 1
+  }
+  const isDup = (v) => v && v !== "None" && roleCounts[v] > 1
+
   const altOptions = ["None", ...appData.choiceSet
     .split(",")
     .map(s => s.trim())
@@ -360,36 +369,40 @@ export function DataOptions({appData, setAppData}) {
     <div> 
       <Grid cols={2}>
         <SelectField 
-          label="Choice Situation ID" 
-          value={appData.choiceId} 
+          label="Choice Situation ID"
+          value={appData.choiceId}
           onChange={sApp("choiceId")}
-          options={columns} 
-          hint="Unique ID per choice task" 
+          options={columns}
+          hint="Unique ID per choice task"
           disabled={!appData.uploaded}
+          highlight={isDup(appData.choiceId)}
         />
         <SelectField 
-          label="Individual (Panel) ID" 
-          value={appData.indId} 
-          onChange={sApp("indId")} 
-          options={columns} 
-          hint="Respondent identifier" 
+          label="Individual (Panel) ID"
+          value={appData.indId}
+          onChange={sApp("indId")}
+          options={columns}
+          hint="Respondent identifier"
           disabled={!appData.uploaded || appData.model === "MNL" || appData.model ==="RRM"}
+          highlight={isDup(appData.indId)}
         />
         <SelectField 
-          label="Choice Variable" 
-          value={appData.choiceVar} 
-          onChange={sApp("choiceVar")} 
-          options={columns} 
+          label="Choice Variable"
+          value={appData.choiceVar}
+          onChange={sApp("choiceVar")}
+          options={columns}
           hint="Column with observed choice (0/1)"
           disabled={!appData.uploaded}
+          highlight={isDup(appData.choiceVar)}
         />
         <SelectField  
-          label="Availability (optional)" 
-          value={appData.avVar} 
-          onChange={sApp("avVar")} 
-          options={columns} 
+          label="Availability (optional)"
+          value={appData.avVar}
+          onChange={sApp("avVar")}
+          options={columns}
           hint="Column with alternative availability (0/1)"
           disabled={!appData.uploaded}
+          highlight={isDup(appData.avVar)}
         /> 
       </Grid>
       
@@ -397,12 +410,13 @@ export function DataOptions({appData, setAppData}) {
 
       <Grid cols={2}>
         <SelectField 
-          label="Alternative Variable" 
-          value={appData.altVar} 
-          onChange={sApp("altVar")} 
-          options={columns} 
-          hint="Column identifying each alternative" 
+          label="Alternative Variable"
+          value={appData.altVar}
+          onChange={sApp("altVar")}
+          options={columns}
+          hint="Column identifying each alternative"
           disabled={!appData.uploaded}
+          highlight={isDup(appData.altVar)}
         />
         <SelectField 
           label="Base Alternative" 

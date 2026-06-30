@@ -12,7 +12,15 @@ import Landing from "./Landing.jsx";
 export default function App() {
   const [mode, setMode] = useState("landing");
 
-  if (mode === "input")  return <InputApp />;
-  if (mode === "output") return <OutputApp />;
-  return <Landing setMode={setMode} />;
+  let view;
+  if (mode === "input")       view = <InputApp />;
+  else if (mode === "output") view = <OutputApp />;
+  else                        view = <Landing setMode={setMode} />;
+
+  return (
+    <>
+      {view}
+      <div class="app_copyright">GUI © 2026 Fernando Taco-Morales</div>
+    </>
+  );
 }
