@@ -108,8 +108,7 @@ if os.path.isdir(os.path.join(DIST, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
 
 
-@app.get("/")
-def home():
+def _serve_index():
     index = os.path.join(DIST, "index.html")
     if not os.path.exists(index):
         return JSONResponse(
@@ -117,6 +116,21 @@ def home():
             status_code=503,
         )
     return FileResponse(index)
+
+
+@app.get("/")
+def home():
+    return _serve_index()
+
+
+@app.get("/input")
+def input_page():
+    return _serve_index()
+
+
+@app.get("/output")
+def output_page():
+    return _serve_index()
 
 
 if __name__ == "__main__":

@@ -259,6 +259,7 @@ export function CSVUploadBox({appData, setAppData, csv, setCsv }) {
       setAppData({
         ...appData,
         uploaded: true,
+        runName: file.name.replace(/\.csv$/i, ""),
         ["file"]: {
           name: file.name,
           rows: lines.length - 1,
