@@ -23,14 +23,14 @@ export default function App() {
   const [error, setError] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [theme, setTheme] = useState(() =>
-    localStorage.getItem("sa-dashboard-theme") === "light" ? "light" : "dark"
+    localStorage.getItem("dcm-studio-theme") === "light" ? "light" : "dark"
   );
 
   // Apply theme to <html> so the CSS variable overrides in All.css activate,
   // and persist the choice so it sticks across reloads.
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("sa-dashboard-theme", theme);
+    document.documentElement.setAttribute("dcm-studio-theme", theme);
+    localStorage.setItem("dcm-studio-theme", theme);
   }, [theme]);
 
   // Discover available runs once.

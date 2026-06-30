@@ -19,10 +19,9 @@
     </style>
     <script>
       // Apply persisted light/dark theme before React mounts so the user
-      // doesn't see a flash of the wrong background. Each sub-app stores its
-      // own preference under its own key (originals were preserved as-is).
+      // doesn't see a flash of the wrong background.
       (function () {
-        var t = localStorage.getItem('dcm-studio-theme') || localStorage.getItem('sa-dashboard-theme');
+        var t = localStorage.getItem('dcm-studio-theme');
         if (t === 'light') {
           document.documentElement.setAttribute('data-theme', 'light');
           document.body.style.background = '#ffffff';

@@ -44,16 +44,16 @@ const PLOT_LIGHT = {
 export const PLOT_THEME = PLOT_DARK;
 
 function currentTheme() {
-  return document.documentElement.getAttribute('data-theme') === 'light' ? PLOT_LIGHT : PLOT_DARK;
+  return document.documentElement.getAttribute('dcm-studio-theme') === 'light' ? PLOT_LIGHT : PLOT_DARK;
 }
 
 // React hook: returns the Plotly layout fragment matching the active theme and
-// re-renders the caller when the `data-theme` attribute on <html> changes.
+// re-renders the caller when the `dcm-studio-theme` attribute on <html> changes.
 export function usePlotTheme() {
   const [t, setT] = useState(currentTheme);
   useEffect(() => {
     const obs = new MutationObserver(() => setT(currentTheme()));
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['dcm-studio-theme'] });
     return () => obs.disconnect();
   }, []);
   return t;

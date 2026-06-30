@@ -7,7 +7,7 @@
 
 /* Theme tokens live on :root so they cascade everywhere — including elements
    that we mount imperatively (e.g. the screenshot overlay) — and so the
-   [data-theme="light"] override on <html> can flip them with the same
+   [dcm-studio-theme="light"] override on <html> can flip them with the same
    specificity ranking. Layout-only rules for the #root mount point stay below. */
 :root {
   --bg:          #0a0c10;  /* shell */
@@ -31,7 +31,7 @@
   --screenshot-mask:  rgba(15,17,23,0.78);
 }
 
-:root[data-theme="light"] {
+:root[dcm-studio-theme="light"] {
   --bg:          #ffffff;
   --bg-elev:     #f9fafb;
   --bg-input:    #f1f5f9;
@@ -341,23 +341,23 @@ tbody tr:hover td { background: var(--bg-input); }
 
 /* Light-theme tweaks: a few colours that read fine on a dark card surface
    are washed-out or invisible on a light one. */
-:root[data-theme="light"] .var-link { color: #7c3aed; }
-:root[data-theme="light"] .sig-3   { color: #1d4ed8; }
-:root[data-theme="light"] .sig-2   { color: #b45309; }
-:root[data-theme="light"] .sig-1   { color: #6b21a8; }
-:root[data-theme="light"] .sig-dot { color: #1f2937; }
-:root[data-theme="light"] .sbg-3   { color: #1d4ed8; background: rgba(29,78,216,0.10); }
-:root[data-theme="light"] .sbg-2   { color: #b45309; background: rgba(180,83,9,0.10); }
-:root[data-theme="light"] .sbg-1   { color: #6b21a8; background: rgba(107,33,168,0.10); }
-:root[data-theme="light"] .sbg-dot { color: #1f2937; background: rgba(31,41,55,0.10); }
-:root[data-theme="light"] .b-best,
-:root[data-theme="light"] .b-ok    { color: #15803d; background: rgba(21,128,61,0.10); }
-:root[data-theme="light"] .b-warn  { color: #b45309; background: rgba(180,83,9,0.10); }
-:root[data-theme="light"] .b-fail  { color: #b91c1c; background: rgba(185,28,28,0.10); }
-:root[data-theme="light"] .pct-neg { background: #b91c1c; }
-:root[data-theme="light"] .pct-pos { background: #15803d; }
-:root[data-theme="light"] #sidebar { box-shadow: 4px 0 16px rgba(15,23,42,0.12); }
-:root[data-theme="light"] .drawer-backdrop { background: rgba(15,23,42,0.35); }
+:root[dcm-studio-theme="light"] .var-link { color: #7c3aed; }
+:root[dcm-studio-theme="light"] .sig-3   { color: #1d4ed8; }
+:root[dcm-studio-theme="light"] .sig-2   { color: #b45309; }
+:root[dcm-studio-theme="light"] .sig-1   { color: #6b21a8; }
+:root[dcm-studio-theme="light"] .sig-dot { color: #1f2937; }
+:root[dcm-studio-theme="light"] .sbg-3   { color: #1d4ed8; background: rgba(29,78,216,0.10); }
+:root[dcm-studio-theme="light"] .sbg-2   { color: #b45309; background: rgba(180,83,9,0.10); }
+:root[dcm-studio-theme="light"] .sbg-1   { color: #6b21a8; background: rgba(107,33,168,0.10); }
+:root[dcm-studio-theme="light"] .sbg-dot { color: #1f2937; background: rgba(31,41,55,0.10); }
+:root[dcm-studio-theme="light"] .b-best,
+:root[dcm-studio-theme="light"] .b-ok    { color: #15803d; background: rgba(21,128,61,0.10); }
+:root[dcm-studio-theme="light"] .b-warn  { color: #b45309; background: rgba(180,83,9,0.10); }
+:root[dcm-studio-theme="light"] .b-fail  { color: #b91c1c; background: rgba(185,28,28,0.10); }
+:root[dcm-studio-theme="light"] .pct-neg { background: #b91c1c; }
+:root[dcm-studio-theme="light"] .pct-pos { background: #15803d; }
+:root[dcm-studio-theme="light"] #sidebar { box-shadow: 4px 0 16px rgba(15,23,42,0.12); }
+:root[dcm-studio-theme="light"] .drawer-backdrop { background: rgba(15,23,42,0.35); }
 
 /* ── Responsive layout classes ──────────────────────────────────────────────
    Default rules are inert / desktop. The @media block below activates the
