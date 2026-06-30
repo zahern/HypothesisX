@@ -15,13 +15,23 @@ import Coefficients from "./Components/Coefficients.jsx";
   that swaps section components. All dashboard data comes from the FastAPI
   backend (/api/runs, /api/dashboard) instead of being baked into the HTML.
 */
-export default function App({ theme, setTheme }) {
+export default function App() {
   const [runs, setRuns] = useState([]);
   const [runId, setRunId] = useState(null);
   const [data, setData] = useState(null);
   const [section, setSection] = useState("summary");
   const [error, setError] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [theme, setTheme] = useState(() =>
+    localStorage.getItem("sa-dashboard-theme") === "light" ? "light" : "dark"
+  );
+
+  // Apply theme to <html> so the CSS variable overrides in All.css activate,
+  // and persist the choice so it sticks across reloads.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("sa-dashboard-theme", theme);
+  }, [theme]);
 
   // Discover available runs once.
   useEffect(() => {

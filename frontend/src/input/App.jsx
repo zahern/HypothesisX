@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 import Banner from "./Components/Banner.jsx"
 import Sidebar from "./Components/Sidebar.jsx"
@@ -15,14 +15,17 @@ const DIST_OPTIONS = [
   { value: "tn",   label: "Truncated Normal (tn)" },
 ];
 
-export default function App({ theme, setTheme }) {
+export default function App() {
   /*
-    Input sub-app (the former DCM Studio). The `mode` / `setMode` and
-    `theme` / `setTheme` props are owned by the unified top-level App so the
-    Input/Output and Dark/Light toggles can be driven from this banner.
+    Main app, runs everything below it. Lots of usefull variables are defined here
+    appData is the main one, it contains most things the app will use to store data
+    it was chosen to do this in one big object as importing 20 unique states and setters
+    got a bit cumbersome. The drawback of this approac is its harder to set individual
+    variables but in the end its still easier to do it this way.
   */
   const [appData, setAppData] = useState(() => ({
     /* Behaviour variables */
+    theme:                localStorage.getItem("dcm-studio-theme") === "light" ? "light" : "dark",
     mode:                 "estimation",
     step:                 0,
     uploaded:             false,
@@ -66,9 +69,14 @@ export default function App({ theme, setTheme }) {
 
   const [csv, setCsv]             = useState()
 
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", appData.theme)
+    localStorage.setItem("dcm-studio-theme", appData.theme)
+  }, [appData.theme])
+
   return (
     <div class="app_root">
-      <Banner {...{appData, setAppData, theme, setTheme}}/>
+      <Banner {...{appData, setAppData}}/>
       <div class="main_layout">
         <Sidebar {...{appData, setAppData}} />
         <div class="content">

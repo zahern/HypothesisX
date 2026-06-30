@@ -3,7 +3,7 @@
   Input sub-app) or view a stored run (opens the Output dashboard). Picking one
   sets `mode` on the top-level App, which then renders the appropriate sub-app.
 */
-export default function Landing({ setMode, theme, setTheme }) {
+export default function Landing({ setMode }) {
   return (
     <div className="landing-root">
       <div className="landing-banner">
@@ -13,12 +13,6 @@ export default function Landing({ setMode, theme, setTheme }) {
           <div className="landing-sub">DISCRETE CHOICE MODELLING SUITE</div>
         </div>
         <div className="landing-spacer" />
-        <div className="banner-mode-group" role="group" aria-label="Theme">
-          <div className={`mode-button ${theme === "dark" ? "active" : ""}`}
-               onClick={() => setTheme("dark")}>Dark</div>
-          <div className={`mode-button ${theme === "light" ? "active" : ""}`}
-               onClick={() => setTheme("light")}>Light</div>
-        </div>
       </div>
 
       <div className="landing-body">
