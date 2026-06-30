@@ -233,7 +233,9 @@ export function CSVUploadBox({appData, setAppData, csv, setCsv }) {
     reader.onload = ({ target }) => {
       // parse file
       const lines = target.result.split('\n').filter(l => l.trim());
-      const cols = lines[0].split(",").map(c => c.trim().replace(/"/g,""));      
+      const rawCols = lines[0].split(",").map(c => c.trim().replace(/"/g,""));
+      // ignore blank-header columns (e.g. an unnamed index column)
+      const cols = rawCols.filter(Boolean);
 
       // helpers
       const match = (patterns) => cols.find(c => patterns.some(p => c.toLowerCase() === p.toLowerCase())) || cols[0];
@@ -248,7 +250,7 @@ export function CSVUploadBox({appData, setAppData, csv, setCsv }) {
       // pre-compute unique values per column so altVar changes can refresh choiceSet without re-parsing
       const rows = lines.slice(1).map(l => l.split(",").map(c => c.trim()));
       const columnUniques = Object.fromEntries(
-        cols.map((c, i) => [c, [...new Set(rows.map(r => r[i]).filter(Boolean))]])
+        rawCols.flatMap((c, i) => c ? [[c, [...new Set(rows.map(r => r[i]).filter(Boolean))]]] : [])
       );
       const uniqueAlts = columnUniques[tmpAltVar] ?? [];
 

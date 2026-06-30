@@ -120,7 +120,7 @@ input[type="checkbox"]:disabled {
 
 /* --------------------- Sidebar --------------------- */
 .sidebar {
-  width: 220px;
+  width: fit-content;
   background: var(--bg);
   border-right: 1px solid var(--border);
   padding: 20px 0;
@@ -148,8 +148,9 @@ input[type="checkbox"]:disabled {
 }
 
 .sidebar_info_box {
-  font-size: 11px; 
+  font-size: 11px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
   background: var(--bg_select);
   border: 1px solid var(--border); 
   border-radius: 6px;
@@ -399,6 +400,7 @@ tbody th {
 .main_layout {
   display: flex;
   flex: 1;
+  min-height: 0;
 }
 
 .button_row {
