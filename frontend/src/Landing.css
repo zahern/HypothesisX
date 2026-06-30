@@ -1,12 +1,43 @@
-/* Landing chooser styles. Tokens come from the sub-apps' All.css so the page
-   matches the rest of the suite in both light and dark themes. */
+/* Landing chooser styles. Self-contained: defines its own theme tokens so
+   the page doesn't depend on whichever sub-app's All.css happens to have
+   loaded its variables onto :root. Light mode kicks in when <html> carries
+   `dcm-studio-theme="light"` (set by the sub-apps and by the pre-mount
+   script in index.html). */
 
 .landing-root {
+  --landing-bg:          #0a0c10;
+  --landing-bg-elev:     #0f1117;
+  --landing-bg-input:    #111827;
+  --landing-border:      #1e2533;
+  --landing-accent:      #3b82f6;
+  --landing-accent-soft: #1e3a5f;
+  --landing-accent-text: #60a5fa;
+  --landing-text-1:      #f1f5f9;
+  --landing-text-2:      #cbd5e1;
+  --landing-text-3:      #64748b;
+  --landing-text-muted:  #475569;
+  --landing-logo-grad:   #8b5cf6;
+  --landing-logo-text:   #ffffff;
+
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  background: var(--bg);
-  color: var(--text-1);
+  background: var(--landing-bg);
+  color: var(--landing-text-1);
+}
+
+:root[dcm-studio-theme="light"] .landing-root {
+  --landing-bg:          #ffffff;
+  --landing-bg-elev:     #f9fafb;
+  --landing-bg-input:    #f1f5f9;
+  --landing-border:      #e2e8f0;
+  --landing-accent:      #2563eb;
+  --landing-accent-soft: #dbeafe;
+  --landing-accent-text: #2563eb;
+  --landing-text-1:      #0f172a;
+  --landing-text-2:      #334155;
+  --landing-text-3:      #64748b;
+  --landing-text-muted:  #94a3b8;
 }
 
 .landing-banner {
@@ -14,20 +45,48 @@
   align-items: center;
   gap: 16px;
   padding: 14px 36px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  border-bottom: 1px solid var(--landing-border);
+  background: var(--landing-bg);
 }
 
 .landing-logo {
   width: 32px; height: 32px; border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  background: linear-gradient(135deg, var(--landing-accent), var(--landing-logo-grad));
   display: flex; align-items: center; justify-content: center;
-  font-size: 16px; font-weight: 700; color: #fff;
+  font-size: 16px; font-weight: 700; color: var(--landing-logo-text);
 }
 
-.landing-title { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-1); }
-.landing-sub   { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; }
+.landing-title { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; color: var(--landing-text-1); }
+.landing-sub   { font-size: 11px; color: var(--landing-text-muted); letter-spacing: 0.06em; }
 .landing-spacer { flex: 1; }
+
+.landing-mode-group {
+  display: flex; gap: 4px;
+  background: var(--landing-bg-input);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.landing-mode-button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  background: transparent;
+  color: var(--landing-text-3);
+  border: 1px solid transparent;
+  transition: all 0.15s;
+  user-select: none;
+}
+
+.landing-mode-button:hover { color: var(--landing-text-2); }
+
+.landing-mode-button.active {
+  background: var(--landing-accent-soft);
+  color: var(--landing-accent-text);
+  border-color: var(--landing-accent);
+}
 
 .landing-body {
   flex: 1;
@@ -41,7 +100,7 @@
 .landing-h1 {
   font-size: 22px;
   font-weight: 600;
-  color: var(--text-1);
+  color: var(--landing-text-1);
   letter-spacing: 0.02em;
   margin-bottom: 28px;
 }
@@ -55,8 +114,8 @@
 }
 
 .landing-card {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
+  background: var(--landing-bg-elev);
+  border: 1px solid var(--landing-border);
   border-radius: 14px;
   padding: 28px 26px;
   cursor: pointer;
@@ -67,8 +126,8 @@
 }
 
 .landing-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-input);
+  border-color: var(--landing-accent);
+  background: var(--landing-bg-input);
   transform: translateY(-2px);
 }
 
@@ -76,8 +135,8 @@
   font-size: 28px;
   width: 48px; height: 48px;
   border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  background: var(--landing-accent-soft);
+  color: var(--landing-accent-text);
   display: flex; align-items: center; justify-content: center;
   margin-bottom: 6px;
 }
@@ -85,13 +144,13 @@
 .landing-card-title {
   font-size: 15px;
   font-weight: 600;
-  color: var(--text-1);
+  color: var(--landing-text-1);
 }
 
 .landing-card-desc {
   font-size: 12px;
   line-height: 1.55;
-  color: var(--text-3);
+  color: var(--landing-text-3);
   flex: 1;
 }
 
@@ -99,7 +158,7 @@
   margin-top: 8px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent-text);
+  color: var(--landing-accent-text);
   letter-spacing: 0.04em;
 }
 
