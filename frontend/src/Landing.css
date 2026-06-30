@@ -1,0 +1,109 @@
+/* Landing chooser styles. Tokens come from the sub-apps' All.css so the page
+   matches the rest of the suite in both light and dark themes. */
+
+.landing-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text-1);
+}
+
+.landing-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 36px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.landing-logo {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 700; color: #fff;
+}
+
+.landing-title { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-1); }
+.landing-sub   { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; }
+.landing-spacer { flex: 1; }
+
+.landing-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+.landing-h1 {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-1);
+  letter-spacing: 0.02em;
+  margin-bottom: 28px;
+}
+
+.landing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 360px));
+  gap: 20px;
+  width: 100%;
+  max-width: 780px;
+}
+
+.landing-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px 26px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color .15s, transform .15s, background .15s;
+}
+
+.landing-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-input);
+  transform: translateY(-2px);
+}
+
+.landing-card-icon {
+  font-size: 28px;
+  width: 48px; height: 48px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 6px;
+}
+
+.landing-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.landing-card-desc {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-3);
+  flex: 1;
+}
+
+.landing-card-action {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-text);
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 720px) {
+  .landing-grid { grid-template-columns: 1fr; }
+  .landing-banner { padding: 12px 16px; }
+}

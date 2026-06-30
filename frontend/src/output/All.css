@@ -1,0 +1,448 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   SA Dashboard styles. Tokens / palette ported from the sibling input_gui
+   (DCM Studio) project so the two apps feel like one product.
+   ────────────────────────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Theme tokens live on :root so they cascade everywhere — including elements
+   that we mount imperatively (e.g. the screenshot overlay) — and so the
+   [data-theme="light"] override on <html> can flip them with the same
+   specificity ranking. Layout-only rules for the #root mount point stay below. */
+:root {
+  --bg:          #0a0c10;  /* shell */
+  --bg-elev:     #0f1117;  /* card surface */
+  --bg-input:    #111827;  /* select, button, sub-row tint */
+  --border:      #1e2533;
+  --border-soft: #111827;
+
+  --accent:      #3b82f6;
+  --accent-2:    #7c3aed;
+  --accent-soft: #1e3a5f;
+  --accent-text: #60a5fa;
+
+  --text-1:      #f1f5f9;  /* headings */
+  --text-2:      #cbd5e1;  /* body */
+  --text-3:      #64748b;  /* labels */
+  --text-muted:  #475569;  /* disabled / placeholder */
+
+  /* Extras that depend on the theme but don't fit a single shared token. */
+  --sd-row-bg:        rgba(255,255,255,0.02);   /* faint tint over a dark card */
+  --screenshot-mask:  rgba(15,17,23,0.78);
+}
+
+:root[data-theme="light"] {
+  --bg:          #ffffff;
+  --bg-elev:     #f9fafb;
+  --bg-input:    #f1f5f9;
+  --border:      #e2e8f0;
+  --border-soft: #f1f5f9;
+
+  --accent:      #2563eb;
+  --accent-2:    #7c3aed;
+  --accent-soft: #dbeafe;
+  --accent-text: #2563eb;
+
+  --text-1:      #0f172a;
+  --text-2:      #334155;
+  --text-3:      #64748b;
+  --text-muted:  #94a3b8;
+
+  --sd-row-bg:        rgba(15,23,42,0.04);     /* faint tint over a light card */
+  --screenshot-mask:  rgba(15,23,42,0.55);
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+body {
+  font-family: sans-serif;
+  background: var(--bg);
+  color: var(--text-2);
+}
+
+/* ── Banner ─────────────────────────────────────────────────────────────── */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.banner-logo {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 700; color: #fff;
+}
+.banner-title { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-1); }
+.banner-sub   { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; }
+.banner-spacer { flex: 1; }
+.banner-run-label { font-size: 11px; color: var(--text-3); letter-spacing: 0.05em; margin-right: 8px; }
+.banner select {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--bg-input); color: var(--text-2); cursor: pointer;
+}
+
+/* ── Layout below the banner ────────────────────────────────────────────── */
+.body-row { display: flex; flex: 1; overflow: hidden; }
+
+#sidebar {
+  width: 215px; background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  flex-shrink: 0; overflow-y: auto;
+}
+.sb-head { padding: 20px 16px 10px; }
+.sb-head h2 {
+  font-size: 10px; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px;
+}
+.sb-run { font-size: 11px; color: var(--text-muted); word-break: break-all; margin-bottom: 10px; }
+.sb-model {
+  font-size: 11px; line-height: 1.6;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; color: var(--text-2); margin-bottom: 6px;
+}
+.sb-model b { color: var(--text-1); }
+.nav-item {
+  padding: 11px 16px; cursor: pointer; font-size: 12px;
+  border-left: 2px solid transparent; transition: all .15s;
+  color: var(--text-muted); letter-spacing: 0.04em;
+}
+.nav-item:hover { background: var(--bg-input); color: var(--text-2); }
+.nav-item.active {
+  background: var(--bg-input); border-left-color: var(--accent);
+  color: var(--accent-text); font-weight: 600;
+}
+
+#main { flex: 1; overflow-y: auto; padding: 24px 28px; background: var(--bg); }
+h1 { font-size: 18px; font-weight: 600; margin-bottom: 18px; color: var(--text-1); letter-spacing: 0.02em; }
+h3 {
+  font-size: 10px; font-weight: 600; margin-bottom: 12px;
+  color: var(--text-3); text-transform: uppercase; letter-spacing: 0.07em;
+}
+
+.section { animation: fi .2s; }
+@keyframes fi { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+.card {
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px 22px; margin-bottom: 18px;
+}
+
+.controls { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+.controls label {
+  font-size: 11px; color: var(--text-3); font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+
+select {
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; cursor: pointer;
+  background: var(--bg-input); color: var(--text-2); outline: none;
+}
+
+.btn-group { display: flex; gap: 6px; }
+.btn-group button {
+  padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12px; cursor: pointer;
+  background: var(--bg-input); color: var(--text-3);
+  transition: all .15s; font-weight: 500;
+}
+.btn-group button:hover { color: var(--text-2); }
+.btn-group button.active {
+  background: var(--accent-soft); color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  background: transparent; padding: 10px 13px; text-align: left;
+  font-weight: 600; border-bottom: 1px solid var(--border);
+  color: var(--text-3); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+td {
+  padding: 8px 13px; border-bottom: 1px solid var(--border-soft);
+  color: var(--text-2); font-family: monospace;
+}
+tbody tr:hover td { background: var(--bg-input); }
+.sec-row td {
+  background: var(--bg-input); font-weight: 700; color: var(--text-1);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+  padding: 8px 13px; font-family: sans-serif;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Significance text colors: one palette for both themes, avoiding the
+   red/green correlation-matrix cell backgrounds. */
+.sig-3   { color: #22d3ee; font-weight: 700; }
+.sig-2   { color: #fde047; font-weight: 600; }
+.sig-1   { color: #c084fc; font-weight: 600; }
+.sig-dot { color: #f472b6; }
+.sig-ns  { color: var(--text-muted); }
+
+.badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.b-best, .b-ok { background: rgba(74,222,128,0.12);  color: #4ade80; }
+.b-warn        { background: rgba(251,191,36,0.12); color: #fbbf24; }
+.b-fail        { background: rgba(248,113,113,0.12); color: #f87171; }
+
+.dist-card {
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px;
+}
+.dist-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.dvar  { font-size: 14px; font-weight: 700; color: var(--text-1); }
+.dmeta { font-size: 11px; color: var(--text-3); font-family: monospace; }
+
+.sbg { display: inline-block; padding: 3px 9px; border-radius: 8px; font-size: 12px; font-weight: 700; }
+.sbg-3   { background: rgba(253,224,71,0.14);  color: #fde047; }
+.sbg-2   { background: rgba(34,211,238,0.14);  color: #22d3ee; }
+.sbg-1   { background: rgba(192,132,252,0.14); color: #c084fc; }
+.sbg-dot { background: rgba(244,114,182,0.14); color: #f472b6; }
+.sbg-ns  { background: rgba(100,116,139,0.14); color: var(--text-3); }
+
+.pct-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.pct-bar {
+  display: flex; height: 10px; border-radius: 5px; overflow: hidden;
+  flex: 1; border: 1px solid var(--border);
+}
+.pct-neg { background: #dc2626; }
+.pct-pos { background: #16a34a; }
+.pct-lbl { font-size: 11px; color: var(--text-3); white-space: nowrap; font-family: monospace; }
+
+.gof-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.gof-item {
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 16px;
+}
+.gof-lbl { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 4px; }
+.gof-val { font-size: 18px; font-weight: 600; color: var(--text-1); font-family: monospace; }
+
+.empty   { color: var(--text-muted); padding: 10px; }
+.loading { padding: 40px; font-size: 14px; color: var(--text-muted); }
+
+/* ── Inline-style extractions ───────────────────────────────────────────────
+   Styles that used to live as `style={{...}}` props on individual components,
+   moved here so the upcoming light theme can re-target colours/backgrounds
+   centrally instead of editing every component. Purely layout / dynamic
+   values (chart heights, computed widths, computed backgrounds) are still
+   inline on the elements.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Generic utility */
+.t-center { text-align: center; }
+
+/* App-level error banner */
+.error-msg { color: #c0392b; }
+
+/* Coefficients table */
+.coeff-sd-row { background: var(--sd-row-bg); color: var(--text-3); }
+.coeff-sd-row td:first-child { padding-left: 24px; }
+
+/* Lower-triangular matrices used by Coefficients (correlation block) and
+   the Correlations section. */
+.matrix-table              { font-size: 12.5px; }
+.matrix-table.coeff-corr   { margin-top: 16px; }
+.matrix-table td           { border: 0.5px solid var(--border); }
+.matrix-hdr {
+  font-weight: 700; color: var(--text-1); font-size: 12px;
+  padding: 8px 13px; text-align: center; white-space: nowrap;
+}
+.matrix-diag {
+  background: var(--bg-input); color: var(--text-muted);
+  text-align: center; font-size: 10px; padding: 6px;
+}
+.matrix-blank-cell {
+  background: var(--bg-input); color: var(--text-muted);
+  text-align: center; padding: 6px;
+}
+.matrix-empty      { color: var(--text-muted); text-align: center; }
+.matrix-cell       { text-align: center; padding: 6px; font-family: monospace; }
+.matrix-stack-cell { padding: 6px; vertical-align: top; aspect-ratio: 1; }
+
+/* Per-cell stack of (T1..Tn) entries in the Correlations matrix. */
+.corr-stack {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; font-size: 13px;
+  padding: 2px 6px; margin-bottom: 2px; border-radius: 3px;
+  font-family: monospace; text-align: center;
+}
+.corr-stack-empty { background: rgba(100,116,139,0.12); }
+
+/* Toolbar row above a card body (Shares / Distributions PNG buttons). */
+.section-toolbar { display: flex; justify-content: flex-start; margin-bottom: 10px; }
+
+/* Distributions table */
+.dist-head {
+  text-align: center; font-weight: 700; font-size: 12px;
+  color: var(--text-1); text-transform: none; letter-spacing: 0;
+  padding: 10px 13px;
+}
+.dist-bic-sub  { font-weight: 400; color: var(--text-3); font-family: monospace; }
+.dist-var-cell {
+  vertical-align: middle; font-weight: 700; font-size: 13px;
+  color: var(--text-1); font-family: sans-serif;
+}
+.dist-card-tall { min-height: 180px; display: flex; flex-direction: column; }
+.dist-fixed-val {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 700; color: var(--text-1); font-family: monospace;
+}
+.dist-empty-card {
+  background: var(--bg-input); border: 1px dashed var(--border);
+  border-radius: 8px; min-height: 180px;
+}
+.dist-empty-card p {
+  color: var(--text-muted); text-align: center; padding-top: 70px; font-size: 12px;
+}
+
+/* Screenshot overlay (created imperatively in screenshot.js). */
+.screenshot-overlay {
+  position: fixed; inset: 0;
+  background: var(--screenshot-mask);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-1);
+  font-size: 14px; font-weight: 600; letter-spacing: 0.04em;
+  z-index: 9999; opacity: 0; transition: opacity 120ms ease;
+}
+
+/* ── Banner theme toggle (Dark / Light buttons) ─────────────────────────── */
+.banner-mode-group {
+  display: flex; gap: 4px;
+  background: var(--bg-input);
+  border-radius: 8px;
+  padding: 4px;
+}
+.mode-button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-3);
+  border: 1px solid transparent;
+  transition: all 0.15s;
+  user-select: none;
+}
+.mode-button:hover { color: var(--text-2); }
+.mode-button.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+/* Light-theme tweaks: a few colours that read fine on a dark card surface
+   are washed-out or invisible on a light one. */
+:root[data-theme="light"] .var-link { color: #7c3aed; }
+:root[data-theme="light"] .sig-3   { color: #1d4ed8; }
+:root[data-theme="light"] .sig-2   { color: #b45309; }
+:root[data-theme="light"] .sig-1   { color: #6b21a8; }
+:root[data-theme="light"] .sig-dot { color: #1f2937; }
+:root[data-theme="light"] .sbg-3   { color: #1d4ed8; background: rgba(29,78,216,0.10); }
+:root[data-theme="light"] .sbg-2   { color: #b45309; background: rgba(180,83,9,0.10); }
+:root[data-theme="light"] .sbg-1   { color: #6b21a8; background: rgba(107,33,168,0.10); }
+:root[data-theme="light"] .sbg-dot { color: #1f2937; background: rgba(31,41,55,0.10); }
+:root[data-theme="light"] .b-best,
+:root[data-theme="light"] .b-ok    { color: #15803d; background: rgba(21,128,61,0.10); }
+:root[data-theme="light"] .b-warn  { color: #b45309; background: rgba(180,83,9,0.10); }
+:root[data-theme="light"] .b-fail  { color: #b91c1c; background: rgba(185,28,28,0.10); }
+:root[data-theme="light"] .pct-neg { background: #b91c1c; }
+:root[data-theme="light"] .pct-pos { background: #15803d; }
+:root[data-theme="light"] #sidebar { box-shadow: 4px 0 16px rgba(15,23,42,0.12); }
+:root[data-theme="light"] .drawer-backdrop { background: rgba(15,23,42,0.35); }
+
+/* ── Responsive layout classes ──────────────────────────────────────────────
+   Default rules are inert / desktop. The @media block below activates the
+   thin-screen behaviour: off-canvas sidebar, stacked grids, scrollable tables.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Hamburger toggle — hidden on desktop, shown by the media query below. */
+.banner-menu {
+  display: none;
+  align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  background: var(--bg-input); color: var(--text-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  font-size: 16px; cursor: pointer;
+}
+
+/* Grids used by section components. Desktop columns; mobile collapses these. */
+.chart-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.alt-grid     { display: grid; grid-template-columns: var(--alt-cols, 1fr); gap: 12px; }
+
+/* Wide-table wrapper — always allows horizontal scroll so the table can
+   never poke past the card's right edge, even on desktop. */
+.table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* The Correlation Matrix uses fixed layout on desktop so its columns line up
+   evenly; on mobile the media query overrides to auto layout so each column
+   sizes to its text and the table only takes the width it actually needs. */
+.corr-matrix { width: 100%; table-layout: fixed; }
+
+/* Drawer backdrop only renders when the drawer is open; harmless on desktop. */
+.drawer-backdrop { display: none; }
+
+@media (max-width: 1000px) { /* !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! change this to change where compact mode starts */
+  /* Banner — compact, hamburger visible, subtitle hidden. */
+  .banner { padding: 10px 12px; gap: 10px; }
+  .banner-sub { display: none; }
+  .banner-title { font-size: 13px; }
+  .banner-run-label { display: none; }
+  .banner-menu { display: inline-flex; }
+
+  /* Main content padding shrinks so charts/tables get more width. */
+  #main { padding: 12px 14px; }
+  .card { padding: 14px 16px; margin-bottom: 14px; }
+  h1 { font-size: 16px; margin-bottom: 14px; }
+
+  /* Banner sits above the drawer so the hamburger button stays visible and
+     clickable while the drawer is open. */
+  .banner { position: relative; z-index: 40; }
+
+  /* Sidebar slides in as a left-edge drawer below the banner. Width and
+     nav-item sizing match the desktop sidebar so content looks identical
+     whether docked or drawn. */
+  #sidebar {
+    position: fixed; top: 55px; left: 0; bottom: 0;
+    z-index: 30; width: 215px;
+    transform: translateX(-100%);
+    transition: transform .18s ease;
+    box-shadow: 4px 0 16px rgba(0,0,0,0.4);
+  }
+  #sidebar.open { transform: translateX(0); }
+  .drawer-backdrop {
+    display: block;
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(0,0,0,0.5);
+  }
+
+  /* Multi-column grids collapse to a single column. */
+  .chart-grid-3 { grid-template-columns: 1fr; }
+  .alt-grid     { grid-template-columns: 1fr; }
+
+  /* Wide tables: force the table wider than its parent so the .table-scroll
+     wrapper's horizontal scroll kicks in. */
+  .table-scroll > table { min-width: max-content; }
+
+  /* Every column is at least as wide as its (un-wrapped) text. The table is
+     allowed to grow as wide as needed; horizontal scroll on .table-scroll
+     handles overflow. */
+  .table-scroll > table th, .table-scroll > table td { white-space: nowrap; }
+
+  /* Correlation matrix: drop fixed-layout so columns fit their text instead
+     of stretching to fill the container — but never shrink below the card's
+     width, so the table always reaches the right edge. */
+  .table-scroll > .corr-matrix { width: auto; table-layout: auto; min-width: 100%; }
+
+  /* Tighten table cell padding so more columns fit on screen. */
+  th, td { padding: 6px 8px; font-size: 12px; }
+  .sec-row td { padding: 6px 8px; }
+}

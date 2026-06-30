@@ -1,0 +1,8 @@
+# python
+__pycache__
+
+# frontend stuff
+frontend/node_modules
+frontend/package-lock.json
+frontend/dist
+frontend/log.txt
