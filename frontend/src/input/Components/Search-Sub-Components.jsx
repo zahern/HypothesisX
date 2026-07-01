@@ -18,7 +18,7 @@ export function SearchAllow({appData, setAppData}) {
       <Grid cols={2} style={{ marginTop:10 }}>
         <Toggle label="Random Parameters" active={appData.allowRandom}  onChange={v => { setAppData({
           ...appData,
-          allowRandom: v,
+          allowRandom: v && isMixed,
           allowCorr: false,
           variables: appData.variables.map((a) => {return {...a, random:!v ? false : a.random, seCorr:false}}),
         })}} />
@@ -238,7 +238,7 @@ export function SearchParams({appData, setAppData}) {
       <Grid cols={3}>
         <SliderField label="Steps" value={appData.steps} min={5} max={100} onChange={sapp("steps")} hint="Annealing steps" />
         <SliderField label="Iterations" value={appData.iterations} min={5} max={200} onChange={sapp("iterations")} hint="Candidates per step" />
-        <SliderField label="Draws (R)" value={appData.draws} min={100} max={5000} step={100} onChange={sapp("draws")} hint="Simulation draws" />
+        <SliderField label="Draws (R)" value={appData.draws} min={100} max={3000} step={100} onChange={sapp("draws")} hint="Simulation draws" />
       </Grid>
 
       <div style={{height:"20px"}} />
@@ -253,7 +253,7 @@ export function SearchParams({appData, setAppData}) {
           label="Tolerance (gtol)" 
           value={appData.gtol} 
           onChange={sapp("gtol")} 
-          options={["1e-3","1e-4","1e-5","1e-6"]} 
+          options={["1e-3","1e-4","1e-5","1e-6","1e-7","1e-8","1e-9"]} 
           hint="Gradient tolerance" 
         />
       </div>

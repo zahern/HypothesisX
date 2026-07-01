@@ -188,7 +188,7 @@ export function RunTolerance({appData, setAppData}) {
             label="gtol" 
             value={appData.gtol} 
             onChange={sapp("gtol")} 
-            options={["1e-3","1e-4","1e-5","1e-6"]} 
+            options={["1e-3","1e-4","1e-5","1e-6","1e-7","1e-8","1e-9"]} 
             hint="Gradient tolerance" 
           />
         </div>
@@ -197,7 +197,7 @@ export function RunTolerance({appData, setAppData}) {
             label="ftol" 
             value={appData.ftol} 
             onChange={sapp("ftol")} 
-            options={["1e-6","1e-7","1e-8","1e-9"]} 
+            options={["1e-6","1e-7","1e-8","1e-9","1e-10"]} 
             hint="Funciton value tolerance" 
           />
         </div>

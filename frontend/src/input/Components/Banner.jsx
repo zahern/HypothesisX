@@ -1,11 +1,13 @@
 export default function Banner({appData, setAppData}) {
   return (
     <div class="banner">
-      <div class="banner_logo">λ</div>
-      <div>
-        <div class="banner_title">DCM Studio</div>
-        <div class="banner_subtitle">DISCRETE CHOICE MODELLING</div>
-      </div>
+      <a href="/" class="banner_home">
+        <div class="banner_logo">λ</div>
+        <div>
+          <div class="banner_title">DCM Studio</div>
+          <div class="banner_subtitle">DISCRETE CHOICE MODELLING</div>
+        </div>
+      </a>
       <div class="flex_spacer" />
 
       {/* Dark/Light theme switching */}

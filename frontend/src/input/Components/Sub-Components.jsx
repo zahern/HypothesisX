@@ -214,9 +214,11 @@ export function PageButtons({appData, setAppData, canNext, next, back}) {
 /* ------------------------------------ Sections ------------------------------------ */
 export function CSVUploadBox({appData, setAppData, csv, setCsv }) {
   /* 
-    It was chosen to do the initial parseing of the columns here to keep the api RESTfull 
-    I dont love keeping the csv sitting in the browser but sacrifices must be made 
-    If csv filesizes get too big #TODO this can be tackled again 
+    It was chosen to do the initial parseing of the columns here to keep the api RESTfull
+
+    This has changed thorugh with the use of websockets, this could be redesigned to
+    send the file now and recieve back the information the app needs
+
     sub-funciton handleFile handles column parseing
     It also stores the file is csv
 
@@ -284,7 +286,7 @@ export function CSVUploadBox({appData, setAppData, csv, setCsv }) {
 
   return (
     /* div for the data box, if a file is dragged onto it hadle it if its clicked it indirectly clicks the regular input for files that also handles this csv the same way */
-    <div onDra gOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
+    <div onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
       onClick={() => document.getElementById("csvInput").click()}
       class={`csv_upload ${appData.uploaded ? "csv_upload_uploaded" : ""}`}>
       {/* this input launces the file popup prompt when clicked, its invisible and clicked in proxy by prettyer elements */}
@@ -422,7 +424,10 @@ export function DataOptions({appData, setAppData}) {
         <SelectField 
           label="Base Alternative" 
           value={appData.baseAlt} 
-          onChange={sapp("baseAlt")}
+          onChange={v => setAppData({...appData,
+            baseAlt: v,
+            fitIntercept: v !== "None",
+          })}
           options={altOptions}
           hint="Reference alternative for ASCs"
           disabled={!appData.uploaded}
@@ -462,18 +467,29 @@ export function ModelOptions({appData, setAppData}) {
     return (val) => setAppData({...appData, [key]: val})
   };
 
+  console.log(appData)
+
+  // buttons are inert until a file is uploaded
+  const locked = !appData.uploaded
+
   return (
     <div>
       <div class="intercept_block">
         <div class="label">Intercept</div>
         <div class="intercept_buttons">
-          <div key="fitIntercept-yes" onClick={() => sapp("fitIntercept")(true)}
-            class={appData.fitIntercept ? "model_button model_button_select" : "model_button"}>
+          <div key="fitIntercept-yes" onClick={locked ? undefined : () => setAppData({...appData,
+              fitIntercept: true,
+              baseAlt: (appData.fitIntercept ? appData.baseAlt : (appData.columnUniques[appData.altVar][0] ?? "None") ),
+            })}
+            class={`model_button ${appData.fitIntercept ? "model_button_select" : ""} ${locked ? "model_button_disabled" : ""}`}>
             Include intercept
           </div>
 
-          <div key="fitIntercept-no"  onClick={() => sapp("fitIntercept")(false)}
-            class={appData.fitIntercept ? "model_button" : "model_button model_button_select"}>
+          <div key="fitIntercept-no"  onClick={locked ? undefined : () => setAppData({...appData,
+              fitIntercept: false,
+              baseAlt: "None",
+            })}
+            class={`model_button ${appData.fitIntercept ? "" : "model_button_select"} ${locked ? "model_button_disabled" : ""}`}>
             No intercept
           </div>
         </div>

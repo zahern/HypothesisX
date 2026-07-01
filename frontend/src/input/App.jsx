@@ -70,7 +70,7 @@ export default function App() {
   const [csv, setCsv]             = useState()
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", appData.theme)
+    document.documentElement.setAttribute("dcm-studio-theme", appData.theme)
     localStorage.setItem("dcm-studio-theme", appData.theme)
   }, [appData.theme])
 

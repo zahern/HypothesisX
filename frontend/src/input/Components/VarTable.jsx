@@ -1,5 +1,12 @@
 import "../All.css"
 
+/*
+  This file was attempting to make the VariableOptions components
+  in both the Estimation and Search -Sub-Components files smaller
+  it didnt really help with that and just made the implimentation
+  more confusing
+*/
+
 export function VarTable({ children, legend, summary }) {
   /*
     Outer shell for the per-variable options table. Caller supplies the

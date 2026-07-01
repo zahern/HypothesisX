@@ -23,7 +23,7 @@
   --row_hover: #11141b;
 }
 
-:root[data-theme="light"] {
+:root[dcm-studio-theme="light"] {
   --bg: #ffffff;
   --bg_select: #f1f5f9;
   --border: #e2e8f0;
@@ -95,7 +95,7 @@ input[type="checkbox"]:disabled {
   cursor: not-allowed;
 }
 
-:root[data-theme="light"] input[type="checkbox"]:disabled {
+:root[dcm-studio-theme="light"] input[type="checkbox"]:disabled {
   filter: brightness(0.85);
 }
 
@@ -326,6 +326,12 @@ p {
   color: var(--accent_blue_light);
 }
 
+.model_button_disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .asdfasdspan {
   display: block;
 }
@@ -464,6 +470,15 @@ tbody td.row_name {
   align-items: center;
   gap: 16px;
   background: var(--bg);
+}
+
+.banner_home {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
 }
 
 .banner_logo {

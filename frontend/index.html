@@ -16,16 +16,23 @@
         margin: 0;
         padding: 0px;
       }
+      /* Attribute-based light override so the sub-apps can flip back to dark
+         by changing the attribute. (Do NOT set inline body styles here — an
+         inline background can't be overridden by the app stylesheets, which
+         would leave the background stuck on a theme switch.) */
+      html[dcm-studio-theme="light"] body {
+        background-color: #ffffff;
+        color: #0f172a;
+      }
     </style>
     <script>
-      // Apply persisted light/dark theme before React mounts so the user
-      // doesn't see a flash of the wrong background.
+      // Apply the persisted light/dark theme before React mounts so the user
+      // doesn't see a flash of the wrong background. Only the attribute is set
+      // here; the CSS rule above paints the matching background.
       (function () {
         var t = localStorage.getItem('dcm-studio-theme');
         if (t === 'light') {
           document.documentElement.setAttribute('dcm-studio-theme', 'light');
-          document.body.style.background = '#ffffff';
-          document.body.style.color = '#0f172a';
         }
       })();
     </script>
