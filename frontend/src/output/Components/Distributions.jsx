@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import Plot from "./Plot.jsx";
-import { sbgCls, usePlotTheme } from "./helpers.js";
+import { sbgCls, sigCls, usePlotTheme } from "./helpers.js";
 import { captureCardAsPng } from "./screenshot.js";
-import MiniSummary from "./MiniSummary.jsx"
+import { SummaryTable, MiniSummaryTable } from "./SummaryTables.jsx"
 
 /*
   Parameter Distributions: a table with one row per random variable and one
@@ -72,9 +72,13 @@ export default function Distributions({ data, runId }) {
     <div className="section">
       <h1>Parameter Distributions</h1>
 
+      {data?.solutions.length > 1 && (
+          <SummaryTable sols={sols} />
+      )}
+
       {data?.solutions.length === 1 && (
         <div class="card">
-          <MiniSummary s={data?.solutions[0]} />
+          <MiniSummaryTable s={data?.solutions[0]} />
         </div>
       )}
 
@@ -96,7 +100,7 @@ export default function Distributions({ data, runId }) {
                   <th />
                   {sols.map((s, i) => (
                     <th key={`h-${i}`} className="dist-head">
-                      Top {i + 1}<br />
+                      {sols.length > 1 ? `Top ${i+1}` : "Solution"}<br />
                       <span className="dist-bic-sub">BIC={Math.round(s.bic)}</span>
                     </th>
                   ))}

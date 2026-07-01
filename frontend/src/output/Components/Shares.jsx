@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import Plot from "./Plot.jsx";
 import { COLORS, usePlotTheme } from "./helpers.js";
 import { captureCardAsPng } from "./screenshot.js";
-import MiniSummary from "./MiniSummary.jsx"
+import { SummaryTable, MiniSummaryTable } from "./SummaryTables.jsx"
 
 /*
   Predicted vs Observed Shares: one chart per alternative. Each chart shows
@@ -35,7 +35,7 @@ export default function Shares({ data, runId }) {
   const solsWithIdx = sols
     .map((s, i) => ({ s, i }))
     .filter(({ s }) => s.predicted.length);
-  const xLabels = solsWithIdx.map(({ i }) => `Top ${i + 1}`);
+  const xLabels = solsWithIdx.map(({ i }) => `Top ${i + 1}`)
   const barColors = solsWithIdx.map(({ i }) => COLORS[i]);
 
   // CSS class `.alt-grid` reads --alt-cols; the media query collapses to a
@@ -72,8 +72,10 @@ export default function Shares({ data, runId }) {
 
       {data?.solutions.length === 1 && (
         <div class="card">
-          <MiniSummary s={data?.solutions[0]} />
+          <MiniSummaryTable s={data?.solutions[0]} />
         </div>
+      )} {data?.solutions.length > 1 && (
+          <SummaryTable sols={sols} />
       )}
 
       <div className="card" ref={cardRef}>

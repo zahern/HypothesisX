@@ -1,7 +1,7 @@
 import { useState } from "react";
 import Plot from "./Plot.jsx";
 import { usePlotTheme } from "./helpers.js";
-import MiniSummary from "./MiniSummary.jsx"
+import { SummaryTable, MiniSummaryTable } from "./SummaryTables.jsx"
 
 /*
   Convergence section: search trajectory (objective per evaluation + running
@@ -50,41 +50,40 @@ export default function Convergence({ data }) {
 
 
       { data?.solutions.length > 1 && (
-        
-        <div className="card">
-          <div className="controls">
-            <label>Show:</label>
-            <div className="btn-group">
-              <button className={mode === "all" ? "active" : ""} onClick={() => setMode("all")}>All evaluations</button>
-              <button className={mode === "accepted" ? "active" : ""} onClick={() => setMode("accepted")}>Accepted only</button>
+        <>
+          <SummaryTable sols={sols} />
+          
+          <div className="card">
+            <div className="controls">
+              <label>Show:</label>
+              <div className="btn-group">
+                <button className={mode === "all" ? "active" : ""} onClick={() => setMode("all")}>All evaluations</button>
+                <button className={mode === "accepted" ? "active" : ""} onClick={() => setMode("accepted")}>Accepted only</button>
+              </div>
             </div>
+            <Plot
+              style={{ height: 440 }}
+              data={[
+                {
+                  x: xi, y: yi, mode: "lines+markers", name: conv.objective + " per eval",
+                  line: { color: "rgba(100,116,139,0.35)", width: 1 },
+                  marker: { color: ci, size: 4, opacity: 0.75 }, type: "scatter",
+                },
+                {
+                  x: it, y: bst, mode: "lines", name: "Best " + conv.objective,
+                  line: { color: "#fbbf24", width: 2.5 }, type: "scatter",
+                },
+              ]}
+              layout={{
+                ...PLOT_THEME,
+                margin: { t: 10, b: 50, l: 65, r: 20 },
+                xaxis: { ...PLOT_THEME.xaxis, title: "Iteration" },
+                yaxis: { ...PLOT_THEME.yaxis, title: conv.objective },
+                legend: { ...PLOT_THEME.legend, orientation: "h", y: -0.2 },
+              }}
+            />
           </div>
-          <Plot
-            style={{ height: 440 }}
-            data={[
-              {
-                x: xi, y: yi, mode: "lines+markers", name: conv.objective + " per eval",
-                line: { color: "rgba(100,116,139,0.35)", width: 1 },
-                marker: { color: ci, size: 4, opacity: 0.75 }, type: "scatter",
-              },
-              {
-                x: it, y: bst, mode: "lines", name: "Best " + conv.objective,
-                line: { color: "#fbbf24", width: 2.5 }, type: "scatter",
-              },
-            ]}
-            layout={{
-              ...PLOT_THEME,
-              margin: { t: 10, b: 50, l: 65, r: 20 },
-              xaxis: { ...PLOT_THEME.xaxis, title: "Iteration" },
-              yaxis: { ...PLOT_THEME.yaxis, title: conv.objective },
-              legend: { ...PLOT_THEME.legend, orientation: "h", y: -0.2 },
-            }}
-          />
-        </div>
-      )} {data?.solutions.length === 1 && (
-        <div class="card">
-          <MiniSummary s={sol} />
-        </div>
+        </>
       )}
 
       <div className="card">
@@ -98,6 +97,9 @@ export default function Convergence({ data }) {
             </select>
           )}
         </div>
+
+        <MiniSummaryTable s={sols[idx ?? 0]}/>
+
         {!hasOptim ? (
           <p className="empty">No optimizer history available.</p>
         ) : (

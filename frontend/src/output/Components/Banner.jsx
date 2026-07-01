@@ -7,11 +7,13 @@ export default function Banner({ runs, runId, setRunId, theme, setTheme, onMenuT
   return (
     <div className="banner">
       <button className="banner-menu" onClick={onMenuToggle} aria-label="Open navigation">☰</button>
-      <div className="banner-logo">λ</div>
-      <div>
-        <div className="banner-title">RESULTS Dashboard</div>
-        <div className="banner-sub">DISCRETE CHOICE MODEL RESULTS</div>
-      </div>
+      <a className="banner-home" href="/" aria-label="Go to dashboard home">
+        <div className="banner-logo">λ</div>
+        <div>
+          <div className="banner-title">RESULTS Dashboard</div>
+          <div className="banner-sub">DISCRETE CHOICE MODEL RESULTS</div>
+        </div>
+      </a>
       <div className="banner-spacer" />
 
       <div className="banner-mode-group" role="group" aria-label="Theme">

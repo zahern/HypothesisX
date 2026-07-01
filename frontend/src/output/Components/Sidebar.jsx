@@ -6,11 +6,11 @@
 export default function Sidebar({ data, section, setSection, drawerOpen, onClose }) {
   const items = [
     { key: "summary", label: "📊 Model Comparison", show: data?.solutions.length > 1 },
+    { key: "coefficients", label: "📋 Coefficients", show: true },
     { key: "convergence", label: "📈 Convergence", show: data?.flags.hasConvergence },
     { key: "distributions", label: "🔔 Distributions", show: data?.flags.hasRandom },
     { key: "correlations", label: "🔗 Correlations", show: data?.flags.hasCorvars && data?.solutions.length > 1 },
     { key: "shares", label: "🎯 Predicted Shares", show: true },
-    { key: "coefficients", label: "📋 Coefficients", show: true },
   ];
 
   const top = data?.solutions?.[0];

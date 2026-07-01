@@ -64,8 +64,10 @@ export function VarTableRow({ variable, dotBlue, dotGreen, textClass, prefix, ce
   return (
     <tr>
       <td class="row_name">
-        <div class={`table_dot ${dotBlue ? "td_blue" : ""} ${dotGreen ? "td_green" : ""}`} />
-        <span class={`table_text ${textClass || ""}`}>{`${prefix || ""}${variable.name}`}</span>
+        <div class="row_name_inner">
+          <div class={`table_dot ${dotBlue ? "td_blue" : ""} ${dotGreen ? "td_green" : ""}`} />
+          <span class={`table_text ${textClass || ""}`}>{`${prefix || ""}${variable.name}`}</span>
+        </div>
       </td>
       {cells}
     </tr>

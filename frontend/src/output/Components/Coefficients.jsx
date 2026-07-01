@@ -1,6 +1,6 @@
 import { useState, Fragment } from "react";
 import { sigCls } from "./helpers.js";
-import MiniSummary from "./MiniSummary.jsx"
+import { MiniSummaryTable } from "./SummaryTables.jsx"
 
 /*
   Coefficients: per-solution parameter table (intercepts / fixed / random with
@@ -40,7 +40,7 @@ export default function Coefficients({ data }) {
           </div>
         )}
       
-        <MiniSummary s={sol} />
+        <MiniSummaryTable s={sol} />
         <div style={{height: "25px"}} />
 
         <div className="table-scroll">

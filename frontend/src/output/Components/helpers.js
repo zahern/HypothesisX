@@ -67,5 +67,9 @@ export function sigCls(s) {
 }
 
 export function sbgCls(s) {
+  /*
+    returns a class based of the significance (represented as asterix ***) with a background
+    Used in Distributions.jsx
+  */
   return s === '***' ? 'sbg-3' : s === '**' ? 'sbg-2' : s === '*' ? 'sbg-1' : s === '.' ? 'sbg-dot' : 'sbg-ns';
 }

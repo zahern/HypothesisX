@@ -359,7 +359,7 @@ td {
   height: 28px;
 }
 
-tbody td.row_name {
+tbody td.row_name .row_name_inner {
   display: flex;
   align-items: center;
   gap: 10px;

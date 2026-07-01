@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Plot from "./Plot.jsx";
 import { COLORS, usePlotTheme } from "./helpers.js";
+import { SummaryTable } from "./SummaryTables.jsx"
 
 /*
   Model Comparison: a ranked table of the Top solutions plus three grouped bar
@@ -54,36 +55,8 @@ export default function Summary({ data }) {
   return (
     <div className="section">
       <h1>Model Comparison</h1>
-
-      <div className="card">
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Rank</th><th>BIC</th><th>AIC</th><th>LogLik</th><th>Adj.ρ²</th>
-                <th>#Fixed</th><th>#Random</th><th>#Corvars</th><th>Convergence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sols.map((s, i) => (
-                <tr key={i}>
-                  <td>
-                    <b>Top {i + 1}</b>
-                  </td>
-                  <td><b>{Math.round(s.bic)}</b></td>
-                  <td>{s.aic ? Math.round(s.aic) : "-"}</td>
-                  <td>{s.loglik ? Math.round(s.loglik) : "-"}</td>
-                  <td>{s.adjlik ? s.adjlik.toFixed(3) : "-"}</td>
-                  <td>{s.fixed.length}</td>
-                  <td>{s.random.length}</td>
-                  <td>{s.corrvars.length}</td>
-                  <td>{convergenceCell(s)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      
+      <SummaryTable sols={sols} />
 
       <div className="card">
         <h3>Goodness-of-Fit Comparison</h3>

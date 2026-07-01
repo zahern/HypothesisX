@@ -1,4 +1,5 @@
 import { sigCls } from "./helpers.js";
+import { SummaryTable } from "./SummaryTables.jsx"
 
 /*
   Correlation Matrix: lower-triangular table over the union of correlated
@@ -74,6 +75,11 @@ export default function Correlations({ data }) {
   return (
     <div className="section">
       <h1>Correlation Matrix</h1>
+
+      {data?.solutions.length > 1 && (
+          <SummaryTable sols={sols} />
+      )}
+
       <div className="card">
         <div className="table-scroll">
         <table className="corr-matrix matrix-table">
