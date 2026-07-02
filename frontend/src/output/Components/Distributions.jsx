@@ -61,7 +61,6 @@ export default function Distributions({ data, runId }) {
     try {
       await captureCardAsPng(cardRef.current, {
         filename: `parameter_distributions_${runId || "run"}`,
-        expandScrollable: true,
       });
     } finally {
       setSaving(false);

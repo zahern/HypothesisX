@@ -5,41 +5,49 @@
 // Mark elements you don't want in the screenshot (toolbars, buttons) with the
 // `no-export` class.
 
-export async function captureCardAsPng(card, { filename, expandScrollable = false } = {}) {
+export async function captureCardAsPng(card, { filename } = {}) {
   if (!window.htmlToImage || !card) return;
   const safeName = String(filename || "card").replace(/[^A-Za-z0-9._-]/g, "_");
 
-  // Viewport overlay: gives the user immediate feedback on click and masks the
-  // card-resize jump (when expandScrollable=true) behind a fading backdrop.
-  // Static styling lives in All.css under .screenshot-overlay; opacity is
-  // toggled below to drive the fade-in/fade-out.
   const overlay = document.createElement("div");
   overlay.className = "screenshot-overlay";
   overlay.textContent = "Generating screenshot…";
   document.body.appendChild(overlay);
-  // Two RAFs: first commits the append, second lets the browser paint the
-  // fade-in before we mutate the card and start the capture.
   await new Promise((r) => requestAnimationFrame(r));
   overlay.style.opacity = "1";
   await new Promise((r) => requestAnimationFrame(r));
 
-  // When expandScrollable is true, temporarily lift the .table-scroll clip so
-  // the entire table is captured (not just the slice currently visible). The
-  // card grows with the table; styles are restored in `finally`.
-  const tableScroll = expandScrollable ? card.querySelector(".table-scroll") : null;
-  const orig = {
-    cardWidth: card.style.width,
-    cardMaxWidth: card.style.maxWidth,
-    overflowX: tableScroll && tableScroll.style.overflowX,
+  // Any nested `.table-scroll` that's currently scrolled horizontally hides
+  // content past its right edge. htmlToImage captures the card's box, so the
+  // card must be wide enough to contain every child before we snapshot.
+  //
+  // The previous attempt relied on `width: max-content` + `overflow: visible`,
+  // but `.table-scroll { width: 100% }` doesn't propagate the table's natural
+  // width up to `.card`, so the card never actually grew. Here we read each
+  // scroller's `scrollWidth` (which already includes the clipped overflow) and
+  // apply explicit pixel widths — sidestepping intrinsic-sizing entirely.
+  const scrollers = Array.from(card.querySelectorAll(".table-scroll"));
+  const savedScrollers = scrollers.map((s) => ({
+    overflowX: s.style.overflowX,
+    width: s.style.width,
+  }));
+  const savedCard = {
+    width: card.style.width,
+    maxWidth: card.style.maxWidth,
   };
-  if (expandScrollable) {
-    if (tableScroll) tableScroll.style.overflowX = "visible";
-    card.style.width = "max-content";
+
+  let extraWidth = 0;
+  for (const s of scrollers) {
+    const diff = s.scrollWidth - s.clientWidth;
+    if (diff > extraWidth) extraWidth = diff;
+    s.style.width = `${s.scrollWidth}px`;
+    s.style.overflowX = "visible";
+  }
+  if (extraWidth > 0) {
+    card.style.width = `${card.clientWidth + extraWidth}px`;
     card.style.maxWidth = "none";
   }
 
-  // Match the active theme's card surface so the PNG looks like what's on
-  // screen (dark card on dark theme, light card on light theme).
   const cardBg = getComputedStyle(document.documentElement)
     .getPropertyValue("--bg-elev").trim() || "#0f1117";
 
@@ -54,11 +62,12 @@ export async function captureCardAsPng(card, { filename, expandScrollable = fals
     a.download = `${safeName}.png`;
     a.click();
   } finally {
-    if (expandScrollable) {
-      card.style.width = orig.cardWidth;
-      card.style.maxWidth = orig.cardMaxWidth;
-      if (tableScroll) tableScroll.style.overflowX = orig.overflowX;
-    }
+    card.style.width = savedCard.width;
+    card.style.maxWidth = savedCard.maxWidth;
+    scrollers.forEach((s, i) => {
+      s.style.overflowX = savedScrollers[i].overflowX;
+      s.style.width = savedScrollers[i].width;
+    });
     overlay.style.opacity = "0";
     setTimeout(() => overlay.remove(), 150);
   }
