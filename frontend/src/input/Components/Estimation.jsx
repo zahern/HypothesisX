@@ -93,10 +93,11 @@ function Step1({appData, setAppData, csv, estRun, setEstRun}) {
             ["Data", `${appData.file.name} · ${appData.file.rows} rows · ${appData.file.cols} columns`],
             ["Base Alternative", appData.baseAlt],
             ["Variables", `${appData.fitIntercept ? "Fit Intercept" : " No Intercept"} · ${appData.variables.length} total || ${nVar(v => v.dist==="none" && v.include)} fixed · ${nVar(v => v.dist!=="none" && v.include)} random · ${nVar(v => v.estCorr)} correlated · ${nVar(v => v.boxcox)} boxcox · ${nVar(v => !v.include)} excluded`],
-            ["Fixed", listVars(v => v.dist==="none") || "None"],
-            ["Random", listVars(v => v.dist!=="none") || "None"],
-            ["Correlated", listVars(v => v.estCorr) || "None"],
-            ["BoxCox", listVars(v => v.boxcox) || "None"],                
+            ["Fixed", listVars(v => v.dist==="none" && v.include) || "None"],
+            ["Random", listVars(v => v.dist!=="none" && v.include) || "None"],
+            ["Correlated", listVars(v => v.estCorr && v.include) || "None"],
+            ["BoxCox", listVars(v => v.boxcox && v.include) || "None"],                
+            ["Excluded", listVars(v => !v.include) || "None"],                
             ["gtol / ftol", `${appData.gtol} / ${appData.ftol}`],
             ["Draws", appData.draws]
           ]} />

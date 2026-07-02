@@ -125,7 +125,7 @@ export default function Shares({ data, runId }) {
                   ...PLOT_THEME,
                   title: { text: altName, font: { size: fontSize, color: PLOT_THEME.titleColor } },
                   showlegend: false,
-                  xaxis: { ...PLOT_THEME.xaxis },
+                  xaxis: { ...PLOT_THEME.xaxis, showticklabels: solsWithIdx.length > 1 },
                   yaxis: { ...PLOT_THEME.yaxis, title: "Share (%)", range: [yMin, yMax] },
                   margin: { t: 30, b: 50, l: 55, r: 15 },
                   shapes, annotations,
