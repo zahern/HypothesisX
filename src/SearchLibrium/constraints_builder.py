@@ -104,6 +104,36 @@ class ConstraintBuilder:
         self._print(f"Never include: {variables}")
         return self
     
+    def min_behavioral(self, min_count: int, *variables: str) -> 'ConstraintBuilder':
+        """
+        Require at least ``min_count`` variables from a behavioural pool
+        to be present in the model, without locking in which specific ones.
+
+        Parameters
+        ----------
+        min_count : int
+            Minimum number of behavioural variables that must appear.
+        *variables : str
+            Pool of behavioural variable names to choose from.
+
+        Returns
+        -------
+        ConstraintBuilder
+            Self for method chaining
+
+        Example
+        -------
+        >>> constraints.min_behavioral(2, 'PRICE', 'BIKELANE', 'DIST6', 'DIST3', 'RECRE')
+        """
+        if 'min_behavioral' not in self._constraints:
+            self._constraints['min_behavioral'] = []
+        self._constraints['min_behavioral'].append({
+            'min': int(min_count),
+            'pool': list(variables),
+        })
+        self._print(f"Min behavioural: at least {min_count} from {variables}")
+        return self
+    
     # ========================
     # Random Parameter Constraints
     # ========================

@@ -361,12 +361,20 @@ class LatentClassMixedLogit:
         chosen_prob = np.clip((probs * self.y[:, None, :]).sum(axis=2), 1e-300, None)
         return np.log(chosen_prob), probs
 
-    def _build_jax_weighted_objective(self):
-        if hasattr(self, "_jax_weighted_objective"):
-            return self._jax_weighted_objective
+    def _build_jax_weighted_objective(self, X_c=None, class_idx=None):
+        if X_c is None:
+            cache_key = "_full"
+        else:
+            cache_key = "_c" + str(class_idx) + "_k" + str(X_c.shape[2])
+
+        cache_attr = "_jax_wobj" + cache_key
+        cache_grad  = "_jax_wobj_grad" + cache_key
+
+        if hasattr(self, cache_attr):
+            return getattr(self, cache_attr)
 
         jnp = self.jnp
-        X = self.X_backend
+        X = self.jnp.asarray(X_c) if X_c is not None else self.X_backend
         y = self.y_backend
         avail = self.avail_backend
 
@@ -381,9 +389,9 @@ class LatentClassMixedLogit:
             loglik = jnp.sum(weights * jnp.log(chosen_prob))
             return -loglik
 
-        self._jax_weighted_objective = objective
-        self._jax_weighted_objective_grad = self.jit(self.value_and_grad(objective))
-        return self._jax_weighted_objective
+        setattr(self, cache_attr, objective)
+        setattr(self, cache_grad, self.jit(self.value_and_grad(objective)))
+        return objective
 
     def _weighted_m_step(self, beta0, weights, class_idx=None):
         """Weighted M-step for a single class's betas."""
@@ -391,19 +399,26 @@ class LatentClassMixedLogit:
 
         if class_idx is not None and self._class_specs is not None:
             X_c = self.X[:, :, self._class_specs[class_idx]]
-            _use_jax = False  # JAX path uses full X; fall back to numpy
         else:
             X_c = self.X
-            _use_jax = self._jax_enabled
 
-        if _use_jax:
-            self._build_jax_weighted_objective()
+        use_jax = self._jax_enabled
+
+        if use_jax:
+            self._build_jax_weighted_objective(
+                X_c if class_idx is not None else None,
+                class_idx=class_idx
+            )
             weights_backend = self.jnp.asarray(weights)
 
+            if class_idx is not None:
+                cache_key = "_c" + str(class_idx) + "_k" + str(X_c.shape[2])
+            else:
+                cache_key = "_full"
+            grad_fn = getattr(self, "_jax_wobj_grad" + cache_key)
+
             def objective(beta):
-                value, grad = self._jax_weighted_objective_grad(
-                    self.jnp.asarray(beta), weights_backend
-                )
+                value, grad = grad_fn(self.jnp.asarray(beta), weights_backend)
                 return float(value), np.asarray(grad, dtype=float)
         else:
             def objective(beta):

@@ -1946,6 +1946,7 @@ class Search():
             bctrans=bctrans, cor=cor, randvars=randvars, model_n = model_n, state = state,
              asc_ind=asc_ind)
         solution = self.align_model_with_solution(solution)
+        self._enforce_min_behavioral(solution)
 
         return solution
     # }
@@ -1979,11 +1980,29 @@ class Search():
         if 'force_include' in constraints:
             force_vars = constraints['force_include']
             solution['asvars'] = list(set(force_vars + solution['asvars']))
-        
+            # Also enforce in class_params_spec: every forced var must appear in at least one class
+            if 'class_params_spec' in solution and solution['class_params_spec'] is not None:
+                cp = solution['class_params_spec']
+                for v in force_vars:
+                    if not any(v in arr for arr in cp):
+                        cp[0] = np.sort(np.append(cp[0], v))
+                solution['class_params_spec'] = cp
+            
         if 'force_exclude' in constraints:
             exclude_vars = constraints['force_exclude']
             solution['asvars'] = [v for v in solution['asvars'] if v not in exclude_vars]
             solution['isvars'] = [v for v in solution['isvars'] if v not in exclude_vars]
+            # Also remove from class/membership specs
+            if 'class_params_spec' in solution and solution['class_params_spec'] is not None:
+                cp = solution['class_params_spec']
+                for i in range(len(cp)):
+                    cp[i] = np.array([v for v in cp[i] if v not in exclude_vars], dtype=object)
+                solution['class_params_spec'] = cp
+            if 'member_params_spec' in solution and solution['member_params_spec'] is not None:
+                mp = solution['member_params_spec']
+                for i in range(len(mp)):
+                    mp[i] = np.array([v for v in mp[i] if v not in exclude_vars], dtype=object)
+                solution['member_params_spec'] = mp
         
         if 'force_random' in constraints:
             rand_vars = constraints['force_random']
@@ -1997,8 +2016,68 @@ class Search():
             if 'randvars' in solution:
                 solution['randvars'] = {k: v for k, v in solution['randvars'].items() if k not in never_rand}
         
+        # ── Min-behavioural constraint (soft: at least n from a pool) ──
+        self._enforce_min_behavioral(solution)
+        
         return solution
     
+    def _get_forced_vars(self):
+        """Return list of variables that must always be included (never removed)."""
+        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+            return []
+        constraints = self.pres_spec_constr
+        forced = list(constraints.get('force_include', []))
+        forced.extend(constraints.get('ps_alt_vars', []))
+        forced.extend(constraints.get('ps_nest_vars', []))
+        return list(set(forced))
+
+    def _all_vars_in_solution(self, solution):
+        """Return flat set of all variables present in a solution's specs."""
+        all_v = set(solution.get('asvars', []))
+        all_v.update(solution.get('isvars', []))
+        cp = solution.get('class_params_spec', None)
+        if cp is not None:
+            for arr in cp:
+                all_v.update(list(arr))
+        mp = solution.get('member_params_spec', None)
+        if mp is not None:
+            for arr in mp:
+                all_v.update(list(arr))
+        return all_v - {'_inter'}
+
+    def _enforce_min_behavioral(self, solution):
+        """Ensure at least min_count behavioural vars are present per constraint."""
+        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+            return
+        for rule in self.pres_spec_constr.get('min_behavioral', []):
+            min_count = rule['min']
+            pool = set(rule['pool'])
+            current = self._all_vars_in_solution(solution) & pool
+            deficit = min_count - len(current)
+            if deficit <= 0:
+                continue
+            available = list(pool - current)
+            if available:
+                to_add = np.random.choice(
+                    available, size=min(deficit, len(available)), replace=False
+                ).tolist()
+                if 'asvars' in solution:
+                    solution['asvars'] = list(set(to_add + solution['asvars']))
+
+    def _behavioral_vars_protected_from_removal(self, solution):
+        """Return set of behavioural vars that cannot be removed (below min)."""
+        protected = set()
+        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+            return protected
+        all_v = self._all_vars_in_solution(solution)
+        for rule in self.pres_spec_constr.get('min_behavioral', []):
+            min_count = rule['min']
+            pool = set(rule['pool'])
+            current = all_v & pool
+            if len(current) <= min_count:
+                protected.update(current)
+        return protected
+
     def _apply_latent_class_constraints(self, solution, lc_constraints):
         """Apply constraints specific to latent class models."""
         # Example: force variables to appear only in certain classes
@@ -2342,6 +2421,10 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def remove_asvar(self, rem_asvar, solution):
     # {
+        if rem_asvar in self._get_forced_vars():
+            return solution
+        if rem_asvar in self._behavioral_vars_protected_from_removal(solution):
+            return solution
 
         if rem_asvar in solution['randvars']:
             solution['randvars'] = {var: val for var, val in solution['randvars'].items() if var not in rem_asvar}
@@ -2412,6 +2495,10 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def remove_isvar(self, rem_isvar, solution):
     # {
+        if rem_isvar in self._get_forced_vars():
+            return solution
+        if rem_isvar in self._behavioral_vars_protected_from_removal(solution):
+            return solution
         solution['isvars'] = [var for var in solution['isvars'] if var != rem_isvar]
         solution['isvars'] = sorted(list(set(solution['isvars']).union(self.param.ps_isvars)))
         return  solution
@@ -2674,6 +2761,12 @@ class Search():
         member_params_spec = solution.get('member_params_spec', None)
         if member_params_spec is None:
             return
+        forced = self._get_forced_vars()
+        if rem_param in forced:
+            return
+        protected_beh = self._behavioral_vars_protected_from_removal(solution)
+        if rem_param in protected_beh:
+            return
         for i in range(len(member_params_spec)):
             member_params_spec[i] = np.array([
                 p for p in member_params_spec[i] if p != rem_param
@@ -2686,13 +2779,15 @@ class Search():
         if member_params_spec is None:
             return solution
 
+        forced = self._get_forced_vars()
         flat = []
         for arr in member_params_spec:
             flat.extend(list(arr))
-        if len(flat) == 0:
+        removable = list(set(v for v in flat if v not in forced))
+        if len(removable) == 0:
             return solution
 
-        remove_member = np.random.choice(list(set(flat)))
+        remove_member = np.random.choice(removable)
         self.remove_member_paramfeature(remove_member, solution)
         return solution
 
@@ -2702,10 +2797,12 @@ class Search():
         if member_params_spec is None:
             return self.perturb_add_member_paramfeature(solution)
 
+        forced = self._get_forced_vars()
         flat = []
         for arr in member_params_spec:
             flat.extend(list(arr))
-        if np.random.rand() <= 0.5 or len(flat) <= 1:
+        removable = [v for v in flat if v not in forced]
+        if np.random.rand() <= 0.5 or len(set(removable)) <= 1:
             return self.perturb_add_member_paramfeature(solution)
         else:
             return self.perturb_remove_member_paramfeature(solution)
@@ -2759,6 +2856,12 @@ class Search():
 
     def remove_class_paramfeature(self, rem_var, solution):
         """Remove a variable from class specifications."""
+        forced = self._get_forced_vars()
+        if rem_var in forced:
+            return
+        protected_beh = self._behavioral_vars_protected_from_removal(solution)
+        if rem_var in protected_beh:
+            return
         class_params_spec = solution.get('class_params_spec', None)
         if class_params_spec is None:
             return
@@ -2779,6 +2882,7 @@ class Search():
         if class_params_spec is None:
             return solution
 
+        forced = self._get_forced_vars()
         all_vars = []
         for arr in class_params_spec:
             all_vars.extend(list(arr))
@@ -2787,7 +2891,7 @@ class Search():
             return solution
 
         counts = {v: sum(1 for arr in class_params_spec if v in arr) for v in all_vars}
-        removable = [v for v, c in counts.items() if c < len(class_params_spec)]
+        removable = [v for v, c in counts.items() if c < len(class_params_spec) and v not in forced]
         if not removable:
             return solution
 
@@ -2800,12 +2904,13 @@ class Search():
         if class_params_spec is None:
             return self.perturb_add_class_paramfeature(solution)
 
+        forced = self._get_forced_vars()
         all_vars = []
         for arr in class_params_spec:
             all_vars.extend(list(arr))
         all_vars = list(set(all_vars))
         counts = {v: sum(1 for arr in class_params_spec if v in arr) for v in all_vars}
-        removable = [v for v, c in counts.items() if c < len(class_params_spec)]
+        removable = [v for v, c in counts.items() if c < len(class_params_spec) and v not in forced]
 
         if not removable or np.random.rand() <= 0.5:
             return self.perturb_add_class_paramfeature(solution)
