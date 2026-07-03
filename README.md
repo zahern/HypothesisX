@@ -22,4 +22,6 @@ This repository is a combination of two children, fernando_input_gui and fernand
 
 The two repositories were combined by putting all python backend functions into one file, writing a simple landing page that switches between the apps. The directories frontend/src/{input | output} contain the files directly from the frontend/src directories of the two children minus the main.jsx files.
 
+A lot of utility could be easily gained by properly combining the two repositories, however for now they were kept seperate for development of each component seperately.
+
 More details about the specific implementations of each app and some of the decisions made are documented in the READMEs of the two sub repositories, for convenience, those can also be found in the readmes directory of this repository.
