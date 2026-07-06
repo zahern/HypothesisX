@@ -140,7 +140,7 @@ class MixedLogit(DiscreteChoiceModel):
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
-              de_polish=False):
+              de_polish=False, l1_penalty=0.0):
         # {
         self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -185,6 +185,7 @@ class MixedLogit(DiscreteChoiceModel):
         self.de_polish = de_polish
         self.total_fun_eval = 0
         self.method = method.lower() if hasattr(method, 'lower') else method
+        self.l1_penalty = float(l1_penalty)
         self.jac = self.return_grad  # scipy optimize parameter
         self.n_draws = n_draws
         self.batch_size = min(n_draws, batch_size) if batch_size is not None else n_draws
@@ -1033,6 +1034,7 @@ class MixedLogit(DiscreteChoiceModel):
 
         penalty = self.regularize_loglik(betas)
         loglik = loglik - penalty
+        loglik = loglik - self.regularize_l1_loglik(betas)
 
         self.total_fun_eval += 1
 
@@ -1054,6 +1056,7 @@ class MixedLogit(DiscreteChoiceModel):
         # }
 
         g = np.sum(g, axis=0) / n_batches  # (K, )
+        g = g - self.regularize_l1_grad(betas)
         self.gtol_res = np.linalg.norm(g, ord=np.inf)
 
         result = (-loglik,)  # Create a tuple

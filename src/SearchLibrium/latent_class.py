@@ -41,6 +41,8 @@ class LatentClassMixedLogit:
         n_init=1,
         optimise_membership=True,
         membership_maxiter=50,
+        l1_penalty=0.0,
+        l2_penalty=0.0,
     ):
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
@@ -50,6 +52,8 @@ class LatentClassMixedLogit:
         self.n_init = max(1, int(n_init))
         self.optimise_membership = bool(optimise_membership)
         self.membership_maxiter = int(membership_maxiter)
+        self.l1_penalty = float(l1_penalty)
+        self.l2_penalty = float(l2_penalty)
         self.descr = "LC-MXL"
         self.coeff_est = None
         self.coeff_names = None
@@ -87,7 +91,7 @@ class LatentClassMixedLogit:
 
     def setup(self, X, y, varnames, ids, alts, avail=None, fit_intercept=False,
               membership_vars=None, member_params_spec=None,
-              class_params_spec=None):
+              class_params_spec=None, l1_penalty=None, l2_penalty=None):
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
         ids = np.asarray(ids)
@@ -108,6 +112,10 @@ class LatentClassMixedLogit:
         self.J = len(self.alts)
         self.K = X.shape[1]
         self.varnames = varnames
+        if l1_penalty is not None:
+            self.l1_penalty = float(l1_penalty)
+        if l2_penalty is not None:
+            self.l2_penalty = float(l2_penalty)
 
         order = np.lexsort((alts, ids))
         X = X[order]
@@ -218,6 +226,19 @@ class LatentClassMixedLogit:
                 self.X_memb_backend = self.X_membership
         else:
             self.X_memb_backend = None
+
+    def _regularize_l2_betas(self, betas):
+        if isinstance(betas, list):
+            return self.l2_penalty * sum(float(np.sum(np.square(np.asarray(b)))) for b in betas)
+        return self.l2_penalty * float(np.sum(np.square(np.asarray(betas))))
+
+    def _regularize_l1_betas(self, betas):
+        if isinstance(betas, list):
+            return self.l1_penalty * sum(float(np.sum(np.abs(np.asarray(b)))) for b in betas)
+        return self.l1_penalty * float(np.sum(np.abs(np.asarray(betas))))
+
+    def _regularize_l1_grad(self, beta):
+        return self.l1_penalty * np.sign(np.asarray(beta, dtype=float))
 
     @staticmethod
     def _normalize_class_probs(class_probs):
@@ -361,6 +382,76 @@ class LatentClassMixedLogit:
         chosen_prob = np.clip((probs * self.y[:, None, :]).sum(axis=2), 1e-300, None)
         return np.log(chosen_prob), probs
 
+    def _build_jax_full_objective(self):
+        cache_key = "_jax_full_obj"
+        if hasattr(self, cache_key):
+            return getattr(self, cache_key)
+
+        if not self._jax_enabled or len(set(self._Ks)) != 1:
+            setattr(self, cache_key, None)
+            return None
+
+        jnp = self.jnp
+        C = self.n_classes
+        K = int(self._Ks[0])
+        n_phi = C - 1
+        avail = self.avail_backend
+        y_b = self.y_backend
+        X_b = self.X_backend
+        N = int(X_b.shape[0])
+        has_memb = bool(self._has_membership and self.optimise_membership
+                        and self.K_membership > 0)
+        Km = self.K_membership if has_memb else 0
+        X_memb = self.X_memb_backend if has_memb else None
+        l2 = self.l2_penalty
+        l1 = self.l1_penalty
+
+        def _negloglik_flat(params):
+            phi = params[:n_phi]
+            beta_flat = params[n_phi:n_phi + C * K]
+            betas = beta_flat.reshape(C, K)
+
+            utilities = jnp.einsum("ck,njk->ncj", betas, X_b)
+            utilities = jnp.where(avail[:, None, :] > 0, utilities, -1e10)
+            utilities = utilities - jnp.max(utilities, axis=2, keepdims=True)
+            exp_u = jnp.exp(utilities) * avail[:, None, :]
+            denom = jnp.clip(exp_u.sum(axis=2, keepdims=True), 1e-300)
+            probs = exp_u / denom
+            chosen = jnp.clip((probs * y_b[:, None, :]).sum(axis=2), 1e-300)
+            log_chosen = jnp.log(chosen)
+
+            if has_memb:
+                gammas = params[n_phi + C * K:].reshape(C - 1, Km)
+                logits = jnp.zeros((N, C))
+                for c in range(C - 1):
+                    logits = logits.at[:, c].set(X_memb @ gammas[c])
+                logits = logits - jnp.max(logits, axis=1, keepdims=True)
+                exp_logits = jnp.exp(logits)
+                priors = exp_logits / jnp.clip(jnp.sum(exp_logits, axis=1, keepdims=True), 1e-300, None)
+                log_prior = jnp.log(jnp.clip(priors, 1e-300))
+            else:
+                phi_full = jnp.concatenate([phi, jnp.zeros(1)])
+                log_priors_raw = phi_full - self.jax_logsumexp(phi_full)
+                log_prior = jnp.broadcast_to(log_priors_raw[None, :], (N, C))
+
+            log_joint = log_chosen + log_prior
+            log_marg = self.jax_logsumexp(log_joint, axis=1)
+            ll = jnp.sum(log_marg)
+            ll -= l2 * jnp.sum(jnp.square(betas))
+            ll -= l1 * jnp.sum(jnp.abs(betas))
+            return -ll
+
+        obj, grad_fn = None, None
+        try:
+            obj = self.jit(_negloglik_flat)
+            grad_fn = self.jit(self.value_and_grad(_negloglik_flat))
+        except Exception:
+            pass
+
+        cached = (obj, grad_fn)
+        setattr(self, cache_key, cached)
+        return cached
+
     def _build_jax_weighted_objective(self, X_c=None, class_idx=None):
         if X_c is None:
             cache_key = "_full"
@@ -419,7 +510,10 @@ class LatentClassMixedLogit:
 
             def objective(beta):
                 value, grad = grad_fn(self.jnp.asarray(beta), weights_backend)
-                return float(value), np.asarray(grad, dtype=float)
+                l2 = self.l2_penalty * float(self.jnp.sum(self.jnp.square(beta)))
+                l1 = self.l1_penalty * float(self.jnp.sum(self.jnp.abs(beta)))
+                grad_l1 = self._regularize_l1_grad(np.asarray(beta))
+                return float(value) + l2 + l1, np.asarray(grad, dtype=float) + 2.0 * self.l2_penalty * np.asarray(beta) + grad_l1
         else:
             def objective(beta):
                 utilities = np.einsum("njk,k->nj", X_c, beta)
@@ -431,7 +525,9 @@ class LatentClassMixedLogit:
                 loglik = np.sum(weights * np.log(chosen_prob))
                 diff = (self.y - probs) * weights[:, None]
                 grad = np.einsum("nj,njk->k", diff, X_c)
-                return -loglik, -grad
+                l2 = self.l2_penalty * float(np.sum(beta * beta))
+                l1 = self.l1_penalty * float(np.sum(np.abs(beta)))
+                return -loglik + l2 + l1, -grad + 2.0 * self.l2_penalty * beta + self._regularize_l1_grad(beta)
 
         result = minimize(
             objective,
@@ -484,7 +580,10 @@ class LatentClassMixedLogit:
                 log_prior = jnp.log(jnp.full(C, 1.0 / C))
                 log_joint = log_chosen + log_prior[None, :]
                 log_marg = self.jax_logsumexp(log_joint, axis=1)
-                return -jnp.sum(log_marg)
+                ll = jnp.sum(log_marg)
+                l2 = self.l2_penalty * jnp.sum(jnp.square(betas))
+                l1 = self.l1_penalty * jnp.sum(jnp.abs(betas))
+                return -(ll - l2 - l1)
 
             def _obj(betas_np):
                 return float(_jax_negll(jnp.array(betas_np, dtype=jnp.float64)))
@@ -500,7 +599,10 @@ class LatentClassMixedLogit:
                 log_prior = np.log(np.full(self.n_classes, 1.0 / self.n_classes))
                 log_joint = log_choice + log_prior[None, :]
                 log_marg = logsumexp(log_joint, axis=1)
-                return -float(log_marg.sum())
+                ll = float(log_marg.sum())
+                ll -= self._regularize_l2_betas(betas)
+                ll -= self._regularize_l1_betas(betas)
+                return -ll
 
         K_flat = sum(self._Ks)
         print(
@@ -561,6 +663,8 @@ class LatentClassMixedLogit:
         log_denom = logsumexp(log_joint, axis=1, keepdims=True)
         posterior = np.exp(log_joint - log_denom)
         loglik = float(log_denom.sum())
+        loglik -= self._regularize_l2_betas(betas)
+        loglik -= self._regularize_l1_betas(betas)
 
         new_class_probs = self._normalize_class_probs(posterior.mean(axis=0))
 
@@ -585,7 +689,10 @@ class LatentClassMixedLogit:
             priors = np.broadcast_to(class_probs[None, :], (self.N, self.n_classes))
 
         log_joint = log_choice + np.log(np.clip(priors, 1e-300, None))
-        return float(logsumexp(log_joint, axis=1).sum())
+        ll = float(logsumexp(log_joint, axis=1).sum())
+        ll -= self._regularize_l2_betas(betas)
+        ll -= self._regularize_l1_betas(betas)
+        return ll
 
     def _fit_em_once(self, rng, betas0=None, class_probs0=None, gammas0=None):
         betas = self._make_initial_betas(rng, betas0=betas0)
@@ -607,6 +714,8 @@ class LatentClassMixedLogit:
             log_denom = logsumexp(log_joint, axis=1, keepdims=True)
             posterior = np.exp(log_joint - log_denom)
             loglik = float(log_denom.sum())
+            loglik -= self._regularize_l2_betas(betas)
+            loglik -= self._regularize_l1_betas(betas)
 
             class_probs = self._normalize_class_probs(posterior.mean(axis=0))
             for c in range(self.n_classes):
@@ -882,15 +991,32 @@ class LatentClassMixedLogit:
         if maxiter is None:
             maxiter = max(100, 100 * len(params0))
 
-        def _neg_ll(params):
-            return -self._full_loglik(params)
+        jax_obj = self._build_jax_full_objective()
+        if jax_obj is not None:
+            _jax_func, _jax_grad = jax_obj
 
-        result = minimize(
-            _neg_ll,
-            params0,
-            method="L-BFGS-B",
-            options={"maxiter": maxiter, "ftol": self.tol},
-        )
+            def _neg_ll_jax(params):
+                b = self.jnp.asarray(params, dtype=self.jnp.float64)
+                v, g = _jax_grad(b)
+                return float(v), np.asarray(g, dtype=float)
+
+            result = minimize(
+                _neg_ll_jax,
+                params0,
+                method="L-BFGS-B",
+                jac=True,
+                options={"maxiter": maxiter, "ftol": self.tol},
+            )
+        else:
+            def _neg_ll(params):
+                return -self._full_loglik(params)
+
+            result = minimize(
+                _neg_ll,
+                params0,
+                method="L-BFGS-B",
+                options={"maxiter": maxiter, "ftol": self.tol},
+            )
 
         params = result.x
         offset = C - 1
@@ -1105,7 +1231,10 @@ class LatentClassMixedLogit:
             )
         )
         log_joint = log_chosen + np.log(np.clip(priors, 1e-300, None))
-        return float(logsumexp(log_joint, axis=1).sum())
+        ll = float(logsumexp(log_joint, axis=1).sum())
+        ll -= self._regularize_l2_betas(betas)
+        ll -= self._regularize_l1_betas(betas)
+        return ll
 
     def _numerical_hessian(self, params: np.ndarray, eps: float = 1e-4) -> np.ndarray:
         """Numerical Hessian of the log-likelihood via central finite differences.
