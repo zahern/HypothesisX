@@ -146,7 +146,8 @@ class DiscreteChoiceModel(ABC):
 
         self.reset_attributes()
         self.fit_intercept = False
-        self.reg_penalty = 0.00 # Define a penalty for regularization.
+        self.reg_penalty = 0.00  # L2 penalty strength (ridge)
+        self.l1_penalty  = 0.00  # L1 penalty strength (lasso)
         self.pval_penalty = 5
         logging.info(f'pval penalty set to {self.pval_penalty}')
         # NOTE: The reg_penalty value is tricky to define. If too high, convergence is restricted.
@@ -1059,10 +1060,23 @@ class DiscreteChoiceModel(ABC):
     ''' ------------------------------------------------------------- '''
     def regularize_loglik(self, betas, negative=False):
     # {
-        # Use lasso regularisation L2 to penalise the function
         penalty = self.reg_penalty * np.sum(np.square(betas))
         return -penalty if negative else penalty
     # }
+
+    ''' ------------------------------------------------------------- '''
+    ''' Function. L1 (lasso) regularization of the loglike            '''
+    ''' Matches MetaCount regularise_l1 (corrected: uses abs not sq)  '''
+    ''' ------------------------------------------------------------- '''
+    def regularize_l1_loglik(self, betas, negative=False):
+    # {
+        penalty = self.l1_penalty * np.sum(np.abs(betas))
+        return -penalty if negative else penalty
+    # }
+
+    def regularize_l1_grad(self, betas):
+        """Gradient of the L1 penalty w.r.t. betas: l1_penalty * sign(betas)."""
+        return self.l1_penalty * np.sign(betas)
 
 
 

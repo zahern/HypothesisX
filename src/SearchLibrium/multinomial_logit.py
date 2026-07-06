@@ -246,10 +246,11 @@ class MultinomialLogit(DiscreteChoiceModel):
         transformation="boxcox", ids=None, weights=None, avail=None,
         base_alt=None, fit_intercept=False, init_coeff=None, maxiter=2000,
         ftol=1e-6, gtol=1e-6, return_grad=True, return_hess=True,
-        method="bfgs", scipy_optimisation=True, l2_penalty=0.0):
+        method="bfgs", scipy_optimisation=True, l2_penalty=0.0, l1_penalty=0.0):
     # {
 
         self.l2_penalty = float(l2_penalty)
+        self.l1_penalty  = float(l1_penalty)
         if self.l2_penalty > 0:
             self.reassign_penalty(self.l2_penalty * 0.5)
         self.fit_intercept = fit_intercept
@@ -628,6 +629,7 @@ class MultinomialLogit(DiscreteChoiceModel):
         if not self.return_grad:
             if self.l2_penalty > 0:
                 loglik = loglik - 0.5 * self.l2_penalty * np.dot(betas, betas)
+            loglik = loglik - self.regularize_l1_loglik(betas)
             return (-loglik, )
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Individual contribution to the gradient
@@ -675,10 +677,12 @@ class MultinomialLogit(DiscreteChoiceModel):
             grad = np.sum(grad, axis=0)     # Compute grad_[i] = sum(j, grad[i][j])
             if self.l2_penalty > 0 and self.return_grad:
                 grad = grad - self.l2_penalty * betas
+            grad = grad - self.regularize_l1_grad(betas)
             self.gtol_res = np.linalg.norm(grad, ord=np.inf)  # Compute the norm of "grad"
 
         penalty = self.regularize_loglik(betas)
         loglik = loglik - penalty
+        loglik = loglik - self.regularize_l1_loglik(betas)
         
         result = (-loglik, -grad, self.Hinv) if self.return_grad and self.return_hess \
             else (-loglik, -grad) if self.return_grad else (-loglik,)
@@ -1000,7 +1004,9 @@ class MultinomialLogit(DiscreteChoiceModel):
             def _obj(betas_np):
                 b     = jnp.array(betas_np, dtype=jnp.float64)
                 v, g  = _compiled(b, X_jax, y_jax, avail_jax)
-                return float(v), np.array(g, dtype=np.float64)
+                l1_pen  = self.l1_penalty * np.sum(np.abs(betas_np))
+                l1_grad = self.l1_penalty * np.sign(betas_np)
+                return float(v) + l1_pen, np.array(g, dtype=np.float64) + l1_grad
 
             result = sp_min(
                 _obj, betas, jac=True, method='BFGS',
