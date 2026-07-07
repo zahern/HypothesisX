@@ -69,7 +69,7 @@ Homepage = "https://github.com/zahern/HypothesisX"
 realpython = "SearchLibrium.__main__:main"
 
 [tool.bumpver]
-current_version = "0.0.121"
+current_version = "0.0.122"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "[skip ci] Bump version {old_version} -> {new_version}"
 commit = true
