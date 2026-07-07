@@ -17,7 +17,8 @@ requires-python = ">=3.9"
 authors = [
     { name = "Zeke Ahern", email = "z.ahern@qut.edu.au" },
     { name = "Mario Fernando Taco Morales" },
-    { name = "Alexander Paz Prithvi Beeramole" },
+    { name = "Alexander Paz" },
+    { name = "Prithvi Beeramole" },
     { name = "Robert Burdett" },
 ]
 keywords = [
@@ -63,7 +64,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zahern/HypothesisX"
+Homepage = "https://pypi.org/project/SearchLibrium/"
 
 [project.scripts]
 realpython = "SearchLibrium.__main__:main"

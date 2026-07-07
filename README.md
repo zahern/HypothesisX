@@ -473,9 +473,10 @@ MIT — see [LICENSE](LICENSE) for details.
 
 ## Citation
 
-If you use SearchLibrium in academic work, please cite the repository:
+If you use SearchLibrium in academic work, please cite:
 
 ```text
-Ahern, Z. (2025). SearchLibrium: Automated discrete choice model search.
-https://github.com/zahern/HypothesisX
+Ahern, Z., Taco Morales, M.F., Paz, A., Beeramole, P., & Burdett, R. (2026).
+SearchLibrium: Automated discrete choice model search.
+https://pypi.org/project/SearchLibrium/
 ```
