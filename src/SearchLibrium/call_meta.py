@@ -24,12 +24,14 @@ try:
     from banditsa import*
     from threshold import*
     from sapbil import SAPBIL, ProbabilityMatrix
+    from hspbil import HSPBIL
 except ImportError:
     from .harmony import*
     from .siman import*
     from .banditsa import*
     from .threshold import*
     from .sapbil import SAPBIL, ProbabilityMatrix
+    from .hspbil import HSPBIL
 
 import numpy as np
 
@@ -448,6 +450,54 @@ def call_harmony(parameters, init_sol=None, ctrl=None, **kwargs):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Harmony Search + PBIL
+# ─────────────────────────────────────────────────────────────────────────────
+
+def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
+    """Run Harmony Search with PBIL-guided pitch adjustment.
+
+    Parameters
+    ----------
+    parameters : Parameters
+        Problem definition.
+    init_sol : Solution, optional
+        Warm-start solution (passed as existing memory).
+    ctrl : tuple, optional
+        ``(max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)``.
+        If omitted the values are estimated from the problem size.
+    **kwargs
+        ``id_num`` — run identifier.
+
+    Returns
+    -------
+    Solution
+        Best solution in the final harmony memory.
+    """
+    if ctrl is None:
+        ctrl = kwargs.pop('ctrl', None)
+
+    id_num = kwargs.pop('id_num', None)
+
+    if ctrl is None:
+        ctrl = estimate_ctrl(parameters, algorithm='hs')
+        print(f"[HS+PBIL] Auto-estimated hyperparameters (problem complexity "
+              f"= {_problem_size(parameters)['complexity']}):")
+    else:
+        print(f"[HS+PBIL] Using provided hyperparameters:")
+
+    print(_describe_ctrl(ctrl, 'hs'))
+    print()
+
+    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num, **kwargs)
+    existing = [init_sol] if init_sol is not None else None
+    solver.run_search(existing_sols=existing)
+    solver.close_files()
+    best = solver.return_best()
+    _print_dashboard(solver, best, algorithm='HS+PBIL')
+    return best
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Unified entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -496,10 +546,12 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, **kwargs):
         return call_banditsa(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     elif algorithm in ('hs', 'harmony', 'harmony_search'):
         return call_harmony(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
+    elif algorithm in ('hspbil', 'harmony_pbil', 'hs_pbil', 'hs+pbil'):
+        return call_harmony_pbil(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     else:
         raise ValueError(
             f"Unknown algorithm '{algorithm}'. "
-            f"Choose 'sa', 'sapbil', 'banditsa', or 'hs'."
+            f"Choose 'sa', 'sapbil', 'banditsa', 'hs', or 'hspbil'."
         )
 
 

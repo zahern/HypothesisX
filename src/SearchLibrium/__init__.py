@@ -111,7 +111,8 @@ try:
 
     from . import misc
     from .sapbil import SAPBIL, ProbabilityMatrix
-    from .call_meta import call_harmony, call_siman, call_parsa, call_search, call_sapbil, estimate_ctrl
+    from .hspbil import HSPBIL
+    from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, estimate_ctrl
 
 except ImportError as e:
     from _choice_model import DiscreteChoiceModel
@@ -130,7 +131,8 @@ except ImportError as e:
     from constraints_builder import ConstraintBuilder, create_constraints
     from search import Parameters
     from sapbil import SAPBIL, ProbabilityMatrix
-    from call_meta import call_siman, call_harmony, call_search, call_sapbil, estimate_ctrl
+    from hspbil import HSPBIL
+    from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, estimate_ctrl
 try:
     from .main import print_ascii_art_logo
 except Exception:

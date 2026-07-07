@@ -137,6 +137,23 @@ class LatentClassMixedLogit:
         # ── Class-specific specification ────────────────────────────────────
         self._class_specs = None
         self._Ks = None  # K per class
+
+        _member_util_exclude = set()
+        if membership_vars is not None:
+            for v in membership_vars:
+                if v in varnames:
+                    _member_util_exclude.add(varnames.index(v))
+        elif member_params_spec is not None:
+            if hasattr(member_params_spec, 'shape'):
+                raw = member_params_spec.ravel() if member_params_spec.ndim > 1 else member_params_spec
+                for v in raw:
+                    if isinstance(v, str) and v != '_inter' and v in varnames:
+                        _member_util_exclude.add(varnames.index(v))
+            else:
+                for v in member_params_spec:
+                    if isinstance(v, str) and v != '_inter' and v in varnames:
+                        _member_util_exclude.add(varnames.index(v))
+
         if class_params_spec is not None:
             self._class_specs = []
             self._Ks = []
@@ -157,9 +174,15 @@ class LatentClassMixedLogit:
             self._Ks = np.array(self._Ks, dtype=int)
             self.K_tot = int(self._Ks.sum())
         else:
-            self._Ks = np.full(self.n_classes, self.K, dtype=int)
-            self._class_specs = [np.arange(self.K, dtype=int)] * self.n_classes
-            self.K_tot = self.n_classes * self.K
+            if _member_util_exclude:
+                utility_idx = [i for i in range(self.K) if i not in _member_util_exclude]
+                self._Ks = np.full(self.n_classes, len(utility_idx), dtype=int)
+                self._class_specs = [np.array(utility_idx, dtype=int)] * self.n_classes
+                self.K_tot = self.n_classes * len(utility_idx)
+            else:
+                self._Ks = np.full(self.n_classes, self.K, dtype=int)
+                self._class_specs = [np.arange(self.K, dtype=int)] * self.n_classes
+                self.K_tot = self.n_classes * self.K
 
         # ── Membership data ────────────────────────────────────────────────
         self._has_membership = False
@@ -237,6 +260,16 @@ class LatentClassMixedLogit:
             return self.l1_penalty * sum(float(np.sum(np.abs(np.asarray(b)))) for b in betas)
         return self.l1_penalty * float(np.sum(np.abs(np.asarray(betas))))
 
+    def _regularize_l2_gammas(self, gammas):
+        if gammas is None or self.l2_penalty == 0:
+            return 0.0
+        return self.l2_penalty * float(np.sum(np.square(np.asarray(gammas))))
+
+    def _regularize_l1_gammas(self, gammas):
+        if gammas is None or self.l1_penalty == 0:
+            return 0.0
+        return self.l1_penalty * float(np.sum(np.abs(np.asarray(gammas))))
+
     def _regularize_l1_grad(self, beta):
         return self.l1_penalty * np.sign(np.asarray(beta, dtype=float))
 
@@ -292,8 +325,8 @@ class LatentClassMixedLogit:
         """
         C = self.n_classes
         Km = self.K_membership
-        gammas = gammas.reshape(C - 1, Km)
-        priors = self._compute_membership_priors(gammas)
+        gammas_arr = gammas.reshape(C - 1, Km)
+        priors = self._compute_membership_priors(gammas_arr)
         log_priors = np.log(np.clip(priors, 1e-300, None))
         ll = np.sum(weights * log_priors)
 
@@ -302,7 +335,22 @@ class LatentClassMixedLogit:
         for c in range(C - 1):
             res_c = residuals[:, c]
             grad[c] = self.X_membership.T @ res_c
-        return -ll, -grad.flatten()
+
+        l2 = self.l2_penalty
+        l1 = self.l1_penalty
+        if l2 > 0:
+            ll -= l2 * np.sum(np.square(gammas_arr))
+        if l1 > 0:
+            ll -= l1 * np.sum(np.abs(gammas_arr))
+
+        neg_obj = -ll
+        neg_grad = -grad
+        if l2 > 0:
+            neg_grad += 2.0 * l2 * gammas_arr
+        if l1 > 0:
+            neg_grad += l1 * np.sign(gammas_arr)
+
+        return neg_obj, neg_grad.flatten()
 
     def _membership_m_step(self, gamma0, weights):
         """M-step for membership (gamma) parameters.
@@ -397,7 +445,12 @@ class LatentClassMixedLogit:
         n_phi = C - 1
         avail = self.avail_backend
         y_b = self.y_backend
-        X_b = self.X_backend
+        X_full = self.X_backend
+        util_spec = self._class_specs[0] if self._class_specs is not None else None
+        if util_spec is not None and len(util_spec) < X_full.shape[2]:
+            X_b = X_full[:, :, util_spec]
+        else:
+            X_b = X_full
         N = int(X_b.shape[0])
         has_memb = bool(self._has_membership and self.optimise_membership
                         and self.K_membership > 0)
@@ -439,6 +492,9 @@ class LatentClassMixedLogit:
             ll = jnp.sum(log_marg)
             ll -= l2 * jnp.sum(jnp.square(betas))
             ll -= l1 * jnp.sum(jnp.abs(betas))
+            if has_memb:
+                ll -= l2 * jnp.sum(jnp.square(gammas))
+                ll -= l1 * jnp.sum(jnp.abs(gammas))
             return -ll
 
         obj, grad_fn = None, None
@@ -565,11 +621,18 @@ class LatentClassMixedLogit:
             y_b = self.y_backend
             av_b = self.avail_backend
             C = self.n_classes
+            K_util = int(self._Ks[0])
+            util_spec = self._class_specs[0] if self._class_specs is not None else None
+
+            if util_spec is not None and len(util_spec) < self.K:
+                X_util = X_b[:, :, util_spec]
+            else:
+                X_util = X_b
 
             @self.jit
             def _jax_negll(betas_flat):
-                betas = betas_flat.reshape(C, self.K)
-                utilities = jnp.einsum("ck,njk->ncj", betas, X_b)
+                betas = betas_flat.reshape(C, K_util)
+                utilities = jnp.einsum("ck,njk->ncj", betas, X_util)
                 utilities = jnp.where(av_b[:, None, :] > 0, utilities, -1e10)
                 utilities = utilities - jnp.max(utilities, axis=2, keepdims=True)
                 exp_u = jnp.exp(utilities) * av_b[:, None, :]
@@ -665,6 +728,8 @@ class LatentClassMixedLogit:
         loglik = float(log_denom.sum())
         loglik -= self._regularize_l2_betas(betas)
         loglik -= self._regularize_l1_betas(betas)
+        loglik -= self._regularize_l2_gammas(gammas)
+        loglik -= self._regularize_l1_gammas(gammas)
 
         new_class_probs = self._normalize_class_probs(posterior.mean(axis=0))
 
@@ -692,6 +757,8 @@ class LatentClassMixedLogit:
         ll = float(logsumexp(log_joint, axis=1).sum())
         ll -= self._regularize_l2_betas(betas)
         ll -= self._regularize_l1_betas(betas)
+        ll -= self._regularize_l2_gammas(gammas)
+        ll -= self._regularize_l1_gammas(gammas)
         return ll
 
     def _fit_em_once(self, rng, betas0=None, class_probs0=None, gammas0=None):
@@ -716,6 +783,8 @@ class LatentClassMixedLogit:
             loglik = float(log_denom.sum())
             loglik -= self._regularize_l2_betas(betas)
             loglik -= self._regularize_l1_betas(betas)
+            loglik -= self._regularize_l2_gammas(gammas)
+            loglik -= self._regularize_l1_gammas(gammas)
 
             class_probs = self._normalize_class_probs(posterior.mean(axis=0))
             for c in range(self.n_classes):
@@ -1096,7 +1165,7 @@ class LatentClassMixedLogit:
         else:
             base_beta = self.class_betas[source_idx]
             rng = np.random.default_rng(self.random_state + next_classes)
-            jitter = rng.normal(scale=jitter_scale, size=self.K)
+            jitter = rng.normal(scale=jitter_scale, size=base_beta.shape[0])
             new_betas = np.vstack([self.class_betas, base_beta + jitter])
 
         new_probs = np.empty(next_classes, dtype=float)
@@ -1552,8 +1621,17 @@ class LatentClassMixedLogit:
                 print(f"    class_{idx}: {share:.6f}")
             print("  Coefficients:")
             for c_idx, beta in enumerate(self.class_betas, start=1):
-                for name, value in zip(self.varnames, beta):
+                idx = self._class_specs[c_idx - 1] if self._class_specs is not None else range(len(beta))
+                for k, value in zip(idx, beta):
+                    name = self.varnames[k]
                     print(f"    class_{c_idx}_{name}: {value:.6f}")
+            if self.class_gammas is not None and self._has_membership and self.optimise_membership:
+                gammas_arr = np.asarray(self.class_gammas)
+                print("  Membership Parameters:")
+                for c in range(self.n_classes - 1):
+                    for k in range(gammas_arr.shape[1]):
+                        label = f"gamma_{c + 1}_{self.membership_vars[k]}"
+                        print(f"    {label}: {gammas_arr[c, k]:.6f}")
             return
 
         params   = stats["params"]
