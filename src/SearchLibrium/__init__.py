@@ -113,6 +113,7 @@ try:
     from .sapbil import SAPBIL, ProbabilityMatrix
     from .hspbil import HSPBIL
     from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, estimate_ctrl
+    from .predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
 
 except ImportError as e:
     from _choice_model import DiscreteChoiceModel
@@ -133,6 +134,7 @@ except ImportError as e:
     from sapbil import SAPBIL, ProbabilityMatrix
     from hspbil import HSPBIL
     from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, estimate_ctrl
+    from predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
 try:
     from .main import print_ascii_art_logo
 except Exception:

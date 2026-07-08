@@ -74,10 +74,19 @@ def _problem_size(parameters):
                 complexity=complexity)
 
 
-def estimate_ctrl(parameters, algorithm='sa'):
+def estimate_ctrl(parameters, algorithm='sa', thorough=False, deep=False):
     """
     Estimate appropriate default hyperparameters for *algorithm* based on
     the problem size encoded in *parameters*.
+
+    Parameters
+    ----------
+    thorough : bool
+        If True, scale up hyperparameters for a more thorough search
+        (3x memory/iterations for HS, 2x for SA).
+    deep : bool
+        If True, apply maximum search depth regardless of problem size.
+        Appropriate for production/publishing runs.
 
     Returns
     -------
@@ -87,6 +96,7 @@ def estimate_ctrl(parameters, algorithm='sa'):
     """
     ps = _problem_size(parameters)
     c  = ps['complexity']
+    scale = 3 if deep else (2 if thorough else 1)
 
     if algorithm == 'sa':
         # Temperature ladder scales with complexity
@@ -96,35 +106,47 @@ def estimate_ctrl(parameters, algorithm='sa'):
 
         if c < 50:
             tI, tF            = 500,   0.01
-            max_temp_steps    = 100
-            max_iter          = 20
+            max_temp_steps    = max(100, 100 * scale)
+            max_iter          = max(20,  20 * scale)
         elif c < 200:
             tI, tF            = 1000,  0.001
-            max_temp_steps    = 200
-            max_iter          = 30
+            max_temp_steps    = max(200, 200 * scale)
+            max_iter          = max(30,  30 * scale)
         elif c < 600:
             tI, tF            = 2000,  0.001
-            max_temp_steps    = 250
-            max_iter          = 40
+            max_temp_steps    = max(250, 250 * scale)
+            max_iter          = max(40,  40 * scale)
         else:
             tI, tF            = 5000,  0.0001
-            max_temp_steps    = 300
-            max_iter          = 50
+            max_temp_steps    = max(300, 300 * scale)
+            max_iter          = max(50,  50 * scale)
+
+        if deep:
+            tI = max(tI, 10000)
+            max_temp_steps = max(max_temp_steps, 500)
 
         ctrl = (tI, tF, max_temp_steps, max_iter)
 
     elif algorithm == 'hs':
         # Harmony memory size and improvisation iterations scale with complexity
         if c < 50:
-            max_mem, maxiter  = 10,  100
+            max_mem, maxiter  = max(10,  10 * scale),  max(100,  100 * scale)
         elif c < 200:
-            max_mem, maxiter  = 15,  300
+            max_mem, maxiter  = max(15,  15 * scale),  max(300,  300 * scale)
         elif c < 600:
-            max_mem, maxiter  = 20,  500
+            max_mem, maxiter  = max(20,  20 * scale),  max(500,  500 * scale)
         else:
-            max_mem, maxiter  = 25,  800
+            max_mem, maxiter  = max(25,  25 * scale),  max(800,  800 * scale)
 
-        ctrl = (max_mem, maxiter, 0.9, 0.6, 0.85, 0.3)
+        # Harmony/pitch rates adapt: wider exploration band for bigger problems
+        if deep or thorough:
+            max_harm, min_harm = 0.95, 0.40
+            max_pitch, min_pitch = 0.92, 0.15
+        else:
+            max_harm, min_harm = 0.90, 0.60
+            max_pitch, min_pitch = 0.85, 0.30
+
+        ctrl = (max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)
 
     else:
         raise ValueError(f"Unknown algorithm '{algorithm}'. Use 'sa' or 'hs'.")
@@ -261,7 +283,7 @@ def _print_dashboard(solver, best_sol, algorithm='SA'):
 # Simulated Annealing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def call_siman(parameters, init_sol=None, ctrl=None, **kwargs):
+def call_siman(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, **kwargs):
     """
     Run Simulated Annealing search.
 
@@ -274,6 +296,10 @@ def call_siman(parameters, init_sol=None, ctrl=None, **kwargs):
     ctrl : tuple, optional
         ``(tI, tF, max_temp_steps, max_iter)``.
         If omitted the values are estimated from the problem size.
+    thorough : bool
+        Scale up parameters for a more thorough search.
+    deep : bool
+        Maximum search depth for production runs.
     **kwargs
         ``id_num``  — run identifier (int, used in log file names).
         Any other kwargs are forwarded to the SA constructor.
@@ -290,8 +316,10 @@ def call_siman(parameters, init_sol=None, ctrl=None, **kwargs):
     id_num = kwargs.pop('id_num', None)
 
     if ctrl is None:
-        ctrl = estimate_ctrl(parameters, algorithm='sa')
-        print(f"[SA] Auto-estimated hyperparameters (problem complexity "
+        ctrl = estimate_ctrl(parameters, algorithm='sa',
+                             thorough=thorough, deep=deep)
+        label = 'DEEP' if deep else ('THOROUGH' if thorough else 'Auto-estimated')
+        print(f"[SA] {label} hyperparameters (problem complexity "
               f"= {_problem_size(parameters)['complexity']}):")
     else:
         print(f"[SA] Using provided hyperparameters:")
@@ -404,7 +432,7 @@ def call_banditsa(parameters, init_sol=None, ctrl=None, **kwargs):
 # Harmony Search
 # ─────────────────────────────────────────────────────────────────────────────
 
-def call_harmony(parameters, init_sol=None, ctrl=None, **kwargs):
+def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, **kwargs):
     """
     Run Harmony Search.
 
@@ -417,6 +445,12 @@ def call_harmony(parameters, init_sol=None, ctrl=None, **kwargs):
     ctrl : tuple, optional
         ``(max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)``.
         If omitted the values are estimated from the problem size.
+    thorough : bool
+        If True, scale up HS parameters for a more thorough search
+        (larger memory, more iterations). Default False.
+    deep : bool
+        If True, apply maximum search depth for production runs.
+        Overrides thorough. Default False.
     **kwargs
         ``id_num`` — run identifier.
 
@@ -431,8 +465,10 @@ def call_harmony(parameters, init_sol=None, ctrl=None, **kwargs):
     id_num = kwargs.pop('id_num', None)
 
     if ctrl is None:
-        ctrl = estimate_ctrl(parameters, algorithm='hs')
-        print(f"[HS] Auto-estimated hyperparameters (problem complexity "
+        ctrl = estimate_ctrl(parameters, algorithm='hs',
+                             thorough=thorough, deep=deep)
+        label = 'DEEP' if deep else ('THOROUGH' if thorough else 'Auto-estimated')
+        print(f"[HS] {label} hyperparameters (problem complexity "
               f"= {_problem_size(parameters)['complexity']}):")
     else:
         print(f"[HS] Using provided hyperparameters:")
@@ -501,7 +537,7 @@ def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
 # Unified entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, **kwargs):
+def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, thorough=False, deep=False, **kwargs):
     """
     Unified search entry point — choose algorithm at runtime.
 
@@ -520,6 +556,10 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, **kwargs):
 
         SA  : ``(tI, tF, max_temp_steps, max_iter)``
         HS  : ``(max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)``
+    thorough : bool
+        Scale up search for more thorough exploration.
+    deep : bool
+        Maximum search depth for production runs.
     **kwargs
         Forwarded to the underlying algorithm function.
 
@@ -533,19 +573,23 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, **kwargs):
     >>> best = call_search(params)                        # SA, auto ctrl
     >>> best = call_search(params, algorithm='banditsa')  # BanditSA, auto ctrl
     >>> best = call_search(params, algorithm='hs')        # HS, auto ctrl
+    >>> best = call_search(params, thorough=True)         # Thorough SA
+    >>> best = call_search(params, algorithm='hs', deep=True)  # Deep HS
     >>> best = call_search(params, ctrl=(500,0.001,80,15))# SA, manual ctrl
     >>> best = call_search(params, algorithm='hs',
     ...                    ctrl=(20, 400, 0.9, 0.6, 0.85, 0.3))
     """
     algorithm = algorithm.lower().strip()
     if algorithm in ('sa', 'siman', 'simulated_annealing'):
-        return call_siman(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
+        return call_siman(parameters, init_sol=init_sol, ctrl=ctrl,
+                          thorough=thorough, deep=deep, **kwargs)
     elif algorithm in ('sapbil', 'sa_pbil', 'sa+pbil', 'pbil'):
         return call_sapbil(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     elif algorithm in ('banditsa', 'bandit_sa', 'bandit-simulated-annealing', 'bsa'):
         return call_banditsa(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     elif algorithm in ('hs', 'harmony', 'harmony_search'):
-        return call_harmony(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
+        return call_harmony(parameters, init_sol=init_sol, ctrl=ctrl,
+                            thorough=thorough, deep=deep, **kwargs)
     elif algorithm in ('hspbil', 'harmony_pbil', 'hs_pbil', 'hs+pbil'):
         return call_harmony_pbil(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     else:
