@@ -36,7 +36,7 @@ class HSPBIL(HarmonySearch):
     """
 
     def __init__(self, param, init_sol, ctrl, idnum=0, **kwargs):
-        super().__init__(param, init_sol, ctrl, idnum=idnum, **kwargs)
+        super().__init__(param, ctrl=ctrl, idnum=idnum)
 
         varnames = list(param.asvarnames or [])
         distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])

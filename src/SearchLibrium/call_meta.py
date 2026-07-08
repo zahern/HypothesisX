@@ -524,7 +524,7 @@ def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
     print(_describe_ctrl(ctrl, 'hs'))
     print()
 
-    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num, **kwargs)
+    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num)
     existing = [init_sol] if init_sol is not None else None
     solver.run_search(existing_sols=existing)
     solver.close_files()
