@@ -104,6 +104,37 @@ class ConstraintBuilder:
         self._print(f"Never include: {variables}")
         return self
     
+    def mutually_exclusive(self, *variables: str) -> 'ConstraintBuilder':
+        """
+        Declare that at most one variable from this group may be included
+        in any model specification.  The search will never add a variable
+        from the group if another member of the group is already present,
+        and will remove extra members if they slip in.
+
+        You may call this method multiple times to define several
+        independent groups.  Each call creates a separate exclusion set.
+
+        Parameters
+        ----------
+        *variables : str
+            Variable names forming a mutually exclusive group
+
+        Returns
+        -------
+        ConstraintBuilder
+            Self for method chaining
+
+        Example
+        -------
+        >>> constraints.mutually_exclusive('SPEED', 'TIME')
+        >>> constraints.mutually_exclusive('LOG_INCOME', 'INCOME_DUMMY')
+        """
+        if 'mutually_exclusive' not in self._constraints:
+            self._constraints['mutually_exclusive'] = []
+        self._constraints['mutually_exclusive'].append(list(variables))
+        self._print(f"Mutually exclusive group: {variables}")
+        return self
+
     def min_behavioral(self, min_count: int, *variables: str) -> 'ConstraintBuilder':
         """
         Require at least ``min_count`` variables from a behavioural pool

@@ -1718,6 +1718,7 @@ class Search():
         asvars = [self.param.avail_asvars[i] for i in asvar_select_pos]
         asvars.extend(self.param.ps_asvars)
         asvars = self.remove_redundant_asvars(asvars, self.param.trans_asvars, self.param.asvarnames)
+        asvars = self._apply_mutual_exclusion_filter(asvars)
         return asvars
     # }
 
@@ -1731,7 +1732,7 @@ class Search():
         isvar_select_pos = [i for i, x in enumerate(ind_availisvar) if x == 1]
         isvars = [self.param.avail_isvars[i] for i in isvar_select_pos]
         isvars.extend(self.param.ps_isvars)
-        #asvars = self.remove_redundant_asvars(asvars, self.param.trans_isvars, self.param.avarnames)
+        isvars = self._apply_mutual_exclusion_filter(isvars)
         return isvars
     # }
 
@@ -2025,9 +2026,12 @@ class Search():
             if 'randvars' in solution:
                 solution['randvars'] = {k: v for k, v in solution['randvars'].items() if k not in never_rand}
         
+        # ── Mutual-exclusion constraint ──
+        self._enforce_mutual_exclusion(solution)
+
         # ── Min-behavioural constraint (soft: at least n from a pool) ──
         self._enforce_min_behavioral(solution)
-        
+
         return solution
     
     def _get_forced_vars(self):
@@ -2086,6 +2090,75 @@ class Search():
             if len(current) <= min_count:
                 protected.update(current)
         return protected
+
+    def _apply_mutual_exclusion_filter(self, varlist):
+        """Given a list of variables, keep at most one per mutual-exclusion group.
+
+        For each group the first variable encountered is kept; subsequent
+        members are dropped.
+        """
+        groups = self._get_mutual_exclusion_groups()
+        if not groups:
+            return varlist
+        blocked = set()
+        for group in groups:
+            seen_first = False
+            for v in varlist:
+                if v in group:
+                    if seen_first:
+                        blocked.add(v)
+                    else:
+                        seen_first = True
+        return [v for v in varlist if v not in blocked]
+
+    def _get_mutual_exclusion_groups(self):
+        """Return the list of mutually-exclusive variable groups, or [].
+
+        Each group is a list[str]; at most one member of each group may
+        appear in a solution.
+        """
+        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+            return []
+        return self.pres_spec_constr.get('mutually_exclusive', [])
+
+    def _get_excluded_by_mutual_group(self, already_present: set):
+        """Return the set of variables that are blocked because a partner
+        from the same mutually-exclusive group is *already_present*.
+        """
+        excluded = set()
+        for group in self._get_mutual_exclusion_groups():
+            gset = set(group)
+            if gset & already_present:
+                excluded.update(gset)
+        return excluded
+
+    def _enforce_mutual_exclusion(self, solution):
+        """Ensure at most one variable per mutually-exclusive group is present.
+
+        If more than one is found, keep the first (arbitrary) and
+        remove the rest from asvars, isvars, and class/member specs.
+        """
+        groups = self._get_mutual_exclusion_groups()
+        if not groups:
+            return
+        all_v = self._all_vars_in_solution(solution)
+        for group in groups:
+            present = [v for v in group if v in all_v]
+            if len(present) <= 1:
+                continue
+            keep = set(present[:1])
+            remove = set(present[1:])
+            for v in remove:
+                if 'asvars' in solution and v in solution['asvars']:
+                    solution['asvars'] = [x for x in solution['asvars'] if x != v]
+                if 'isvars' in solution and v in solution['isvars']:
+                    solution['isvars'] = [x for x in solution['isvars'] if x != v]
+                if 'randvars' in solution and v in solution['randvars']:
+                    del solution['randvars'][v]
+                if 'bcvars' in solution and v in solution['bcvars']:
+                    solution['bcvars'] = [x for x in solution['bcvars'] if x != v]
+                if 'corvars' in solution and v in solution['corvars']:
+                    solution['corvars'] = [x for x in solution['corvars'] if x != v]
 
     def _apply_latent_class_constraints(self, solution, lc_constraints):
         """Apply constraints specific to latent class models."""
@@ -2415,6 +2488,8 @@ class Search():
     def perturb_add_asfeature(self, solution):
     # {
         candidate = [var for var in self.param.asvarnames if var not in solution['asvars']]
+        blocked = self._get_excluded_by_mutual_group(set(solution.get('asvars', [])) | set(solution.get('isvars', [])))
+        candidate = [v for v in candidate if v not in blocked]
         if len(candidate) > 0:
             new_asvar = self.random_choice(candidate)
             solution = self.add_asvar(new_asvar, solution)
@@ -2488,6 +2563,8 @@ class Search():
     def perturb_add_isfeature(self, solution):
     # {
         candidate = [var for var in self.param.isvarnames if var not in solution['isvars']]
+        blocked = self._get_excluded_by_mutual_group(set(solution.get('asvars', [])) | set(solution.get('isvars', [])))
+        candidate = [v for v in candidate if v not in blocked]
         if len(candidate) > 0:
         # {
             add_isvar = self.random_choice(candidate)
