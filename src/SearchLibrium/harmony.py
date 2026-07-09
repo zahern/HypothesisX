@@ -1647,6 +1647,11 @@ class HarmonySearch(Search):
     ''' call_search can use the same driver code as call_siman.          '''
     ''' ---------------------------------------------------------------- '''
 
+    def copy_solution(self, sol):
+        """Deep-copy a Solution — mirror of Search.copy_solution for SA-compat."""
+        import copy
+        return copy.deepcopy(sol)
+
     def run_search(self, existing_sols=None):
     # {
         """Override the inherited no-op run_search with the real HS loop."""
