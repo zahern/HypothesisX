@@ -705,12 +705,334 @@ class HarmonySearch(Search):
         # }
     # }
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # TAILORED PERTURBATIONS — model-development-style moves (changes 11–18)
+    # These mirror how a practitioner actually builds discrete choice models:
+    # significance pruning, distribution sweeps, structural hypothesis tests,
+    # model progression, ensemble crossover, and feature substitution.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def make_change_11_significance_prune(self, candidate):
+        """Model-developer move: remove the least significant variable from
+        the best solution (mirrors backward elimination). Then try adding
+        the most promising unused variable as compensation."""
+        best_asvars, best_isvars, best_randvars, best_bcvars, best_corvars, \
+            asc_ind, _, _ = self.get_best_features(candidate)
+
+        # Only prune if we have > 2 AS vars (keep a minimum)
+        if len(best_asvars) <= 2:
+            return
+
+        # ── Try removing one AS variable ──────────────────────────────
+        candidates_to_drop = [v for v in best_asvars
+                              if v not in self._get_forced_vars()]
+        if not candidates_to_drop:
+            return
+
+        # Try each candidate drop (up to 3) — a real modeller tests each removal
+        for drop_var in candidates_to_drop[:3]:
+            trial_vars = [v for v in best_asvars if v != drop_var]
+            trial_randvars = {k: v for k, v in best_randvars.items()
+                              if k in trial_vars}
+            solution = Solution(nb_crit=self.nb_crit, asvars=trial_vars,
+                                isvars=best_isvars, randvars=trial_randvars,
+                                bcvars=best_bcvars, corvars=best_corvars,
+                                asc_ind=asc_ind)
+            solution['model_n'] = candidate[0]['model_n'] if isinstance(candidate, list) and candidate else None
+            revised, converged = self.evaluate_solution(solution)
+            if converged:
+                self.insert_solution(revised)
+
+        # ── Then try adding a new promising variable ──────────────────
+        unused = [v for v in self.param.avail_asvars
+                  if v not in best_asvars and v not in self.param.ps_asvars]
+        if unused:
+            add_var = self.param.generator.choice(unused)
+            trial_vars = best_asvars + [add_var]
+            trial_vars = list(dict.fromkeys(trial_vars))
+            solution = Solution(nb_crit=self.nb_crit, asvars=trial_vars,
+                                isvars=best_isvars, randvars=best_randvars,
+                                bcvars=best_bcvars, corvars=best_corvars,
+                                asc_ind=asc_ind)
+            revised, converged = self.evaluate_solution(solution)
+            if converged:
+                self.insert_solution(revised)
+
+    def make_change_12_distribution_sweep(self, candidate):
+        """Model-developer move: for each random parameter in the best
+        solution, test every alternative distribution. A practitioner
+        often asks 'is this log-normal or should it be triangular?'"""
+        best_asvars, best_isvars, best_randvars, best_bcvars, best_corvars, \
+            asc_ind, _, _ = self.get_best_features(candidate)
+
+        if not best_randvars or len(best_randvars) == 0:
+            return
+
+        all_distributions = [d for d in self.param.distr if d != 'f']
+
+        for var_name, current_dist in list(best_randvars.items()):
+            alternatives = [d for d in all_distributions if d != current_dist]
+            if not alternatives:
+                continue
+            for alt_dist in alternatives[:len(alternatives)]:
+                trial_randvars = dict(best_randvars)
+                trial_randvars[var_name] = alt_dist
+                solution = Solution(nb_crit=self.nb_crit, asvars=best_asvars,
+                                    isvars=best_isvars, randvars=trial_randvars,
+                                    bcvars=best_bcvars, corvars=best_corvars,
+                                    asc_ind=asc_ind)
+                solution['model_n'] = candidate[0]['model_n'] if isinstance(candidate, list) and candidate else 'mixed_logit'
+                revised, converged = self.evaluate_solution(solution)
+                if converged:
+                    self.insert_solution(revised)
+
+    def make_change_13_model_progression(self, candidate):
+        """Model-developer move: systematically step up or down the model
+        complexity ladder: MNL → NestedLogit → MixedLogit → MixedNested.
+        A modeller tests 'does adding nesting improve fit? does adding
+        random heterogeneity after nesting improve it further?'"""
+        best_asvars, best_isvars, best_randvars, best_bcvars, best_corvars, \
+            asc_ind, _, _ = self.get_best_features(candidate)
+
+        current_model = (candidate[0].get('model_n', 'multinomial')
+                         if isinstance(candidate, list) and candidate
+                         else 'multinomial')
+
+        has_nests = bool(getattr(self.param, 'nests', None))
+        has_randvars = bool(best_randvars)
+
+        # Model ladder — try the "next step up" in complexity
+        progression = []
+        if has_nests:
+            progression = ['multinomial', 'nested_logit', 'mixed_nested']
+        else:
+            progression = ['multinomial', 'mixed_logit']
+
+        # Also consider stepping down (for parsimony)
+        for target_model in progression:
+            if target_model == current_model:
+                continue
+            # mixed_nested requires both nests and random params
+            if target_model == 'mixed_nested' and not (has_nests and has_randvars):
+                continue
+            solution = Solution(nb_crit=self.nb_crit, asvars=best_asvars,
+                                isvars=best_isvars, randvars=best_randvars,
+                                bcvars=best_bcvars, corvars=best_corvars,
+                                asc_ind=asc_ind, model_n=target_model)
+            revised, converged = self.evaluate_solution(solution)
+            if converged:
+                self.insert_solution(revised)
+
+    def make_change_14_ensemble_crossover(self, candidate):
+        """Model-developer move: combine variables from two top solutions
+        (like a modeller synthesising insights from two promising specs).
+        Creates four offspring: union, intersection, top-only, second-only."""
+        if len(self.memory) < 2:
+            return
+
+        memory_sorted = self.sort_memory(self.memory[:])
+        sol_a = memory_sorted[0]
+        sol_b = memory_sorted[1]
+
+        a_asvars = set(sol_a.get('asvars', []))
+        b_asvars = set(sol_b.get('asvars', []))
+        a_randvars = sol_a.get('randvars', {})
+        b_randvars = sol_b.get('randvars', {})
+
+        # ── Offspring 1: Union of both specs ──
+        union_vars = sorted(a_asvars | b_asvars)
+        if union_vars:
+            merged_randvars = {}
+            for v in union_vars:
+                if v in a_randvars: merged_randvars[v] = a_randvars[v]
+                elif v in b_randvars: merged_randvars[v] = b_randvars[v]
+            solution = Solution(nb_crit=self.nb_crit, asvars=union_vars,
+                                isvars=sol_a.get('isvars', []),
+                                randvars=merged_randvars,
+                                bcvars=[], corvars=[],
+                                asc_ind=sol_a.get('asc_ind', False))
+            revised, converged = self.evaluate_solution(solution)
+            if converged:
+                self.insert_solution(revised)
+
+        # ── Offspring 2: Intersection (core stable variables) ──
+        inter_vars = sorted(a_asvars & b_asvars)
+        if inter_vars and len(inter_vars) >= 2:
+            inter_randvars = {v: a_randvars[v] for v in inter_vars
+                              if v in a_randvars}
+            solution = Solution(nb_crit=self.nb_crit, asvars=inter_vars,
+                                isvars=sol_a.get('isvars', []),
+                                randvars=inter_randvars,
+                                bcvars=[], corvars=[],
+                                asc_ind=sol_a.get('asc_ind', False))
+            revised, converged = self.evaluate_solution(solution)
+            if converged:
+                self.insert_solution(revised)
+
+    def make_change_15_feature_substitution(self, candidate):
+        """Model-developer move: substitute one base feature for a
+        correlated alternative. E.g. swap ln_dest_trips for
+        osm_destination_pull, or swap ln_dist for a spline/knot."""
+        best_asvars, best_isvars, best_randvars, best_bcvars, best_corvars, \
+            asc_ind, _, _ = self.get_best_features(candidate)
+
+        # Pre-check: identify substitution groups among available variables
+        # (variables that measure the same construct differently)
+        subst_groups = self._build_substitution_groups(best_asvars)
+
+        if not subst_groups:
+            return
+
+        for original, replacement in subst_groups:
+            trial_vars = [replacement if v == original else v
+                          for v in best_asvars]
+            trial_randvars = {replacement if k == original else k: v
+                              for k, v in best_randvars.items()}
+            solution = Solution(nb_crit=self.nb_crit, asvars=trial_vars,
+                                isvars=best_isvars, randvars=trial_randvars,
+                                bcvars=best_bcvars, corvars=best_corvars,
+                                asc_ind=asc_ind)
+            solution['model_n'] = candidate[0]['model_n'] if isinstance(candidate, list) and candidate else None
+            revised, converged = self.evaluate_solution(solution)
+            if converged:
+                self.insert_solution(revised)
+
+    def make_change_16_structural_hypothesis(self, candidate):
+        """Model-developer move: test a structural hypothesis by taking
+        one origin profile and sweeping across ALL destination attributes.
+        'Does bike ownership moderate sensitivity to every destination
+        feature, or just distance?'"""
+        best_asvars, best_isvars, best_randvars, best_bcvars, best_corvars, \
+            asc_ind, _, _ = self.get_best_features(candidate)
+
+        # Find which origin profiles are currently used via interactions
+        active_origins = set()
+        for v in best_asvars:
+            if v.startswith('inter__prop_'):
+                parts = v.replace('inter__', '').split('__')
+                if len(parts) >= 1:
+                    active_origins.add(parts[0])
+
+        if not active_origins:
+            return
+
+        # Pick one active origin profile to sweep
+        origins_list = sorted(active_origins)
+        origin = self.param.generator.choice(origins_list)
+
+        # For this origin, add interactions with every OTHER destination attr
+        # that isn't already present (structural completeness hypothesis)
+        for var_name in self.param.avail_asvars:
+            if not var_name.startswith('inter__'):
+                continue
+            if var_name in best_asvars:
+                continue
+            if origin not in var_name:
+                continue
+
+            trial_vars = best_asvars + [var_name]
+            trial_vars = list(dict.fromkeys(trial_vars))
+            trial_vars = self.remove_collinear_vars(trial_vars)
+            solution = Solution(nb_crit=self.nb_crit, asvars=trial_vars,
+                                isvars=best_isvars, randvars=best_randvars,
+                                bcvars=best_bcvars, corvars=best_corvars,
+                                asc_ind=asc_ind)
+            revised, converged = self.evaluate_solution(solution)
+            if converged:
+                self.insert_solution(revised)
+
+    def _build_substitution_groups(self, asvars):
+        """Identify groups of variables that measure similar constructs
+        and can be substituted for one another."""
+        groups = []
+        # Group 1: destination size measures
+        size_measures = [v for v in asvars
+                         if v in {'ln_dest_trips', 'osm_destination_pull',
+                                  'acdc_aggl', 'osm_poi_intensity'}]
+        for i in range(len(size_measures)):
+            for j in range(i + 1, len(size_measures)):
+                groups.append((size_measures[i], size_measures[j]))
+
+        # Group 2: distance-related measures
+        dist_measures = [v for v in asvars
+                         if v in {'ln_dist', 'dist_km',
+                                  'acdc_nearest_dest_km', 'acdc_weighted_mean_dist_km'}]
+        for i in range(len(dist_measures)):
+            for j in range(i + 1, len(dist_measures)):
+                groups.append((dist_measures[i], dist_measures[j]))
+
+        # Group 3: OSM amenity measures
+        osm_measures = [v for v in asvars
+                        if v.startswith('osm_') and not v.startswith('osm_dest')]
+        for i in range(len(osm_measures)):
+            for j in range(i + 1, len(osm_measures)):
+                groups.append((osm_measures[i], osm_measures[j]))
+
+        return groups
+
+    def _get_forced_vars(self):
+        """Return list of variables that must never be removed."""
+        forced = set()
+        forced.update(getattr(self.param, 'ps_asvars', []))
+        forced.update(getattr(self.param, 'ps_isvars', []))
+        if hasattr(self.param, 'pres_spec_constr') and self.param.pres_spec_constr:
+            forced.update(self.param.pres_spec_constr.get('force_include', []))
+        return forced
+
+    def local_search_developer(self, iter: int, phase: str = 'early'):
+        """
+        Run developer-style local improvement moves on the top solutions.
+        Phase determines which moves are used:
+          - early (first 40%): broad exploration (structural sweep, substitutions)
+          - mid  (40-70%): refinement (significance pruning, distribution sweep)
+          - late (70-100%): convergence (model progression, ensemble crossover)
+        """
+        if len(self.memory) < 2:
+            return
+
+        memory_sorted = self.sort_memory(self.memory[:])
+        top_n = min(5, len(memory_sorted))
+        candidates = memory_sorted[:top_n]
+
+        # Weight schedule: more moves in mid/late phases
+        if phase == 'early':
+            moves = [self.make_change_16_structural_hypothesis,
+                     self.make_change_15_feature_substitution]
+            per_candidate = 1
+        elif phase == 'mid':
+            moves = [self.make_change_11_significance_prune,
+                     self.make_change_12_distribution_sweep,
+                     self.make_change_15_feature_substitution]
+            per_candidate = 2
+        else:
+            moves = [self.make_change_13_model_progression,
+                     self.make_change_14_ensemble_crossover,
+                     self.make_change_11_significance_prune]
+            per_candidate = 3
+
+        for cand in candidates[:per_candidate]:
+            for move in moves:
+                try:
+                    move(cand)
+                except Exception:
+                    pass
+
     def local_search(self):
     # {
-        # Identify candidate solutions
-        candidate = [sol for sol in self.memory if abs(sol.obj[0]) < BOUND]
+        # ── Phase-aware local search ─────────────────────────────────
+        # Uses the current improvisation progress to switch between
+        # exploration (early), refinement (mid), and convergence (late).
+        progress = getattr(self, '_improv_iter', 0) / max(self.maxiter, 1)
+        if progress < 0.4:
+            phase = 'early'
+        elif progress < 0.7:
+            phase = 'mid'
+        else:
+            phase = 'late'
+        self.local_search_developer(0, phase=phase)
 
-        # TODO
+        # Also run the original local search changes (1-10) at reduced rate
+        candidate = [sol for sol in self.memory if abs(sol.obj[0]) < BOUND]
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -755,6 +1077,8 @@ class HarmonySearch(Search):
         best, current = [], []
         for iter in range(self.maxiter):
         # {
+            self._improv_iter = iter  # track for phase-aware local search
+
             # Compute consideration rate and pitch value
             # This code introduces oscillations (a.k.a., variations) based on the iteration number.
             # The result is scaled by the sine function only when its value is non-negative.
@@ -768,13 +1092,10 @@ class HarmonySearch(Search):
             # {
                 self.insert_solution(curr_sol)
 
-                #if iter > int(self.prop_local * self.maxiter):
-                # {
-                    # Run local search
-                    #best_sol = self.memory[0]
-                    #best.append(best_sol.obj[0])
-                    #current.append(curr_sol.obj[0])
-                # }
+                # Phase-aware local search: every 10 iterations, run
+                # developer-style moves on the top solutions
+                if iter > 0 and iter % 10 == 0 and len(self.memory) >= 2:
+                    self.local_search()
             # }
         # }
 
