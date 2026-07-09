@@ -123,6 +123,9 @@ class HarmonySearch(Search):
         super().__init__(param)           # Call base class constructor
         self.idnum = idnum or 'HS'
 
+        self.min_classes = getattr(param, 'min_classes', 1)
+        self.max_classes = getattr(param, 'max_classes', 5)
+
         # Unpack ctrl tuple if provided; otherwise use defaults estimated later
         if ctrl is not None:
             max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch = (

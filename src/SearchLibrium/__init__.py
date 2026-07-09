@@ -97,6 +97,7 @@ try:
     from .multinomial_logit import MultinomialLogit
     from .MixedLogit import MixedLogit
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
+    from .mixed_nested import MixedNested
     from .Halton import Halton
     from .rrm import RandomRegret
     from .mixedrrm import MixedRandomRegret
@@ -120,6 +121,7 @@ except ImportError as e:
     from multinomial_logit import MultinomialLogit
     from MixedLogit import MixedLogit
     from multinomial_nested import NestedLogit, MultiLayerNestedLogit
+    from mixed_nested import MixedNested
     from Halton import Halton
     from rrm import RandomRegret
     from mixedrrm import MixedRandomRegret

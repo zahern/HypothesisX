@@ -124,6 +124,7 @@ class ModelRegistry:
             'ordered_logit',
             'ordered_probit',
             'nested_logit',
+            'mixed_nested',
         ]
         if model_dict is not None:
             self.reset_models(model_dict)
@@ -1789,6 +1790,7 @@ class Search():
     def valid_model_names(self, randvars=None):
         active_randvars = randvars or {}
         candidate_models = list(self.param.avail_models)
+        has_nests = bool(getattr(self.param, 'nests', None))
 
         if active_randvars:
             # Random coefficients require mixed models; deterministic models excluded
@@ -1796,12 +1798,19 @@ class Search():
                 m for m in candidate_models
                 if m not in {"multinomial", "nested_logit", "random_regret", "ordered_logit", "ordered_probit"}
             ]
+            # mixed_nested only valid when nests are configured
+            if not has_nests and "mixed_nested" in candidate_models:
+                candidate_models = [m for m in candidate_models if m != "mixed_nested"]
         else:
             # No random coefficients – exclude mixed models
             candidate_models = [
                 m for m in candidate_models
-                if m not in {"mixed_logit", "mixed_random_regret"}
+                if m not in {"mixed_logit", "mixed_random_regret", "mixed_nested"}
             ]
+
+        # nested_logit only valid when nests are configured
+        if not has_nests and "nested_logit" in candidate_models:
+            candidate_models = [m for m in candidate_models if m != "nested_logit"]
 
         if not self.param.choice_set or len(self.param.choice_set) <= 2:
             candidate_models = [m for m in candidate_models if m not in {"ordered_logit", "ordered_probit"}]
@@ -4138,8 +4147,56 @@ class Search():
         tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, {}, [], [], converged, sol)
         return tuple_
 
+    def evaluate_mixed_nested(self, sol):
+        """Evaluates a Mixed Nested Logit model (nested structure + random params)."""
+        try:
+            from mixed_nested import MixedNested
+        except ImportError:
+            from .mixed_nested import MixedNested
 
+        sol = self.apply_constraints(sol)
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        randvars = sol.get('randvars', {})
 
+        nests = self.param.nests
+        lambdas = self.param.lambdas
+        n_draws = getattr(self.param, 'n_draws', 200)
+
+        all_vars = as_vars + is_vars
+        if len(all_vars) == 0:
+            raise ValueError('need at least one variable for MixedNested evaluation')
+        all_vars = [var for var in self.param.varnames if var in all_vars]
+
+        X = self.param.df[all_vars].values
+        y = self.param.choices
+
+        model = MixedNested(_jax=getattr(self.param, '_jax', True))
+        model.setup(
+            X=X, y=y,
+            varnames=all_vars,
+            isvars=is_vars,
+            alts=self.param.alt_var,
+            ids=self.param.choice_id,
+            nests=nests,
+            lambdas=lambdas,
+            randvars=randvars,
+            panels=self.param.ind_id,
+            fit_intercept=asc_ind,
+            n_draws=n_draws,
+        )
+        model.fit()
+
+        sol['model'] = model
+        sol['coeff'] = model.coeff_est
+        converged = model.converged
+
+        aic = getattr(model, 'aic', float('inf'))
+        bic = getattr(model, 'bic', float('inf'))
+        loglik = getattr(model, 'loglik', float('-inf'))
+        mae = getattr(model, 'mae', float('inf'))
+
+        tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, randvars, [], [], converged, sol)
+        return tuple_
 
 
     def evaluate_nested_logit_ml(self, sol):
@@ -4403,6 +4460,8 @@ class Search():
             return self.evaluate_mixed_rrm(sol)
         elif model_n == 'nested_logit':
             return self.evaluate_nested_logit(sol)
+        elif model_n == 'mixed_nested':
+            return self.evaluate_mixed_nested(sol)
         elif model_n == 'ordered_logit':
             return self.evaluate_ordered_logit(sol)
         elif bool(sol.get('randvars')):
