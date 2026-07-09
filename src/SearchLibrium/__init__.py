@@ -113,7 +113,7 @@ try:
     from . import misc
     from .sapbil import SAPBIL, ProbabilityMatrix
     from .hspbil import HSPBIL
-    from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, estimate_ctrl
+    from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, call_banditsa, call_parcopsa, estimate_ctrl
     from .predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
 
 except ImportError as e:
@@ -135,7 +135,7 @@ except ImportError as e:
     from search import Parameters
     from sapbil import SAPBIL, ProbabilityMatrix
     from hspbil import HSPBIL
-    from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, estimate_ctrl
+    from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, call_banditsa, call_parsa, call_parcopsa, estimate_ctrl
     from predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
 try:
     from .main import print_ascii_art_logo

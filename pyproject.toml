@@ -65,6 +65,9 @@ dev = [
 
 [project.urls]
 Homepage = "https://pypi.org/project/SearchLibrium/"
+Repository = "https://github.com/zahern/HypothesisX"
+Issues = "https://github.com/zahern/HypothesisX/issues"
+Documentation = "https://pypi.org/project/SearchLibrium/"
 
 [project.scripts]
 realpython = "SearchLibrium.__main__:main"

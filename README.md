@@ -4,8 +4,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/SearchLibrium.svg)](https://pypi.org/project/SearchLibrium/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/zahern/HypothesisX/actions/workflows/ci.yml/badge.svg)](https://github.com/zahern/HypothesisX/actions/workflows/ci.yml)
+[![GitHub](https://img.shields.io/badge/GitHub-HypothesisX-lightgrey?logo=github)](https://github.com/zahern/HypothesisX)
 
-**Automated discrete choice model search powered by Simulated Annealing, Harmony Search, and JAX-accelerated MLE.**
+**Automated discrete choice model search powered by Simulated Annealing, Bandit-guided SA, Harmony Search, SA+PBIL, HS+PBIL, Parallel SA, and JAX-accelerated MLE.**
 
 SearchLibrium searches over model specifications — which variables to include, whether parameters should be random, which transformations to apply, and which model class to use — and returns the best converged, all-significant model according to your chosen criterion (BIC, AIC, log-likelihood, MAE, or multi-objective combinations).
 
@@ -85,16 +86,19 @@ A **run dashboard** is printed automatically at the end of every search, showing
 
 ## How the search works
 
-The search uses **Simulated Annealing (SA)** to explore the space of model specifications:
+The search uses **metaheuristic optimisation** (SA, BanditSA, Harmony Search,
+SA+PBIL, HS+PBIL, or parallel variants) to explore the space of model
+specifications:
 
 ```text
 generate starting solution
-  └─ for each SA temperature step
+  └─ for each iteration / temperature step / improvisation
        └─ perturb current specification → guaranteed distinct from current
             ├─ fit model with JAX-accelerated MLE
             ├─ run backward elimination (remove insignificant vars, refit)
-            ├─ accept if converged + Metropolis criterion satisfied
-            └─ update best solution
+            ├─ accept if converged + acceptance criterion satisfied
+            │    (Metropolis, dominance, or pitch adjustment)
+            └─ update best solution / harmony memory
 print dashboard
 ```
 
@@ -396,26 +400,41 @@ python -m SearchLibrium --test_search_nest  # run nested logit search
 
 ## Search algorithms
 
-Both algorithms share a **consistent interface** through `call_search`:
+All algorithms share a **consistent interface**.  The library auto-estimates
+hyperparameters from problem size when you omit `ctrl`:
 
 ```python
-from SearchLibrium import call_search, estimate_ctrl
+from SearchLibrium import (call_search, call_siman, call_harmony, call_sapbil,
+                            call_banditsa, call_harmony_pbil,
+                            call_parsa, call_parcopsa, estimate_ctrl)
 
-# Auto-estimate hyperparameters from problem size (recommended)
-best = call_search(params)                            # SA by default
-best = call_search(params, algorithm='hs')            # Harmony Search
+# Unified entry point — auto hyperparameters (recommended)
+best = call_search(params)                              # SA (default)
+best = call_search(params, algorithm='hs')              # Harmony Search
+best = call_search(params, algorithm='sapbil')          # SA + PBIL
+best = call_search(params, algorithm='banditsa')        # Bandit-guided SA
+best = call_search(params, algorithm='hspbil')          # HS + PBIL
 
-# Manual hyperparameters
-best = call_search(params, ctrl=(1000, 0.001, 100, 20))           # SA
-best = call_search(params, algorithm='hs',
-                   ctrl=(20, 500, 0.9, 0.6, 0.85, 0.3))          # HS
-
-# Inspect auto-estimated ctrl before running
+# Inspect auto-estimated hyperparameters before running
 ctrl = estimate_ctrl(params, algorithm='sa')
 print(ctrl)
 ```
 
+### Algorithm reference
+
+| Function | Description | Population-based | Key idea |
+| -------- | ----------- | :---: | -------- |
+| `call_siman` | Simulated Annealing | | Metropolis acceptance with temperature cooling |
+| `call_banditsa` | Bandit-guided SA | | Thompson Sampling to choose perturbation actions |
+| `call_sapbil` | SA + PBIL | ✓ | Probability matrix learns from accepted solutions to bias perturbations |
+| `call_harmony` | Harmony Search | ✓ | Memory-based improvisation with pitch adjustment |
+| `call_harmony_pbil` | HS + PBIL | ✓ | Harmony Search with PBIL-guided pitch perturbation |
+| `call_parsa` | Parallel SA | | Multiple independent SA solvers running in parallel |
+| `call_parcopsa` | Parallel Cooperative SA | ✓ | Parallel SA with periodic best-solution sharing |
+
 ### Simulated Annealing (`call_siman` / `algorithm='sa'`)
+
+Control tuple: `(tI, tF, max_temp_steps, max_iter)`
 
 | Parameter | Meaning |
 | --------- | ------- |
@@ -430,17 +449,57 @@ best = call_siman(params, ctrl=(1000, 0.001, 100, 20), id_num=1)
 
 ### Harmony Search (`call_harmony` / `algorithm='hs'`)
 
+Control tuple: `(max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)`
+
 | Parameter | Meaning |
 | --------- | ------- |
 | `max_mem` | Harmony memory size (population) |
 | `maxiter` | Improvisation iterations |
-| `max_harm` | Max harmony consideration rate |
-| `min_harm` | Min harmony consideration rate |
+| `max_harm` | Max harmony memory consideration rate |
+| `min_harm` | Min harmony memory consideration rate |
 | `max_pitch` | Max pitch adjustment rate |
 | `min_pitch` | Min pitch adjustment rate |
 
 ```python
 best = call_harmony(params, ctrl=(20, 400, 0.9, 0.6, 0.85, 0.3), id_num=1)
+```
+
+### SA + PBIL (`call_sapbil` / `algorithm='sapbil'`)
+
+Population-Based Incremental Learning coupled with Simulated Annealing.
+Maintains a probability matrix over the search decisions (inclusion,
+randomness, distribution, correlation, Box-Cox) and updates it from
+accepted solutions using a temperature-coupled learning rate.
+
+```python
+best = call_sapbil(params, id_num=1)
+```
+
+### HS + PBIL (`call_harmony_pbil` / `algorithm='hspbil'`)
+
+Harmony Search with PBIL-guided pitch adjustment.  Instead of uniform-random
+perturbations during pitch adjustment, the PBIL probability matrix guides
+add/remove decisions based on learned probabilities.
+
+```python
+best = call_harmony_pbil(params, id_num=1)
+```
+
+### Bandit-guided SA (`call_banditsa` / `algorithm='banditsa'`)
+
+Uses Thompson Sampling over a multi-armed bandit of perturbation actions
+(add asvar, remove asvar, change distribution, ...).  Actions that
+historically led to accepted solutions are more likely to be chosen again.
+
+```python
+best = call_banditsa(params, id_num=1)
+```
+
+### Parallel SA variants
+
+```python
+best = call_parsa(params, nthrds=4)       # 4 independent SA solvers
+best = call_parcopsa(params, nthrds=8)    # 8 SA solvers sharing best periodically
 ```
 
 ### Auto hyperparameter estimation
@@ -452,8 +511,6 @@ problem complexity (`n_vars × n_alts × n_models`, doubled for random params):
 from SearchLibrium import estimate_ctrl
 ctrl_sa = estimate_ctrl(params, algorithm='sa')
 ctrl_hs = estimate_ctrl(params, algorithm='hs')
-print('SA ctrl:', ctrl_sa)
-print('HS ctrl:', ctrl_hs)
 ```
 
 Complexity buckets:
@@ -466,6 +523,64 @@ Complexity buckets:
 | > 600 | 5 000 | 250 | 30 | 25 | 800 |
 
 
+
+---
+
+## Constraints
+
+Use `ConstraintBuilder` to enforce model structure rules during the search:
+
+```python
+from SearchLibrium import Parameters, ConstraintBuilder, call_siman
+
+constraints = ConstraintBuilder()
+
+# ── Inclusion / exclusion ──
+constraints.force_include('TIME', 'COST')      # must always appear
+constraints.never_include('ID', 'DUMMY')       # must never appear
+
+# ── Mutually exclusive groups ──
+# At most ONE variable from each group may appear in any solution.
+# The search will never add a partner if a group member is already
+# present, and will remove extras if they slip through.
+constraints.mutually_exclusive('SPEED', 'TIME')                  # speed OR time, never both
+constraints.mutually_exclusive('LOG_INCOME', 'INCOME_DUMMY')     # independent group
+
+# ── Minimum behavioural content ──
+# Require at least N variables from a pool without locking in which ones.
+constraints.min_behavioral(2, 'PRICE', 'BIKELANE', 'DIST6', 'RECRE')
+
+# ── Random-parameter rules ──
+constraints.force_random('TIME', distribution='n')    # must have random parameter
+constraints.exclude_random('HEADWAY')                 # must never be random
+
+# ── Attach constraints to the Parameters object ──
+params = Parameters(
+    criterions   = [("bic", -1)],
+    df           = df,
+    varnames     = varnames,
+    asvarnames   = varnames,
+    choice_set   = choice_set,
+    choices      = df["CHOICE"].values,
+    alt_var      = df["alt"].values,
+    choice_id    = df["custom_id"].values,
+    ind_id       = df["ID"].values,
+    base_alt     = "SM",
+    models       = ["multinomial", "mixed_logit"],
+    allow_random = True,
+    p_val        = 0.05,
+    pre_spec_constraints = constraints.dict(),   # ◄ attach here
+)
+
+best = call_siman(params, id_num=1)
+```
+
+The constraint enforcement happens at every stage:
+- **Solution generation** — filtered so violations are never created
+- **Perturbation / mutation** — blocked from adding violating variables
+- **Post-evaluation cleanup** — extra members are removed if somehow present
+
+---
 
 ## License
 
