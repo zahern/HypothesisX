@@ -1223,6 +1223,20 @@ class Search():
         self.idnum = idnum
         self.local_impr = 0
 
+        # ── Banlist: specifications that have already failed ────────────
+        # Signatures (SHA-256 hashes) of specs that crashed or returned
+        # non-converged / infinite results.  These are never visited again.
+        self._banlist = set()
+
+        # ── Variable-level failure tracker ──────────────────────────────
+        # {varname: count} — how many times each variable appeared in a
+        # failed (non-convergent, exception, infinite-LL) specification.
+        # When count exceeds _var_attrition_limit the variable is removed
+        # from the available lists so it never appears again for the
+        # remainder of the search.
+        self._var_failures = {}
+        self._var_attrition_limit = 15    # failures before permanent removal
+
         # ── Latent class feature toggles ────────────────────────────────
         self.optimise_class = kwargs.get('optimise_class', False)
         self.optimise_membership = kwargs.get('optimise_membership', False)
@@ -2159,6 +2173,24 @@ class Search():
                     solution['bcvars'] = [x for x in solution['bcvars'] if x != v]
                 if 'corvars' in solution and v in solution['corvars']:
                     solution['corvars'] = [x for x in solution['corvars'] if x != v]
+
+    def _cull_attrited_vars(self):
+        """Remove variables from the available pools that have exceeded the
+        failure threshold.  Once removed they stay out for the rest of
+        the search, freeing the algorithm to focus on viable variables.
+        """
+        limit = self._var_attrition_limit
+        forced = set(self._get_forced_vars())
+        to_kill = {v for v, cnt in self._var_failures.items()
+                   if cnt >= limit and v not in forced}
+        if not to_kill:
+            return
+        for v in sorted(to_kill):
+            if hasattr(self.param, 'avail_asvars') and v in self.param.avail_asvars:
+                self.param.avail_asvars.remove(v)
+            if hasattr(self.param, 'avail_isvars') and v in self.param.avail_isvars:
+                self.param.avail_isvars.remove(v)
+            print(f"  [attrition] '{v}' removed from search after {self._var_failures[v]} failures")
 
     def _apply_latent_class_constraints(self, solution, lc_constraints):
         """Apply constraints specific to latent class models."""
@@ -3685,6 +3717,11 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def evaluate_solution(self, sol):
     # {
+        sig = self.setup_signature(sol)
+        if sig in self._banlist:
+            sol['converged'] = False
+            return (sol, False)
+
         as_vars, is_vars, rand_vars, bc_vars, corvars, asc_ind = self.get_components(sol)
         all_vars = is_vars + as_vars
         all_vars = [var for var in self.param.varnames if var in all_vars]
@@ -3692,17 +3729,32 @@ class Search():
         # Estimate model if input variables are present in specification
         if not all_vars:
             sol['converged'] = False
+            self._banlist.add(sig)
             return (sol, False)
 
-        # Run backward elimination if enabled (default True), otherwise a single fit
-        all_sig = getattr(self.param, 'all_sig', True)
-        if all_sig:
-            sol, converged = self.backward_eliminate(sol)
-        else:
-            result = self.evaluate_model(sol)
-            aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol = result
-            sol['bcvars'] = bcvars
-            sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
+        try:
+            # Run backward elimination if enabled (default True), otherwise a single fit
+            all_sig = getattr(self.param, 'all_sig', True)
+            if all_sig:
+                sol, converged = self.backward_eliminate(sol)
+            else:
+                result = self.evaluate_model(sol)
+                aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol = result
+                sol['bcvars'] = bcvars
+                sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
+        except Exception:
+            sol['converged'] = False
+            self._banlist.add(sig)
+            if hasattr(self, 'best_solution') and self.best_solution is not None:
+                fail_vars = set(as_vars + is_vars)
+                base_as = set(self.best_solution.get('asvars', []))
+                base_is = set(self.best_solution.get('isvars', []))
+                new_vars = fail_vars - (base_as | base_is)
+                if new_vars:
+                    for v in new_vars:
+                        self._var_failures[v] = self._var_failures.get(v, 0) + 1
+                    self._cull_attrited_vars()
+            return (sol, False)
 
         if converged or (isinstance(sol.get('loglik'), float) and math.isfinite(sol.get('loglik', float('nan')))):
         # {
@@ -3720,6 +3772,20 @@ class Search():
         # {
             self.not_converged += 1
             sol['converged'] = False
+            # ── Banlist: never visit this exact specification again
+            self._banlist.add(sig)
+            # ── Variable attrition: only blame vars ADDED vs the
+            #     currently-accepted best (neighbour) model.
+            #     Skip entirely on init / startup — no baseline yet.
+            if hasattr(self, 'best_solution') and self.best_solution is not None:
+                fail_vars = set(as_vars + is_vars)
+                base_as = set(self.best_solution.get('asvars', []))
+                base_is = set(self.best_solution.get('isvars', []))
+                new_vars = fail_vars - (base_as | base_is)
+                if new_vars:
+                    for v in new_vars:
+                        self._var_failures[v] = self._var_failures.get(v, 0) + 1
+                    self._cull_attrited_vars()
             # ── Convergence diagnostic: explain why the model did not converge
             self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
         # }
@@ -4009,17 +4075,8 @@ class Search():
         model.fit()
 
 
-    #def fit_random_regret(self, X=None, y=None, varnames = None, alts = None, isvars = None, transvars = None, ids =None, weights = None, panels = None, avail = None, base_alt = None, df,, **kwargs):
-        #if df # does not have co
-
-    def fit_random_regret(self, df):
-        model = RandomRegret(df=df, short=False, normalize=True)
-        #a = (df, s)
-       # model.setup_long()
-       # model.setup(X, y, varnames,alts , isvars, transvars, ids, weights, panels, avail, base_alt)
-        model.fit()
-        model.report()
-        return model
+    # fit_random_regret moved below with transvars support
+    # (see evaluate_rrm section)
 
 
 
@@ -4166,40 +4223,27 @@ class Search():
 
     def evaluate_nested_logit(self, sol):
         """Evaluates a Nested Logit model."""
-        # Extract relevant model parameters
-        sol =self.apply_constraints(sol)
+        sol = self.apply_constraints(sol)
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
-        logging.info('testing state')
-        state = sol['state']
-
-        #state['nest_vars']
-        #sol = self.apply_constraints(sol)
-        #sol = self.repair_solution(sol)
-        # Define nests and lambda values (adjust based on your data)
-        # TODO NEED TO FEED IN THE NESTS FROM params
+        bc_vars = self.define_bc_vars(sol)
         nests = self.param.nests
         lambdas = self.param.lambdas
-        #lambdas_mapping = self.param.lambdas_mapping
 
-        # Filter the variables to include in the model
         all_vars = as_vars + is_vars
         if len(all_vars) == 0:
             raise ValueError('need a variable: todo debug why')
         all_vars = [var for var in self.param.varnames if var in all_vars]
         nest_vars = [var for var in self.param.varnest if var in all_vars]
 
-        #to do if nest_vars is None repair
-        # if nest vars)not in all_var repair
-
-        # Prepare data for the nested logit model
         X, y = self.param.df[all_vars].values, self.param.choices
         X_nest = self.param.df[nest_vars]
 
-        # Fit the Nested Logit model
         model = NestedLogit(_jax=getattr(self.param, '_jax', True))
-        model.setup(X=X, X_nest = X_nest, y=y, varnames=all_vars, isvars=is_vars,
+        model.setup(X=X, X_nest=X_nest, y=y, varnames=all_vars, isvars=is_vars,
                     alts=self.param.alt_var, ids=self.param.choice_id,
-                    nests=nests, lambdas=lambdas, fit_intercept=asc_ind, return_grad=self.param.grad, return_hess=self.param.hess)
+                    nests=nests, lambdas=lambdas, fit_intercept=asc_ind,
+                    transvars=bc_vars,
+                    return_grad=self.param.grad, return_hess=self.param.hess)
 
         model.fit()
 
@@ -4234,6 +4278,7 @@ class Search():
         sol = self.apply_constraints(sol)
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
         randvars = sol.get('randvars', {})
+        bc_vars = self.define_bc_vars(sol)
 
         nests = self.param.nests
         lambdas = self.param.lambdas
@@ -4257,6 +4302,7 @@ class Search():
             nests=nests,
             lambdas=lambdas,
             randvars=randvars,
+            transvars=bc_vars,
             panels=self.param.ind_id,
             fit_intercept=asc_ind,
             n_draws=n_draws,
@@ -4277,30 +4323,26 @@ class Search():
 
 
     def evaluate_nested_logit_ml(self, sol):
-        """Evaluates a Nested Logit model."""
-        # Extract relevant model parameters
+        """Evaluates a Multi-Layer Nested Logit model."""
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        bc_vars = self.define_bc_vars(sol)
 
-        # Define nests and lambda values (adjust based on your data)
-        #TODO NEED TO FEED IN THE NESTS FROM params
         nests = self.param.nests
         lambdas = self.param.lambdas
         lambdas_mapping = self.param.lambdas_mapping
 
-        # Filter the variables to include in the model
         all_vars = as_vars + is_vars
-        if len(all_vars) ==0:
+        if len(all_vars) == 0:
             raise ValueError('need a variable: todo debug why')
         all_vars = [var for var in self.param.varnames if var in all_vars]
 
-        # Prepare data for the nested logit model
         X, y = self.param.df[all_vars].values, self.param.choices
 
-        # Fit the Nested Logit model
         model = MultiLayerNestedLogit()
         model.setup(X=X, y=y, varnames=all_vars, isvars=is_vars,
-                            alts=self.param.alt_var, ids=self.param.choice_id,
-                            nests=nests, lambdas=lambdas, lambdas_mapping = lambdas_mapping, fit_intercept=asc_ind,  return_grad=False)
+                    alts=self.param.alt_var, ids=self.param.choice_id,
+                    nests=nests, lambdas=lambdas, lambdas_mapping=lambdas_mapping,
+                    transvars=bc_vars, fit_intercept=asc_ind, return_grad=False)
 
         model.fit()
 
@@ -4383,26 +4425,42 @@ class Search():
 
         return sub, all_attr_vars
 
-    def fit_random_regret(self, df, use_jax=True):
-        model = RandomRegret(df=df, short=False, normalize=True)
-        if use_jax:
-            model.fit_jax()
+    def fit_random_regret(self, df, use_jax=True, transvars=None):
+        if transvars:
+            # Build model via setup() so transvars flow through pre_process
+            # RRM uses attribute_vars as the model variables
+            all_vars = list(df.columns.difference(['id', 'alt', 'choice', 'weight']))
+            X = df[all_vars].values
+            y = df['choice'].values.astype(np.int32)
+            alts = df['alt'].values.astype(np.int32)
+            ids = df['id'].values.astype(np.int32)
+            model = RandomRegret()
+            model.setup(X=X, y=y, varnames=all_vars, alts=alts, ids=ids,
+                        transvars=[v for v in transvars if v in all_vars])
+            if use_jax:
+                model.fit_jax()
+            else:
+                model.fit()
         else:
-            model.fit()
+            model = RandomRegret(df=df, short=False, normalize=True)
+            if use_jax:
+                model.fit_jax()
+            else:
+                model.fit()
         model.report()
         return model
 
     def evaluate_rrm(self, sol):
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        bc_vars = self.define_bc_vars(sol)
+        bc_vars = [v for v in bc_vars if v not in self.param.isvarnames]
 
         df, attr_vars = self._build_rrm_df(self.param.df, as_vars, is_vars)
-        model = self.fit_random_regret(df=df)
+        model = self.fit_random_regret(df=df, transvars=bc_vars)
         sol['model']  = model
         sol['coeff']  = model.coeff_est if hasattr(model, 'coeff_est') else model.beta
         converged     = model.converged
         aic, bic, loglik = model.aic, model.bic, model.loglik
-        bc_vars       = self.define_bc_vars(sol)
-        bc_vars       = [v for v in bc_vars if v not in self.param.isvarnames]
         rand_vars, cor_vars = {}, []
 
         if self.mae_is_an_objective():
@@ -4432,7 +4490,8 @@ class Search():
         try:
             model.setup(X=X, y=y, varnames=all_vars, alts=self.param.alt_var,
                         isvars=is_vars, ids=self.param.choice_id,
-                        randvars=rand_vars, panels=self.param.ind_id,
+                        randvars=rand_vars, transvars=bc_vars,
+                        panels=self.param.ind_id,
                         avail=self.param.avail, base_alt=self.param.base_alt,
                         maxiter=self.param.maxiter, ftol=self.param.ftol,
                         gtol=self.param.gtol)
@@ -4457,12 +4516,13 @@ class Search():
     def evaluate_ordered_logit(self,sol):
 
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        bc_vars = self.define_bc_vars(sol)
+        bc_vars = [var for var in bc_vars if var not in self.param.isvarnames]
 
 
         all_vars = as_vars + is_vars
 
         all_vars = [var for var in self.param.varnames if var in all_vars]
-        all_vars = all_vars
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         #df_long = misc.wide_to_long(self.param.df, id_col='id', alt_list=self.param.alt_var, alt_name='alt')
@@ -4470,13 +4530,13 @@ class Search():
         #y = df_long['choice']
         X, y = self.param.df[all_vars], self.param.choices
         J = len(np.unique(self.param.alt_var))
-        model = self.fit_ordered_logit(X=X, y=y, ids = self.param.choice_id, varnames = all_vars, choices = J)
-        sol['model'] = model  # Store the model object
+        model = self.fit_ordered_logit(X=X, y=y, ids=self.param.choice_id,
+                                       varnames=all_vars, choices=J,
+                                       transvars=bc_vars)
+        sol['model'] = model
         sol['coeff'] = model.coeff_est
         converged = model.converged
         aic, bic, loglik = model.aic, model.bic, model.loglik
-        bc_vars = self.define_bc_vars(sol)
-        bc_vars = [var for var in bc_vars if var not in self.param.isvarnames]
         alts = self.param.alt_var
         rand_vars, cor_vars = {}, []
 
@@ -4498,7 +4558,7 @@ class Search():
         return tuple
 
 
-    def fit_ordered_logit(self, X, y, ids, varnames, choices):
+    def fit_ordered_logit(self, X, y, ids, varnames, choices, transvars=None):
 
 
         moll = OrderedLogitLong(X=X.values,
@@ -4509,7 +4569,8 @@ class Search():
                                 distr='logit',
                                 start=None,
                                 normalize=False,
-                                fit_intercept=False)
+                                fit_intercept=False,
+                                transvars=transvars or [])
 
         moll.fit(method='BFGS')
         moll.report()
