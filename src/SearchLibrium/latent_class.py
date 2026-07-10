@@ -1305,6 +1305,41 @@ class LatentClassMixedLogit:
         ll -= self._regularize_l1_betas(betas)
         return ll
 
+    def _autograd_hessian(self, params: np.ndarray) -> np.ndarray | None:
+        """Hessian via JAX autograd — exact analytical second derivatives.
+
+        Only works when JAX is enabled, all classes share the same
+        variable set (``len(set(self._Ks)) == 1``), and the JIT-compiled
+        ``_negloglik_flat`` function is available.  Returns ``None``
+        if any precondition is not met (caller should fall back to
+        ``_numerical_hessian``).
+        """
+        if not self._jax_enabled:
+            return None
+        if len(set(self._Ks)) != 1:
+            return None
+
+        cache_key = "_cached_autograd_hessian_fn"
+        if hasattr(self, cache_key):
+            hess_fn = getattr(self, cache_key)
+        else:
+            jax_cache_key = "_jax_full_obj"
+            cached = getattr(self, jax_cache_key, None)
+            fn = cached[0] if cached else None
+            if fn is None:
+                return None
+            try:
+                hess_fn = self.jit(self.jax.hessian(fn))
+            except Exception:
+                return None
+            setattr(self, cache_key, hess_fn)
+
+        try:
+            H = hess_fn(self.jnp.asarray(params, dtype=self.jnp.float64))
+            return np.asarray(H, dtype=float)
+        except Exception:
+            return None
+
     def _numerical_hessian(self, params: np.ndarray, eps: float = 1e-4) -> np.ndarray:
         """Numerical Hessian of the log-likelihood via central finite differences.
 
@@ -1419,13 +1454,16 @@ class LatentClassMixedLogit:
             params = np.concatenate([phi_vals, beta_flat])
             n_gamma = 0
 
-        # ── Numerical Hessian → covariance ────────────────────────────────
-        H = self._numerical_hessian(params, eps=eps)
-        info = -H
-
-        cond_number = np.nan
-        cov = None
+        # ── Hessian → covariance ───────────────────────────────────────────
         se_method = "hessian"
+        H_a = self._autograd_hessian(params)
+        if H_a is not None and np.isfinite(H_a).all():
+            info = H_a   # autograd: hessian(-negloglik) = -hessian(loglik)
+            se_method = "autograd-hessian"
+        else:
+            H = self._numerical_hessian(params, eps=eps)
+            info = -H
+            se_method = "numerical-hessian"
 
         try:
             eigvals = np.linalg.eigvalsh(info)
