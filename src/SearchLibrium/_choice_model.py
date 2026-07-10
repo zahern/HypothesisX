@@ -357,10 +357,33 @@ class DiscreteChoiceModel(ABC):
         # {
             if self.method == "bfgs":
                 self.stderr = np.sqrt(np.abs(np.diag(result.hess_inv)))
+                std_err_estimated = True
 
             if self.method == "l-bfgs-b":
                 hess = result['hess_inv'].todense()
                 self.stderr = np.sqrt(np.abs(np.diag(np.array(hess))))
+                std_err_estimated = True
+        # }
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Fallback: some models (e.g. MixedLogit with the default
+        # "slsqp" method) compute and stash a numerical Hessian inverse
+        # directly on the result dict (result['hess_inv']) instead of
+        # setting self.Hinv or using scipy's bfgs/l-bfgs-b machinery.
+        # The two checks above only recognise "bfgs"/"l-bfgs-b", so without
+        # this fallback self.stderr silently stays all-zero for every other
+        # method even though a usable Hessian was already computed.
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if not std_err_estimated and 'hess_inv' in result and result['hess_inv'] is not None:
+        # {
+            hess_inv = result['hess_inv']
+            hess_inv = hess_inv.todense() if hasattr(hess_inv, 'todense') else hess_inv
+            diag_arr_tmp = np.diag(np.array(hess_inv))
+            pos_vals_idx = [ii for ii, el in enumerate(diag_arr_tmp) if el > 0]
+            diag_arr = np.zeros(len(diag_arr_tmp))
+            diag_arr[pos_vals_idx] = diag_arr_tmp[pos_vals_idx]
+            self.stderr = np.sqrt(np.abs(diag_arr))
+            std_err_estimated = not np.isnan(self.stderr).any()
         # }
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
