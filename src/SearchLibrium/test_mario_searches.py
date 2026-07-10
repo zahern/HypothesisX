@@ -64,7 +64,8 @@ def load_berlin() -> pd.DataFrame:
 
 def build_berlin_parameters(df: pd.DataFrame,
                              n_draws: int = 1000,
-                             de_maxiter: int = 3) -> Parameters:
+                             de_maxiter: int = 3,
+                             de_init: bool = True) -> Parameters:
     return Parameters(
         criterions=[['bic', -1]],
         df=df,
@@ -85,7 +86,7 @@ def build_berlin_parameters(df: pd.DataFrame,
         models=['mixed_logit'],
         avail=None,
         verbose=False,
-        de_init=True,
+        de_init=de_init,
         de_popsize=4,
         de_maxiter=de_maxiter,
         de_tol=0.1,
@@ -117,7 +118,8 @@ def load_electricity() -> pd.DataFrame:
 
 def build_electricity_parameters(df: pd.DataFrame,
                                   n_draws: int = 1000,
-                                  de_maxiter: int = 3) -> Parameters:
+                                  de_maxiter: int = 3,
+                                  de_init: bool = True) -> Parameters:
     return Parameters(
         criterions=[['bic', -1]],
         df=df,
@@ -138,7 +140,7 @@ def build_electricity_parameters(df: pd.DataFrame,
         models=['mixed_logit'],
         avail=None,
         verbose=False,
-        de_init=True,
+        de_init=de_init,
         de_popsize=4,
         de_maxiter=de_maxiter,
         de_tol=0.1,
@@ -288,6 +290,10 @@ def main():
         '--de_maxiter', type=int, default=30,
         help="DE warm-start max iterations (default: 30; use 3 for fast test)"
     )
+    parser.add_argument(
+        '--no-de', action='store_true',
+        help="Disable Differential Evolution warm-start for Mixed Logit (faster)"
+    )
 
     args = parser.parse_args()
 
@@ -305,13 +311,15 @@ def main():
         if dataset == 'berlin':
             df = load_berlin()
             parameters = build_berlin_parameters(
-                df, n_draws=args.n_draws, de_maxiter=args.de_maxiter
+                df, n_draws=args.n_draws, de_maxiter=args.de_maxiter,
+                de_init=not args.no_de
             )
             default_ctrl = BERLIN_CTRL_DEFAULT
         else:
             df = load_electricity()
             parameters = build_electricity_parameters(
-                df, n_draws=args.n_draws, de_maxiter=args.de_maxiter
+                df, n_draws=args.n_draws, de_maxiter=args.de_maxiter,
+                de_init=not args.no_de
             )
             default_ctrl = ELECTRICITY_CTRL_DEFAULT
 

@@ -591,7 +591,7 @@ class Parameters:
         ftol=1e-6, gtol=1e-6, gtol_membership_func=1e-5, pre_spec_constraints = None,
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
-
+        de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
         intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
 
         
@@ -678,11 +678,11 @@ class Parameters:
         # reduction: equivalent to ~2x draws for normal-based distributions.
         # shuffled=True applies Owen scrambling to reduce inter-dimension correlation.
         self.halton_opts = kwargs.get('halton_opts', {'antithetic': True})
-        self.de_init = kwargs.get('de_init', False)
-        self.de_popsize = kwargs.get('de_popsize', 4)
-        self.de_maxiter = kwargs.get('de_maxiter', 3)
-        self.de_tol = kwargs.get('de_tol', 0.5)
-        self.de_polish = kwargs.get('de_polish', False)
+        self.de_init = de_init
+        self.de_popsize = de_popsize
+        self.de_maxiter = de_maxiter
+        self.de_tol = de_tol
+        self.de_polish = de_polish
 
         self.intercept_opts = intercept_opts
         self.base_alt = base_alt

@@ -285,6 +285,11 @@ best = call_siman(params, init_sol=None, id_num=1)
 | `all_sig` | bool | `True` | Enforce all-significant via backward elimination at each evaluation |
 | `n_draws` | int | `1000` | Halton draws for mixed model simulation |
 | `maxiter` | int | `2000` | Maximum MLE iterations per model evaluation |
+| `de_init` | bool | `False` | Turn on Differential Evolution warm start before gradient MLE |
+| `de_popsize` | int | `4` | DE population size (only when `de_init=True`) |
+| `de_maxiter` | int | `3` | Max DE generations before handing off to L-BFGS-B |
+| `de_tol` | float | `0.5` | DE convergence tolerance |
+| `de_polish` | bool | `False` | Run L-BFGS-B polish pass after DE converges |
 
 ### Random parameter distributions
 
@@ -339,6 +344,38 @@ rrm.report()
 # Mixed RRM
 mrrm = MixedRandomRegret(df=df)
 mrrm.fit()
+```
+
+### Differential Evolution warm start
+
+By default, MLE optimisation starts from a naive zero/random guess.  If your
+problem has a difficult likelihood surface (e.g. latent class models with many
+parameters) the solver can get stuck in poor local optima.  Set `de_init=True`
+on `Parameters` to run a Differential Evolution pass before the gradient-based
+MLE — this explores the parameter space globally, then hands the best candidate
+to L-BFGS-B for refinement.
+
+```python
+params = Parameters(
+    ...,
+    de_init     = True,    # turn ON DE warm start (off by default)
+    de_popsize  = 6,       # DE population size
+    de_maxiter  = 20,      # max DE generations
+    de_tol      = 0.1,     # DE convergence tolerance
+    de_polish   = False,   # run L-BFGS-B polish after DE
+)
+```
+
+DE adds overhead (~ `de_popsize * de_maxiter` extra function evaluations before
+every model fit), so keep it **off by default** for quick SA/Harmony runs on
+well-behaved MNL/MXL problems.  Turn it **on** for latent-class models, large
+random-parameter sets, or any problem where the MLE frequently converges to a
+bad local optimum.
+
+You can also pass `de_init=False` explicitly to ensure it stays off regardless
+of any preset:
+```python
+params = Parameters(..., de_init=False)
 ```
 
 ---
