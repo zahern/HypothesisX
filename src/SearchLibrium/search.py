@@ -684,6 +684,10 @@ class Parameters:
         self.de_tol = de_tol
         self.de_polish = de_polish
 
+        # ── Regularisation (primarily for latent class) ──────────────
+        self.l1_penalty = kwargs.get('l1_penalty', 0.0)
+        self.l2_penalty = kwargs.get('l2_penalty', 0.1)
+
         self.intercept_opts = intercept_opts
         self.base_alt = base_alt
         self.val_share = val_share
@@ -4013,6 +4017,8 @@ class Search():
             random_state=seed if seed is not None else 0,
             optimise_membership=optimise_membership,
             membership_maxiter=100,
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.0),
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.0),
         )
 
         membership_vars = None
@@ -4213,6 +4219,65 @@ class Search():
             model.summarise()
         tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
         return tuple
+    # }
+
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Fit and Evaluate Latent Class Model              '''
+    ''' ---------------------------------------------------------- '''
+
+    def evaluate_lc(self, sol):
+    # {
+        sol = self.apply_constraints(sol)
+        as_vars = sol.get('asvars', [])
+        is_vars = sol.get('isvars', [])
+        asc_ind = sol.get('asc_ind', False)
+        bc_vars = self.define_bc_vars(sol)
+        all_vars = [var for var in self.param.varnames if var in (as_vars + is_vars)]
+
+        class_params_spec = sol.get('class_params_spec', None)
+        member_params_spec = sol.get('member_params_spec', None)
+        num_classes = getattr(self.param, 'num_classes', 2)
+
+        X = self.param.df[all_vars].values
+        y = self.param.choices
+        ids = self.param.choice_id if self.param.choice_id is not None else self.param.ind_id
+
+        alts = self.param.alt_var
+        if alts is None:
+            alts = np.ones(len(y), dtype=int)
+
+        model = self.fit_lcm(
+            X=X, y=y, varnames=all_vars,
+            class_params_spec=class_params_spec,
+            member_params_spec=member_params_spec,
+            num_classes=num_classes,
+            ids=ids,
+            transvars=bc_vars,
+            maxiter=self.param.maxiter,
+            gtol=self.param.gtol,
+            avail=self.param.avail,
+            weights=self.param.weights,
+            alts=alts,
+            base_alt=self.param.base_alt,
+        )
+
+        sol['model'] = model
+        sol['coeff'] = model.coeff_est
+        sol['model_n'] = 'latent_class'
+        converged = model.converged
+
+        aic = getattr(model, 'aic', float('inf'))
+        bic = getattr(model, 'bic', float('inf'))
+        loglik = getattr(model, 'loglik', float('-inf'))
+
+        mae = float('inf')
+
+        if getattr(self.param, 'verbose', False):
+            model.summarise()
+
+        tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, {}, bc_vars, [], converged, sol)
+        return tuple_
     # }
 
 
@@ -4582,6 +4647,10 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def evaluate_model(self, sol):
     # {
+        # ── Latent class override: if param says latent, do latent ──
+        if getattr(self.param, 'latent_class', False):
+            return self.evaluate_lc(sol)
+
         model_n = sol.get('model_n', '')
 
         # ── Pre-fit collinearity / prerequisite check ────────────────
