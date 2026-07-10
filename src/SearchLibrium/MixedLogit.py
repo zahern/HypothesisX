@@ -597,6 +597,14 @@ class MixedLogit(DiscreteChoiceModel):
             H = self.get_hessian(result['x'], self._get_loglik_gradient)
             result['hess_inv'] = np.linalg.inv(H)
         # }
+        else:
+            # ── Non-L-BFGS-B path (e.g. JAX): compute Hessian numerically
+            #     so post_process can extract standard errors
+            try:
+                H = self.get_hessian(result['x'], self._get_loglik_gradient, eps=1e-6)
+                result['hess_inv'] = np.linalg.inv(H)
+            except Exception:
+                pass
 
         if self.save_fitted_params:
             self.compute_fitted_params(self.y, self.p, self.panel_info, self.Br)
@@ -796,6 +804,21 @@ class MixedLogit(DiscreteChoiceModel):
 
             result = sp_min(
                 _obj, betas, jac=True, method=self.method, options=opts)
+
+            # ── JAX autograd Hessian for standard errors ───────────────
+            try:
+                hess_cache_key = _cache_key + ('hess',)
+                _compiled_hess = self._mxl_jit_cache.get(hess_cache_key)
+                if _compiled_hess is None:
+                    _compiled_hess = jax.jit(jax.hessian(_fn))
+                    self._mxl_jit_cache[hess_cache_key] = _compiled_hess
+                b_opt = jnp.array(result['x'], dtype=jnp.float64)
+                H = _compiled_hess(b_opt, X_jax, y_jax, pi_jax, draws_jax)
+                H_np = np.asarray(H, dtype=float)
+                result['hess_inv'] = np.linalg.inv(H_np)
+            except Exception:
+                pass
+
             return result
 
         except Exception as e:

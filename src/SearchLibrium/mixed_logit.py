@@ -619,6 +619,12 @@ class MixedLogit(DiscreteChoiceModel):
             H = get_hessian(result['x'], self._get_loglik_gradient)
             result['hess_inv'] = np.linalg.inv(H)
         # }
+        else:
+            try:
+                H = get_hessian(result['x'], self._get_loglik_gradient, eps=1e-6)
+                result['hess_inv'] = np.linalg.inv(H)
+            except Exception:
+                pass
 
         if self.save_fitted_params:
             self.compute_fitted_params(self.y, self.p, self.panel_info, self.Br)
