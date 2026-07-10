@@ -1454,17 +1454,19 @@ class LatentClassMixedLogit:
             params = np.concatenate([phi_vals, beta_flat])
             n_gamma = 0
 
-        # ── Hessian → covariance ───────────────────────────────────────────
-        se_method = "hessian"
+        # ── JAX autograd Hessian → covariance (strict: no numerical fallback) ──
         H_a = self._autograd_hessian(params)
-        if H_a is not None and np.isfinite(H_a).all():
-            info = H_a   # autograd: hessian(-negloglik) = -hessian(loglik)
-            se_method = "autograd-hessian"
-        else:
-            H = self._numerical_hessian(params, eps=eps)
-            info = -H
-            se_method = "numerical-hessian"
+        if H_a is None or not np.isfinite(H_a).all():
+            raise RuntimeError(
+                "JAX autograd Hessian unavailable — cannot compute standard errors. "
+                "Ensure JAX is installed, the model was fit with _jax=True (default), "
+                "and all latent classes share the same variable set."
+            )
+        info = H_a   # hessian(-negloglik) = -hessian(loglik) = observed info
+        se_method = "autograd-hessian"
 
+        cond_number = np.nan
+        cov = None
         try:
             eigvals = np.linalg.eigvalsh(info)
             cond_number = float(eigvals.max() / max(eigvals.min(), 1e-300))
