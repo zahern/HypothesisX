@@ -456,7 +456,7 @@ class MixedLogit(DiscreteChoiceModel):
         bnds = [[bound[1][0]] * bound[1][1] for bound in bound_dict.items() if bound[1][1] > 0]
         bnds = list(itertools.chain.from_iterable(bnds))
 
-        print(f"[MXL] Starting beta seed length={n_coeff}, first_values={betas[:min(8, len(betas))]!r}")
+        #print(f"[MXL] Starting beta seed length={n_coeff}, first_values={betas[:min(8, len(betas))]!r}")
 
         if self.de_init:
             print(f"[MXL] DE init enabled: popsize={self.de_popsize}, maxiter={self.de_maxiter}, tol={self.de_tol}, polish={self.de_polish}")
@@ -524,12 +524,12 @@ class MixedLogit(DiscreteChoiceModel):
         # }
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-        print(f"[MXL] Minimization start with betas first_values={betas[:min(8, len(betas))]!r}")
+        #print(f"[MXL] Minimization start with betas first_values={betas[:min(8, len(betas))]!r}")
         try:
             before_fun = self.get_loglik_gradient(betas, self.X, self.y, self.panel_info,
                                                  draws, drawstrans, self.weights,
                                                  self.avail, self.batch_size)[0]
-            print(f"[MXL] Minimization obj before={before_fun:.6g}")
+            #print(f"[MXL] Minimization obj before={before_fun:.6g}")
         except Exception as e:
             print(f"[MXL] Could not evaluate initial objective before minimization: {e}")
 

@@ -110,7 +110,7 @@ def timer(name="Code block"):
     start_time = time.time()
     yield  # Run the block of code inside the context
     end_time = time.time()
-    print(f"{name} executed in {end_time - start_time:.4f} seconds")
+    #print(f"{name} executed in {end_time - start_time:.4f} seconds")
 
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS - BOUNDS ON NUMERICAL VALUES                     '''
@@ -732,7 +732,7 @@ class MultinomialLogit(DiscreteChoiceModel):
             else:
                 with timer("Minimization"):
                     result = self.optimize(betas, X, y, weights, avail)
-                    print(result.fun)
+                    #print(result.fun)
                     self.robust = False
                 #result = jax.scipy.optimize.minimize(self.get_loglik_and_gradient, betas, args=args, method = 'BFGS')
                 #print(result.fun)

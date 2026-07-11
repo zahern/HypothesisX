@@ -374,8 +374,8 @@ class SA(Search):
         # Define a member function for the perturbation function
         PerturbFn = Callable[[], None]
         self.perturb_function: PerturbFn = self.perturb_single if self.nb_crit == 1 else self.perturb_multi
-        print(self.nb_crit, 'q')
-        print('n')
+        #print(self.nb_crit, 'q')
+        #print('n')
 
     # }
     @classmethod
