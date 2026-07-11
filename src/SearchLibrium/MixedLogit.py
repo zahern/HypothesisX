@@ -459,12 +459,13 @@ class MixedLogit(DiscreteChoiceModel):
         print(f"[MXL] Starting beta seed length={n_coeff}, first_values={betas[:min(8, len(betas))]!r}")
 
         if self.de_init:
-            print(f"[MXL] DE init enabled: popsize={self.de_popsize}, maxiter={self.de_maxiter}, tol={self.de_tol}, polish={self.de_polish}")
+            _v = getattr(self, 'verbose_de', False)
+            if _v: print(f"[MXL] DE init enabled: popsize={self.de_popsize}, maxiter={self.de_maxiter}, tol={self.de_tol}, polish={self.de_polish}")
             try:
                 before_de_obj = self.get_loglik_gradient(betas, self.X, self.y, self.panel_info,
                                                         draws, drawstrans, self.weights,
                                                         self.avail, self.batch_size)[0]
-                print(f"[MXL] DE before: obj={before_de_obj:.6g}")
+                if _v: print(f"[MXL] DE before: obj={before_de_obj:.6g}")
 
                 def _de_obj(x):
                     return self.get_loglik_gradient(x, self.X, self.y, self.panel_info,
@@ -495,23 +496,22 @@ class MixedLogit(DiscreteChoiceModel):
                     workers=1,
                 )
                 de_improved = False
-                print(f"[MXL] DE completed: success={de_result.success}, nit={de_result.nit}, message={de_result.message}")
+                if _v: print(f"[MXL] DE completed: success={de_result.success}, nit={de_result.nit}, message={de_result.message}")
                 if de_result.success:
                     de_obj = self.get_loglik_gradient(de_result.x, self.X, self.y, self.panel_info,
                                                      draws, drawstrans, self.weights,
                                                      self.avail, self.batch_size)[0]
-                    print(f"[MXL] DE after: obj={de_obj:.6g}")
+                    if _v: print(f"[MXL] DE after: obj={de_obj:.6g}")
                     de_improved = de_obj < before_de_obj
                     if de_improved:
                         betas = de_result.x
-                        print(f"[MXL] DE best seed first_values={betas[:min(8, len(betas))]!r}")
-                        print("[MXL] Differential evolution initialization improved the objective; starting minimise from DE seed.")
-                    else:
+                        if _v: print(f"[MXL] DE best seed first_values={betas[:min(8, len(betas))]!r}")
+                    elif _v:
                         print(f"[MXL] Differential evolution did not beat the original start ({de_obj:.6g} >= {before_de_obj:.6g}); keeping original start.")
-                if not de_improved:
+                if not de_improved and _v:
                     print(f"[MXL] Differential evolution initialization rejected because it did not improve the starting objective. Using original seed.")
             except Exception as e:
-                print(f"[MXL] Differential evolution initialization failed: {e}")
+                if _v: print(f"[MXL] Differential evolution initialization failed: {e}")
 
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
         if dev.using_gpu:  # {
