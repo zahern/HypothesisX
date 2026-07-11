@@ -686,7 +686,7 @@ class Parameters:
 
         # ── Regularisation (primarily for latent class) ──────────────
         self.l1_penalty = kwargs.get('l1_penalty', 0.0)
-        self.l2_penalty = kwargs.get('l2_penalty', 0.1)
+        self.l2_penalty = kwargs.get('l2_penalty', 0.5)
 
         self.intercept_opts = intercept_opts
         self.base_alt = base_alt

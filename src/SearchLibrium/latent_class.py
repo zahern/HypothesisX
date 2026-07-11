@@ -51,7 +51,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         optimise_membership=True,
         membership_maxiter=50,
         l1_penalty=0.0,
-        l2_penalty=0.1,
+        l2_penalty=0.5,
     ):
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
