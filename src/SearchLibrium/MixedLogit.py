@@ -36,7 +36,7 @@ infinity = float('inf')
 class MixedLogit(DiscreteChoiceModel):
     def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u'], _jax=True):
         super().__init__(_jax)
-        self.descr = "Mixed Logit"
+        self.descr = "MXL"
         self.halton_opts = halton_opts
         self.draws_generator = Draws(k=len(distributions), halton_opts=halton_opts, rvdist=distributions)
         self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters
@@ -567,6 +567,20 @@ class MixedLogit(DiscreteChoiceModel):
         if getattr(self, '_jax', False):
             jax_result = self.optimize_jax(betas, draws, drawstrans)
             if jax_result is not None:
+                beta_segment_names = ["Bf", "Br_b", "chol", "Br_w", "Bftrans",
+                                    "flmbda", "Brtrans_b", "Brtrans_w", "rlmda"]
+                iterations = [self.Kf, self.Kr, self.Kchol, self.Kbw, self.Kftrans,
+                            self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans]
+                self.var_list = self.split_betas(jax_result['x'], iterations, beta_segment_names)
+                self.chol_mat = self.construct_chol_mat(
+                    self.var_list['chol'], self.var_list['Br_w'], self.var_list['Brtrans_w'])
+
+                p = self.compute_probabilities(jax_result['x'], self.X, self.panel_info,
+                                                draws, drawstrans, self.avail, self.var_list, self.chol_mat)
+                self.choice_pred_prob = np.mean(p, axis=3)
+                self.ind_pred_prob = np.mean(self.choice_pred_prob, axis=1)
+                self.pred_prob = np.mean(self.ind_pred_prob, axis=0)
+                self.prob_full = p
                 self.post_process(jax_result, self.Xnames, self.N)
                 return
 
