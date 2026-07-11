@@ -1152,6 +1152,8 @@ class DiscreteChoiceModel(ABC):
                 return set(val.keys())
             return set(val)
 
+        is_latent_class = hasattr(self, 'n_classes') and hasattr(self, 'class_betas')
+
         # ── Header ──────────────────────────────────────────────────────────
         p(LINE)
         # Model name + time
@@ -1160,7 +1162,8 @@ class DiscreteChoiceModel(ABC):
         if n_draws:
             time_str += f"  |  Draws: {n_draws}"
         p(f"  Model Summary: {self.descr}")
-        p(time_str)
+        if time_str:
+            p(time_str)
 
         # Sample info
         N = getattr(self, 'N', None)
@@ -1181,15 +1184,17 @@ class DiscreteChoiceModel(ABC):
         if not self.converged:
             p(LINE)
             p("  WARNING: Convergence was not reached. Estimates may not be reliable.")
-            if hasattr(self, "gtol_res") and hasattr(self, "ftol_res"):
+            if is_latent_class:
+                p(f"  EM iterations: {self.total_iter}  (maxiter reached)")
+            elif hasattr(self, "gtol_res") and hasattr(self, "ftol_res"):
                 gtol_ok = "OK" if self.gtol_res < self.gtol else "X"
                 ftol_ok = "OK" if self.ftol_res < self.ftol else "X"
                 p(f"  gtol: {self.gtol}  |  Final gradient norm: {self.gtol_res:.2e}  {gtol_ok}")
                 p(f"  ftol: {self.ftol}  |  Final function value: {self.ftol_res:.2e}  {ftol_ok}")
                 if gtol_ok == "X" and hasattr(self, "grad_vector") and self.coeff_names is not None:
                     failing = [(self.coeff_names[k], self.grad_vector[k])
-                               for k in range(len(self.coeff_names))
-                               if abs(self.grad_vector[k]) > self.gtol]
+                            for k in range(len(self.coeff_names))
+                            if abs(self.grad_vector[k]) > self.gtol]
                     if failing:
                         p(f"  Parameters not meeting gtol threshold:")
                         for name, gval in failing:
@@ -1200,8 +1205,8 @@ class DiscreteChoiceModel(ABC):
             p(LINE)
             p("  Proportion of Alternatives")
             alts = getattr(self, 'alts', [f"alt{i+1}" for i in range(len(self.obs_prob))])
-            label_w = 12  # ancho del label "Observed:" y "Predicted:"
-            col_w   = 9   # ancho de cada columna de alternativa
+            label_w = 12
+            col_w   = 9
             alt_header = " " * (label_w + 2) + "".join(f"{str(a):>{col_w}}" for a in alts)
             obs_row    = f"  {'Observed:':<{label_w}}" + "".join(f"{v:>{col_w}.3f}" for v in self.obs_prob)
             pred_row   = f"  {'Predicted:':<{label_w}}" + "".join(f"{v:>{col_w}.3f}" for v in self.pred_prob)
@@ -1209,7 +1214,11 @@ class DiscreteChoiceModel(ABC):
             p(obs_row)
             p(pred_row)
 
-        if hasattr(self, 'class_freq'):
+        if is_latent_class:
+            p(LINE)
+            p("  Estimated Proportion of Classes")
+            p(f"  {np.round(self.class_probs, 3)}")
+        elif hasattr(self, 'class_freq'):
             p(LINE)
             p("  Estimated Proportion of Classes")
             p(f"  {np.round(self.class_freq, 3)}")
@@ -1220,6 +1229,112 @@ class DiscreteChoiceModel(ABC):
             p("  Model has not been estimated.")
             return
 
+        # ── Shared table format (both branches) ───────────────────────────────
+        sig_map = {0.001: "(***)", 0.01: "(**)", 0.05: "(*)", 0.1: "(.)", 1.01: "(-)"}
+        fmt = "  {:<16} {:<6} {:>10.4f} {:>10.4f} {:>9.3f} {:>9.3f} {:<4}"
+        hdr = "  {:<16} {:<6} {:>9} {:>9} {:>10} {:>12}".format("Variable", "Distr", "Coeff", "SE", "z-val", "p-val")
+
+        def sig(pv):
+            try:
+                return next(s for thr, s in sig_map.items() if pv < thr)
+            except StopIteration:
+                return ""
+
+        # ══════════════════════════════════════════════════════════════════
+        # LATENT CLASS BRANCH 
+        # ══════════════════════════════════════════════════════════════════
+        if is_latent_class:
+            C  = self.n_classes
+            Km = getattr(self, 'K_membership', 0)
+
+            se_error = getattr(self, 'se_computation_error', None)
+            if se_error is not None:
+                p(f"  [WARNING] Standard errors could not be computed: {se_error}")
+
+            if se_error is not None or self.pvalues is None:
+                p("  Class Shares:")
+                for idx, share in enumerate(self.class_probs, start=1):
+                    p(f"    class_{idx}: {share:.6f}")
+                p("  Coefficients:")
+                for c_idx, beta in enumerate(self.class_betas, start=1):
+                    idx = self._class_specs[c_idx - 1] if self._class_specs is not None else range(len(beta))
+                    for k, value in zip(idx, beta):
+                        name = self.varnames[k]
+                        p(f"    class_{c_idx}_{name}: {value:.6f}")
+                
+                if self.class_gammas is not None and self._has_membership and self.optimise_membership:
+                    gammas_arr = np.asarray(self.class_gammas)
+                    p("  Membership Parameters:")
+                    for c in range(self.n_classes - 1):
+                        for k in range(gammas_arr.shape[1]):
+                            label = f"gamma_{c + 1}_{self.membership_vars[k]}"
+                            p(f"    {label}: {gammas_arr[c, k]:.6f}")
+                return
+
+            params   = self.se_params
+            se       = self.stderr
+            t_stats  = self.zvalues
+            p_values = self.pvalues
+            n_phi    = C - 1
+            has_gamma = self.gamma_params is not None and len(self.gamma_params) > 0
+
+            p(LINE)
+            p(hdr)
+
+            offset_cum = n_phi
+            for c in range(C):
+                K_c = self._Ks[c]
+                is_base = (c == C - 1)
+                p("")
+                label = f"CLASS {c + 1}   (share = {self.class_probs[c]:.3f})"
+                if is_base:
+                    label += "   (Base)"
+                section(label)
+                p(LINE)
+
+                p("  Class Parameters")
+                p(LINE2)
+                idx = self._class_specs[c]
+                for k in range(K_c):
+                    vname = self.varnames[idx[k]]
+                    pi = offset_cum + k
+                    p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])))
+                offset_cum += K_c
+                breakpoint()
+                if not is_base and has_gamma:
+                    p("")
+                    p("  Membership Parameters")
+                    g0 = c * Km
+                    for k in range(Km):
+                        gi = g0 + k
+                        gname = self.gamma_names[gi]
+                        p(fmt.format(gname[:16], "", self.gamma_params[gi], self.gamma_se[gi],
+                                    self.gamma_t_stats[gi], self.gamma_p_values[gi],
+                                    sig(self.gamma_p_values[gi])))
+            p()
+            section("GOODNESS OF FIT")
+            p(LINE)
+            
+            loglik_null = self.get_loglik_null()
+            adjlik = 1 + self.aic / (2 * loglik_null)
+            self.adjust_lik_ratio = adjlik
+
+            p("  In-Sample")
+            p(f"  LOGLIK = {self.loglik:.0f}  |  AIC = {self.aic:.0f}  |  BIC = {self.bic:.0f}  |  McFadden Adj.R²: = {adjlik:.3f}")
+            mae = getattr(self, 'mae', None)
+            if mae is not None:
+                p("")
+                p("  Out-of-Sample")
+                p(f"  MAE = {mae:.4f}")
+
+            p(LINE)
+            p("  Significance:  0 '(***)' 0.001 '(**)' 0.01 '(*)' 0.05 '(.)' 0.1 '(-)' 1")
+            p(LINE)
+            return
+
+        # ══════════════════════════════════════════════════════════════════
+        #  MNL / MXL 
+        # ══════════════════════════════════════════════════════════════════
         randvars_dict     = getattr(self, 'randvarsdict', None) or {}
         if isinstance(randvars_dict, np.ndarray):
             randvars_dict = {}
@@ -1320,11 +1435,6 @@ class DiscreteChoiceModel(ABC):
             if name.startswith('chol.'):
                 assigned.add(i)
 
-        # ── Print helper ─────────────────────────────────────────────────────
-        sig_map = {0.001: "(***)", 0.01: "(**)", 0.05: "(*)", 0.1: "(.)", 1.01: "(-)"}
-        fmt = "  {:<16} {:<6} {:>10.4f} {:>10.4f} {:>9.3f} {:>9.3f} {:<4}"
-        hdr = "  {:<16} {:<6} {:>9} {:>9} {:>10} {:>12}".format("Variable", "Distr", "Coeff", "SE", "z-val", "p-val")
-
         p(LINE)
         p(hdr)
 
@@ -1334,10 +1444,7 @@ class DiscreteChoiceModel(ABC):
             section(title)
             p(LINE2)
             for name, distr, idx in rows:
-                try:
-                    signif = next(s for thr, s in sig_map.items() if self.pvalues[idx] < thr)
-                except StopIteration:
-                    signif = ""
+                signif = sig(self.pvalues[idx])
                 active = getattr(self, 'active_bounds', {}).get(idx)
                 bound_flag = " (A.B)" if active else ""
                 p(fmt.format(
@@ -1371,7 +1478,6 @@ class DiscreteChoiceModel(ABC):
             corr_names = [str(self.varnames[p_]) for p_ in corr_pos]
             K = len(corr_names)
 
-            
             sig_map_corr = {0.001: " (***)", 0.01: " (**)", 0.05: " (*)", 0.1: " (.)", 1.01: " (-)"}
             chol_pval = {}
             for ii in range(K):
@@ -1389,8 +1495,8 @@ class DiscreteChoiceModel(ABC):
                     if j < i:
                         val = corr_mat[i, j]
                         pv  = chol_pval.get((i, j), 1.0)
-                        sig = next(s for thr, s in sig_map_corr.items() if pv < thr)
-                        row_str += f"{val:>8.3f}{sig:<6}"
+                        sigc = next(s for thr, s in sig_map_corr.items() if pv < thr)
+                        row_str += f"{val:>8.3f}{sigc:<6}"
                     elif j == i:
                         row_str += f"{'1.000':>8}    "
                     else:
@@ -1400,8 +1506,9 @@ class DiscreteChoiceModel(ABC):
         # ── Goodness of Fit ──────────────────────────────────────────────────
         section("GOODNESS OF FIT")
         p(LINE)
+        
         loglik_null = self.get_loglik_null()
-        adjlik = 1 - (self.aic / loglik_null)
+        adjlik = 1 + self.aic / (2 * loglik_null)
         self.adjust_lik_ratio = adjlik
         
         p("  In-Sample")
