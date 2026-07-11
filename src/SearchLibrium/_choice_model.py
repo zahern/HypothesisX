@@ -1300,7 +1300,7 @@ class DiscreteChoiceModel(ABC):
                     pi = offset_cum + k
                     p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])))
                 offset_cum += K_c
-                breakpoint()
+            
                 if not is_base and has_gamma:
                     p("")
                     p("  Membership Parameters")
@@ -1508,11 +1508,13 @@ class DiscreteChoiceModel(ABC):
         p(LINE)
         
         loglik_null = self.get_loglik_null()
-        adjlik = 1 + self.aic / (2 * loglik_null)
+        adjlik = 1 - (self.aic / loglik_null) # TODO check formula for McFadden Adj.R² because self,y has a different format
         self.adjust_lik_ratio = adjlik
+        
         
         p("  In-Sample")
         p(f"  LOGLIK = {self.loglik:.0f}  |  AIC = {self.aic:.0f}  |  BIC = {self.bic:.0f}  |  McFadden Adj.R²: = {adjlik:.3f}")
+        breakpoint()
         if self.mae is not None:
             p("")
             p("  Out-of-Sample")
