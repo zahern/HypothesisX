@@ -2681,13 +2681,13 @@ class Search():
         randvars = solution.get('randvars', {})
         bcvars   = solution.get('bcvars',   [])
 
-        row("ASvars", ', '.join(asvars) if asvars else '—')
+        row("ASvars", ', '.join(f"'{v}'" for v in asvars) if asvars else '—')
         if isvars:
-            row("ISvars", ', '.join(isvars))
+            row("ISvars", ', '.join(f"'{v}'" for v in isvars))
         if randvars:
-            row("RANDvars", ', '.join(f"{k}({v})" for k, v in randvars.items()))
+            row("RANDvars", ', '.join(f"'{k}':'{v}'" for k, v in randvars.items()))
         if bcvars:
-            row("BCvars", ', '.join(bcvars))
+            row("BCvars", ', '.join(f"'{v}'" for v in bcvars))
 
         p(LINE)
 
