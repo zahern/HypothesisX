@@ -1315,8 +1315,10 @@ class LatentClassMixedLogit:
         ``_numerical_hessian``).
         """
         if not self._jax_enabled:
+            print("[LC] JAX not enabled; skipping autograd Hessian.")
             return None
         if len(set(self._Ks)) != 1:
+            print("[LC] Autograd Hessian requires all classes to share the same variable set.")
             return None
 
         cache_key = "_cached_autograd_hessian_fn"
@@ -1324,13 +1326,15 @@ class LatentClassMixedLogit:
             hess_fn = getattr(self, cache_key)
         else:
             jax_cache_key = "_jax_full_obj"
-            cached = getattr(self, jax_cache_key, None)
+            cached = getattr(self, jax_cache_key, self._build_jax_full_objective())
             fn = cached[0] if cached else None
             if fn is None:
+                print("[LC] No cached JAX function available for autograd Hessian.")
                 return None
             try:
                 hess_fn = self.jit(self.jax.hessian(fn))
             except Exception:
+                print("[LC] Error occurred while computing autograd Hessian.")
                 return None
             setattr(self, cache_key, hess_fn)
 

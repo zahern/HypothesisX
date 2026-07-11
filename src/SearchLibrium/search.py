@@ -787,7 +787,7 @@ class Parameters:
         acceptable_keys = [
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
             '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
-            'de_tol', 'de_polish', 'halton_opts'
+            'de_tol', 'de_polish', 'halton_opts', 'latent_class'
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
