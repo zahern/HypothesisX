@@ -2643,62 +2643,65 @@ class Search():
 
 
     def print_best_solution(self, solution, verbose_print_name='New Best Solution Found'):
-        """Print a structured summary of the current best solution."""
-        sep = '─' * 52
-        print(f"\n┌{sep}┐")
-        title = f" {verbose_print_name} "
-        pad   = max((52 - len(title)) // 2, 0)
-        print(f"│{' ' * pad}{title}{' ' * (52 - pad - len(title))}│")
-        print(f"├{sep}┤")
+        """Print a structured summary of the current best solution (Fernando style)."""
+        LINE = "=" * 60
 
-        def _row(label, value):
-            line = f"  {label:<22s}: {value}"
-            print(f"│{line:<52s}│")
+        def p(text=""):
+            print(text)
 
-        _row("Solution #",  str(solution.get('sol_num', '?')))
-        _row("Model type",  str(solution.get('model_n',  'unknown')))
+        def section(title):
+            p(LINE)
+            p(f"  {title}")
 
-        # Objectives
+        def row(label, value):
+            p(f"  {label:<22}: {value}")
+
+        # ── Header ──────────────────────────────────────────────────────────
+        p(LINE)
+        p(f"  ▶ {verbose_print_name.upper()}")
+        p(LINE)
+
+        row("Solution #", str(solution.get('sol_num', '?')))
+        row("Model type", str(solution.get('model_n', 'unknown')))
+
+        # ── Objectives ──────────────────────────────────────────────────────
         crit_names = [c[0] for c in self.param.criterions]
-        for i, name in enumerate(crit_names):
+        for name in crit_names:
             val = solution.get(name)
             if val is not None:
                 try:
-                    _row(name.upper(), f"{float(val):.4f}")
+                    row(name.upper(), f"{float(val):.4f}")
                 except Exception:
-                    _row(name.upper(), str(val))
+                    row(name.upper(), str(val))
 
-        # Specification
-        print(f"├{sep}┤")
+        # ── Specification ───────────────────────────────────────────────────
+        section("SPECIFICATION")
         asvars   = solution.get('asvars',   [])
         isvars   = solution.get('isvars',   [])
         randvars = solution.get('randvars', {})
         bcvars   = solution.get('bcvars',   [])
 
-        _row("AS vars",   ', '.join(asvars)  if asvars   else '—')
+        row("ASvars", ', '.join(asvars) if asvars else '—')
         if isvars:
-            _row("IS vars", ', '.join(isvars))
+            row("ISvars", ', '.join(isvars))
         if randvars:
-            rv_str = ', '.join(f"{k}~{v}" for k, v in randvars.items())
-            _row("Random params", rv_str[:46])
+            row("RANDvars", ', '.join(f"{k}({v})" for k, v in randvars.items()))
         if bcvars:
-            _row("Box-Cox vars", ', '.join(bcvars))
+            row("BCvars", ', '.join(bcvars))
 
-        print(f"└{sep}┘")
+        p(LINE)
 
         if solution.get('model'):
             model = solution['model']
             if model.converged or getattr(self.param, 'verbose_convergence', False):
                 model.summarise()
             else:
-                # Model accepted via finite-loglik fallback but did not fully converge.
-                # Print a brief note only; avoids flooding output during search.
                 loglik = solution.get('loglik', float('nan'))
                 gnorm  = getattr(model, 'gtol_res', '?')
-                print(f"  [accepted, not fully converged]  loglik={loglik:.3f}"
-                      f"  grad_norm={gnorm}"
-                      f"  (set verbose_convergence=True in Parameters for full model table)")
-        print()
+                p(f"  [accepted, not fully converged]  loglik={loglik:.3f}"
+                f"  grad_norm={gnorm}"
+                f"  (set verbose_convergence=True in Parameters for full model table)")
+        p()
 
 
     ''' ---------------------------------------------------------- '''
