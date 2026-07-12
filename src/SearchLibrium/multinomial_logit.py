@@ -246,7 +246,7 @@ class MultinomialLogit(DiscreteChoiceModel):
         transformation="boxcox", ids=None, weights=None, avail=None,
         base_alt=None, fit_intercept=False, init_coeff=None, maxiter=2000,
         ftol=1e-6, gtol=1e-6, return_grad=True, return_hess=True,
-        method="bfgs", scipy_optimisation=True, l2_penalty=0.0, l1_penalty=0.0):
+        method="slsqp", scipy_optimisation=True, l2_penalty=0.5, l1_penalty=0.1):
     # {
 
         self.l2_penalty = float(l2_penalty)

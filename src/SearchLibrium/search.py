@@ -592,6 +592,7 @@ class Parameters:
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
+        sd_penalty=0.001,
         intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
 
         
@@ -683,9 +684,10 @@ class Parameters:
         self.de_maxiter = de_maxiter
         self.de_tol = de_tol
         self.de_polish = de_polish
+        self.sd_penalty = sd_penalty
 
         # ── Regularisation (primarily for latent class) ──────────────
-        self.l1_penalty = kwargs.get('l1_penalty', 0.0)
+        self.l1_penalty = kwargs.get('l1_penalty', 0.1)
         self.l2_penalty = kwargs.get('l2_penalty', 0.5)
 
         self.intercept_opts = intercept_opts
@@ -787,7 +789,7 @@ class Parameters:
         acceptable_keys = [
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
             '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
-            'de_tol', 'de_polish', 'halton_opts'
+            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts'
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
@@ -4006,7 +4008,8 @@ class Search():
             de_popsize=getattr(self.param, 'de_popsize', 4),
             de_maxiter=getattr(self.param, 'de_maxiter', 3),
             de_tol=getattr(self.param, 'de_tol', 0.5),
-            de_polish=getattr(self.param, 'de_polish', False))
+            de_polish=getattr(self.param, 'de_polish', False),
+            sd_penalty=getattr(self.param, 'sd_penalty', 0.001))
         model.fit()
         
         return model
@@ -4038,8 +4041,8 @@ class Search():
             random_state=seed if seed is not None else 0,
             optimise_membership=optimise_membership,
             membership_maxiter=100,
-            l1_penalty=getattr(self.param, 'l1_penalty', 0.0),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.0),
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
         )
 
         membership_vars = None

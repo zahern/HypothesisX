@@ -147,7 +147,7 @@ class DiscreteChoiceModel(ABC):
         self.reset_attributes()
         self.fit_intercept = False
         self.reg_penalty = 0.00  # L2 penalty strength (ridge)
-        self.l1_penalty  = 0.00  # L1 penalty strength (lasso)
+        self.l1_penalty  = 0.1   # L1 penalty strength (lasso)
         self.pval_penalty = 5
         logging.info(f'pval penalty set to {self.pval_penalty}')
         # NOTE: The reg_penalty value is tricky to define. If too high, convergence is restricted.
@@ -167,7 +167,7 @@ class DiscreteChoiceModel(ABC):
         self.converged = False
         self.return_grad, self.return_hess, self.fit_intercept = True, True, False
         self.scipy_optimisation = True
-        self.method, self.transformation = "bfgs", "boxcox"
+        self.method, self.transformation = "slsqp", "boxcox"
 
         self.trans_func = None      # NEW. CHECK VALIDITY!
         self.varnames, self.isvars, self.transvars = None, None, None
