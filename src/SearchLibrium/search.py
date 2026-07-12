@@ -1001,6 +1001,27 @@ class Solution(UserDict):
                 setattr(self, key, value)
     # }
 
+    def __deepcopy__(self, memo):
+    # {
+        # Fitted model objects stored under 'model' hold module/JAX references
+        # that cannot be deep-copied (TypeError: cannot pickle 'module' object).
+        # The fitted model is read-only after estimation, so the copy shares it
+        # by reference; everything else is deep-copied as usual.
+        cls = self.__class__
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        new.data = {}
+        for k, v in self.data.items():
+            new.data[k] = v if k == 'model' else copy.deepcopy(v, memo)
+        for k, v in self.__dict__.items():
+            if k == 'data':
+                continue
+            try:
+                setattr(new, k, copy.deepcopy(v, memo))
+            except TypeError:
+                setattr(new, k, v)  # share unpicklable attributes by reference
+        return new
+    # }
 
     def __eq__(self, other):
         """
@@ -4266,6 +4287,14 @@ class Search():
         sol['coeff'] = model.coeff_est
         sol['model_n'] = 'latent_class'
         converged = model.converged
+
+        # Standard errors / p-values: needed by significance-based refinement
+        # and PBIL updates. A failed Hessian must not abort the search.
+        if converged and getattr(model, 'pvalues', None) is None:
+            try:
+                model.compute_standard_errors()
+            except Exception as exc:
+                print(f"[LC] standard errors unavailable for this candidate: {exc}")
 
         aic = getattr(model, 'aic', float('inf'))
         bic = getattr(model, 'bic', float('inf'))
