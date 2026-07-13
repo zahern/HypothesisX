@@ -800,6 +800,9 @@ class Parameters:
                     print(f"does key: {self.key} exist and is inititiated")
                 except:
                     print('[WARNING] key not set..')
+
+        self.cleanup_active = False # Flag to indicate whether Backward Elimination with Hierarchical will be applied 
+        #sol = BEHier(self, sol, max_passes=10)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -943,6 +946,10 @@ class Solution(UserDict):
         self.data.setdefault('aic', infinity)  # KPI - Akaike Information Criterion
 
         self.data.setdefault('asvars', [])
+        self.data.setdefault('class_params_spec', None)
+        self.data.setdefault('member_params_spec', None)
+        self.data.setdefault('coeff_names', [])
+        self.data.setdefault('pvalues', None)
 
 
         self.data.setdefault('model_n', [])
@@ -3763,7 +3770,11 @@ class Search():
                     self._cull_attrited_vars()
             return (sol, False)
 
-        if converged or (isinstance(sol.get('loglik'), float) and math.isfinite(sol.get('loglik', float('nan')))):
+        _gtol = getattr(sol.get('model'), 'gtol_res', float('inf'))
+        nearly_converged = _gtol < (1e-2 if sol.get('model_n') == 'latent_class' else 1e-4) #Some models may converge with a higher gtol, especially latent class models
+        loglik_ok = isinstance(sol.get('loglik'), float) and math.isfinite(sol.get('loglik', float('nan')))
+
+        if (converged or nearly_converged) and loglik_ok:
         # {
             self.converged += 1
             sol['converged'] = True

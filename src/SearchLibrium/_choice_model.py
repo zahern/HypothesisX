@@ -1514,7 +1514,7 @@ class DiscreteChoiceModel(ABC):
         
         p("  In-Sample")
         p(f"  LOGLIK = {self.loglik:.0f}  |  AIC = {self.aic:.0f}  |  BIC = {self.bic:.0f}  |  McFadden Adj.R²: = {adjlik:.3f}")
-        breakpoint()
+        
         if self.mae is not None:
             p("")
             p("  Out-of-Sample")
