@@ -584,7 +584,7 @@ class HarmonySearch(Search):
 
     def make_change_5(self, candidate):
     # {
-        # Identify the best solution features
+        # Identify the best solution features 5
         best_asvars, best_isvars, best_randvars, best_bcvars, best_corvars, \
             asc_ind, best_class_params_spec, best_member_params_spec = self.get_best_features(candidate)
 
@@ -599,7 +599,7 @@ class HarmonySearch(Search):
 
     def make_change_6(self, candidate):
     # {
-        # Identify the best solution features
+        # Identify the best solution features 6
         best_asvars, best_isvars, best_randvars, best_bcvars, best_corvars, \
             asc_ind, best_class_params_spec, best_member_params_spec = self.get_best_features(candidate)
 
