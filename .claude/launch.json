@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "modelzoo",
+      "runtimeExecutable": "C:\\Users\\ahernz\\source\\ModelZoo\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m", "streamlit", "run",
+        "C:\\Users\\ahernz\\source\\ModelZoo\\app\\Home.py",
+        "--server.port", "8501",
+        "--server.headless", "true"
+      ],
+      "port": 8501
+    }
+  ]
+}
