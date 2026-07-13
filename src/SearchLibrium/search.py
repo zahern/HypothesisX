@@ -788,8 +788,8 @@ class Parameters:
         # TODO I Think we could initialise it this way more effictively
         acceptable_keys = [
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
-            '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
-            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts'
+            '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',            
+            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class'
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
@@ -802,6 +802,9 @@ class Parameters:
                     print(f"does key: {self.key} exist and is inititiated")
                 except:
                     print('[WARNING] key not set..')
+
+        self.cleanup_active = False # Flag to indicate whether Backward Elimination with Hierarchical will be applied 
+        #sol = BEHier(self, sol, max_passes=10)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -945,6 +948,10 @@ class Solution(UserDict):
         self.data.setdefault('aic', infinity)  # KPI - Akaike Information Criterion
 
         self.data.setdefault('asvars', [])
+        self.data.setdefault('class_params_spec', None)
+        self.data.setdefault('member_params_spec', None)
+        self.data.setdefault('coeff_names', [])
+        self.data.setdefault('pvalues', None)
 
 
         self.data.setdefault('model_n', [])
@@ -1236,7 +1243,9 @@ class Search():
         self.param = param  # Record the parameters object to use
         self.nb_crit = param.nb_crit
         self.code_name = "search"
-
+        self.evaluated_solutions = {}    # {hash: solution} for all evaluated solutions
+        self.explored_specs      = set() # Set of hashes for all explored specifications (evaluated or not)
+        self.cache_hits           = 0    # Count of how many times a solution was found in the cache
 
         self.last_printed_solution = None  # Track the last printed solution
         self.best_solution = None  # T
@@ -2666,62 +2675,65 @@ class Search():
 
 
     def print_best_solution(self, solution, verbose_print_name='New Best Solution Found'):
-        """Print a structured summary of the current best solution."""
-        sep = '─' * 52
-        print(f"\n┌{sep}┐")
-        title = f" {verbose_print_name} "
-        pad   = max((52 - len(title)) // 2, 0)
-        print(f"│{' ' * pad}{title}{' ' * (52 - pad - len(title))}│")
-        print(f"├{sep}┤")
+        """Print a structured summary of the current best solution (Fernando style)."""
+        LINE = "=" * 60
 
-        def _row(label, value):
-            line = f"  {label:<22s}: {value}"
-            print(f"│{line:<52s}│")
+        def p(text=""):
+            print(text)
 
-        _row("Solution #",  str(solution.get('sol_num', '?')))
-        _row("Model type",  str(solution.get('model_n',  'unknown')))
+        def section(title):
+            p(LINE)
+            p(f"  {title}")
 
-        # Objectives
+        def row(label, value):
+            p(f"  {label:<22}: {value}")
+
+        # ── Header ──────────────────────────────────────────────────────────
+        p(LINE)
+        p(f"  ▶ {verbose_print_name.upper()}")
+        p(LINE)
+
+        row("Solution #", str(solution.get('sol_num', '?')))
+        row("Model type", str(solution.get('model_n', 'unknown')))
+
+        # ── Objectives ──────────────────────────────────────────────────────
         crit_names = [c[0] for c in self.param.criterions]
-        for i, name in enumerate(crit_names):
+        for name in crit_names:
             val = solution.get(name)
             if val is not None:
                 try:
-                    _row(name.upper(), f"{float(val):.4f}")
+                    row(name.upper(), f"{float(val):.4f}")
                 except Exception:
-                    _row(name.upper(), str(val))
+                    row(name.upper(), str(val))
 
-        # Specification
-        print(f"├{sep}┤")
+        # ── Specification ───────────────────────────────────────────────────
+        section("SPECIFICATION")
         asvars   = solution.get('asvars',   [])
         isvars   = solution.get('isvars',   [])
         randvars = solution.get('randvars', {})
         bcvars   = solution.get('bcvars',   [])
 
-        _row("AS vars",   ', '.join(asvars)  if asvars   else '—')
+        row("ASvars", ', '.join(f"'{v}'" for v in asvars) if asvars else '—')
         if isvars:
-            _row("IS vars", ', '.join(isvars))
+            row("ISvars", ', '.join(f"'{v}'" for v in isvars))
         if randvars:
-            rv_str = ', '.join(f"{k}~{v}" for k, v in randvars.items())
-            _row("Random params", rv_str[:46])
+            row("RANDvars", ', '.join(f"'{k}':'{v}'" for k, v in randvars.items()))
         if bcvars:
-            _row("Box-Cox vars", ', '.join(bcvars))
+            row("BCvars", ', '.join(f"'{v}'" for v in bcvars))
 
-        print(f"└{sep}┘")
+        p(LINE)
 
         if solution.get('model'):
             model = solution['model']
             if model.converged or getattr(self.param, 'verbose_convergence', False):
                 model.summarise()
             else:
-                # Model accepted via finite-loglik fallback but did not fully converge.
-                # Print a brief note only; avoids flooding output during search.
                 loglik = solution.get('loglik', float('nan'))
                 gnorm  = getattr(model, 'gtol_res', '?')
-                print(f"  [accepted, not fully converged]  loglik={loglik:.3f}"
-                      f"  grad_norm={gnorm}"
-                      f"  (set verbose_convergence=True in Parameters for full model table)")
-        print()
+                p(f"  [accepted, not fully converged]  loglik={loglik:.3f}"
+                f"  grad_norm={gnorm}"
+                f"  (set verbose_convergence=True in Parameters for full model table)")
+        p()
 
 
     ''' ---------------------------------------------------------- '''
@@ -3728,9 +3740,35 @@ class Search():
         else:
             diff = np.max(abs(sol1.data['obj'] - sol2.data['obj']))
         return diff <= tolerance
+    
 
+    ''' ------------------------------------------------------------------ '''
+    ''' Cached wrapper. If this exact specification (by setup_signature)   '''
+    ''' was already evaluated, reuse the stored objective scores instead   '''
+    ''' of re-fitting the model. Otherwise, fit it via _evaluate_solution  '''
+    ''' and cache the result if it converged.                              '''
+    ''' ------------------------------------------------------------------ '''
 
+    def evaluate_solution(self, sol):
+       
+        sig = self.setup_signature(sol)
 
+        if sig not in self.explored_specs:
+            self.explored_specs.add(sig)
+
+        if sig in self.evaluated_solutions:
+            self.cache_hits += 1
+            known_scores = self.evaluated_solutions[sig]
+            for i, score in enumerate(known_scores):
+                sol.update_objective(i, score)
+            return sol, True
+
+        sol, converged = self._evaluate_solution(sol)
+
+        if converged:
+            self.evaluated_solutions[sig] = [sol.obj(i) for i in range(self.nb_crit)]
+
+        return sol, converged
 
 
     ''' ---------------------------------------------------------- '''
@@ -3742,7 +3780,7 @@ class Search():
     ''' re-estimated. The function returns the estimated solution  '''
     ''' only if it converges.                                      '''
     ''' ---------------------------------------------------------- '''
-    def evaluate_solution(self, sol):
+    def _evaluate_solution(self, sol):
     # {
         # apply_constraints() was previously only wired into evaluate_lc/
         # evaluate_nested_logit/evaluate_mixed_nested — plain multinomial/mixed
@@ -3753,7 +3791,7 @@ class Search():
         if sig in self._banlist:
             sol['converged'] = False
             return (sol, False)
-
+        
         as_vars, is_vars, rand_vars, bc_vars, corvars, asc_ind = self.get_components(sol)
         all_vars = is_vars + as_vars
         all_vars = [var for var in self.param.varnames if var in all_vars]
@@ -3788,7 +3826,11 @@ class Search():
                     self._cull_attrited_vars()
             return (sol, False)
 
-        if converged or (isinstance(sol.get('loglik'), float) and math.isfinite(sol.get('loglik', float('nan')))):
+        _gtol = getattr(sol.get('model'), 'gtol_res', float('inf'))
+        nearly_converged = _gtol < (1e-2 if sol.get('model_n') == 'latent_class' else 1e-4) #Some models may converge with a higher gtol, especially latent class models
+        loglik_ok = isinstance(sol.get('loglik'), float) and math.isfinite(sol.get('loglik', float('nan')))
+
+        if (converged or nearly_converged) and loglik_ok:
         # {
             self.converged += 1
             sol['converged'] = True
@@ -3925,6 +3967,33 @@ class Search():
         return model
     # }
 
+    def report_exploration_summary(self):
+
+        """ Print a summary of the search's exploration-cache activity: how many
+        unique specifications were visited, and how many evaluations were
+        served from cache instead of re-fitting the model. """
+
+        sep = '═' * 60
+        total   = len(self.explored_specs)
+        hits    = self.cache_hits
+        hit_pct = (hits / total * 100) if total else 0.0
+
+        lines = [
+            sep,
+            "  EXPLORATION SUMMARY",
+            sep,
+            f"  Unique specifications explored : {total}",
+            f"  Cache hits                     : {hits}",
+            f"  Cache hit rate                 : {hit_pct:.1f}%",
+            sep,
+        ]
+
+        for line in lines:
+            print(line)
+            try:
+                print(line, file=self.results_file)
+            except Exception:
+                logging.debug("report_exploration_summary: unable to write to results_file")
 
 
 

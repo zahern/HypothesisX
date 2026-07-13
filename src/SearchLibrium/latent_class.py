@@ -2,6 +2,15 @@ import numpy as np
 from scipy.optimize import minimize, differential_evolution
 from scipy.special import logsumexp
 from scipy.stats import norm as _scipy_norm
+import time
+
+try:  
+    from _choice_model import  DiscreteChoiceModel
+    
+except ImportError:    
+    from ._choice_model import DiscreteChoiceModel
+    
+
 
 
 def _pval_str(pv: float) -> str:
@@ -22,7 +31,7 @@ def _sig_stars(pv: float) -> str:
     return ""
 
 
-class LatentClassMixedLogit:
+class LatentClassMixedLogit(DiscreteChoiceModel):
     """Fast latent-class discrete choice model with optional JAX acceleration.
 
     Supports both fixed class shares and a membership equation
@@ -958,6 +967,8 @@ class LatentClassMixedLogit:
         best_result = None
         _fit_once = self._fit_squarem_once if em_method == "squarem" else self._fit_em_once
 
+        start_time = time.time()
+
         for init_idx in range(self.n_init):
             seed = self.random_state + init_idx
             rng = np.random.default_rng(seed)
@@ -998,6 +1009,10 @@ class LatentClassMixedLogit:
         self.num_params = self.coeff_est.size + max(0, self.n_classes - 1) + n_gamma_params
         self.aic = 2 * self.num_params - 2 * self.loglik
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
+
+        self.estim_time_sec = time.time() - start_time
+        self.post_process()
+
         return self
 
     def fit_direct(self, betas0=None, class_probs0=None, gammas0=None,
@@ -1319,8 +1334,10 @@ class LatentClassMixedLogit:
         ``_numerical_hessian``).
         """
         if not self._jax_enabled:
+            print("[LC] JAX not enabled; skipping autograd Hessian.")
             return None
         if len(set(self._Ks)) != 1:
+            print("[LC] Autograd Hessian requires all classes to share the same variable set.")
             return None
 
         cache_key = "_cached_autograd_hessian_fn"
@@ -1328,13 +1345,15 @@ class LatentClassMixedLogit:
             hess_fn = getattr(self, cache_key)
         else:
             jax_cache_key = "_jax_full_obj"
-            cached = getattr(self, jax_cache_key, None)
+            cached = getattr(self, jax_cache_key, self._build_jax_full_objective())
             fn = cached[0] if cached else None
             if fn is None:
+                print("[LC] No cached JAX function available for autograd Hessian.")
                 return None
             try:
                 hess_fn = self.jit(self.jax.hessian(fn))
             except Exception:
+                print("[LC] Error occurred while computing autograd Hessian.")
                 return None
             setattr(self, cache_key, hess_fn)
 
@@ -1638,7 +1657,7 @@ class LatentClassMixedLogit:
             "opg_se":      opg_diag,
         }
 
-    def summarise(self, compute_se=True):
+    def summarise_lc(self, compute_se=True):
         """Print a full econometric-style model summary.
 
         Parameters
@@ -1823,3 +1842,39 @@ class LatentClassMixedLogit:
         print("  SE: observed information (Hessian).  [OPG.SE] shown for comparison.")
         print("  Note: high SE / low t-stat may indicate near-unidentified parameters.")
         print(sep)
+
+    def post_process(self):
+        """Compute standard errors once and store them as flat attributes.
+        After this runs, summarise() only reads — it never calls
+        compute_standard_errors() itself."""
+        self.se_computation_error = None
+
+        try:
+            stats = self.compute_standard_errors()
+        except Exception as exc:
+            self.se_computation_error = str(exc)
+            return        
+        
+        self.se_params = stats["params"]
+        self.stderr       = stats["se"]
+        self.zvalues      = stats["t_stats"]
+        self.pvalues      = stats["p_values"]
+        self.ci_lo        = stats["ci_lo"]
+        self.ci_hi        = stats["ci_hi"]
+        self.param_names  = stats["param_names"]
+
+        self.se_pi        = stats["se_pi"]
+        self.ci_lo_pi     = stats["ci_lo_pi"]
+        self.ci_hi_pi     = stats["ci_hi_pi"]
+        self.opg_se       = stats["opg_se"]
+        self.cond_number  = stats["cond_number"]
+        self.se_method    = stats["se_method"]      
+
+        self.gamma_params   = stats["gamma_params"]
+        self.gamma_se       = stats["gamma_se"]
+        self.gamma_t_stats  = stats["gamma_t_stats"]
+        self.gamma_p_values = stats["gamma_p_values"]
+        self.gamma_ci_lo    = stats["gamma_ci_lo"]
+        self.gamma_ci_hi    = stats["gamma_ci_hi"]
+        self.gamma_names    = stats["gamma_names"]
+        

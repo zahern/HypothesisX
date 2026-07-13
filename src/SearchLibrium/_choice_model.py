@@ -1128,10 +1128,409 @@ class DiscreteChoiceModel(ABC):
             return self.coeff_est
 # }
 
+    def summarise(self, file=None, dashboard=True):
+    # {
+        LINE = "-" * 70
+        LINE2 = "-" * 20
+
+        def p(text=""):
+            print(text, file=file)
+
+        def section(title):
+            p(LINE)
+            p(f"  {title}")
+        
+        def to_set(attr):
+            val = getattr(self, attr, None)
+            if val is None:
+                return set()
+            if hasattr(val, '__len__') and len(val) == 0:
+                return set()
+            if isinstance(val, np.ndarray):
+                return set(val.tolist())
+            if isinstance(val, dict):
+                return set(val.keys())
+            return set(val)
+
+        is_latent_class = hasattr(self, 'n_classes') and hasattr(self, 'class_betas')
+
+        # ── Header ──────────────────────────────────────────────────────────
+        p(LINE)
+        # Model name + time
+        time_str = f"  Time: {self.estim_time_sec:.1f}s"
+        n_draws = getattr(self, 'n_draws', None)
+        if n_draws:
+            time_str += f"  |  Draws: {n_draws}"
+        p(f"  Model Summary: {self.descr}")
+        if time_str:
+            p(time_str)
+
+        # Sample info
+        N = getattr(self, 'N', None)
+        P = getattr(self, 'P', None)
+        if getattr(self, "panel_info", None) is not None:
+            obs = self.panel_info.sum(axis=1).astype(int)
+        else:            
+            obs = np.ones(self.N, dtype=int)   
+        mn, mx = int(obs.min()), int(obs.max())
+        if N is not None:
+            if P is not None and P > 1:
+                total = getattr(self, 'sample_size', N * P)
+                p(f"  Individuals: {N}  |  Choices per Individual: {mx if mn == mx else f'{mn}-{mx}'}  |  Total Choices: {total}")
+            else:
+                p(f"  Individuals: {N}")
+
+        # Convergence warning
+        if not self.converged:
+            p(LINE)
+            p("  WARNING: Convergence was not reached. Estimates may not be reliable.")
+            if is_latent_class:
+                p(f"  EM iterations: {self.total_iter}  (maxiter reached)")
+            elif hasattr(self, "gtol_res") and hasattr(self, "ftol_res"):
+                gtol_ok = "OK" if self.gtol_res < self.gtol else "X"
+                ftol_ok = "OK" if self.ftol_res < self.ftol else "X"
+                p(f"  gtol: {self.gtol}  |  Final gradient norm: {self.gtol_res:.2e}  {gtol_ok}")
+                p(f"  ftol: {self.ftol}  |  Final function value: {self.ftol_res:.2e}  {ftol_ok}")
+                if gtol_ok == "X" and hasattr(self, "grad_vector") and self.coeff_names is not None:
+                    failing = [(self.coeff_names[k], self.grad_vector[k])
+                            for k in range(len(self.coeff_names))
+                            if abs(self.grad_vector[k]) > self.gtol]
+                    if failing:
+                        p(f"  Parameters not meeting gtol threshold:")
+                        for name, gval in failing:
+                            p(f"    {name:<30}  grad = {gval:.4e}")
+
+        # ── Proportion of Alternatives ───────────────────────────────────────
+        if hasattr(self, 'pred_prob') and hasattr(self, 'obs_prob'):
+            p(LINE)
+            p("  Proportion of Alternatives")
+            alts = getattr(self, 'alts', [f"alt{i+1}" for i in range(len(self.obs_prob))])
+            label_w = 12
+            col_w   = 9
+            alt_header = " " * (label_w + 2) + "".join(f"{str(a):>{col_w}}" for a in alts)
+            obs_row    = f"  {'Observed:':<{label_w}}" + "".join(f"{v:>{col_w}.3f}" for v in self.obs_prob)
+            pred_row   = f"  {'Predicted:':<{label_w}}" + "".join(f"{v:>{col_w}.3f}" for v in self.pred_prob)
+            p(alt_header)
+            p(obs_row)
+            p(pred_row)
+
+        if is_latent_class:
+            p(LINE)
+            p("  Estimated Proportion of Classes")
+            p(f"  {np.round(self.class_probs, 3)}")
+        elif hasattr(self, 'class_freq'):
+            p(LINE)
+            p("  Estimated Proportion of Classes")
+            p(f"  {np.round(self.class_freq, 3)}")
+
+        # ── Coefficient classification ───────────────────────────────────────
+        if self.coeff_est is None:
+            p(LINE)
+            p("  Model has not been estimated.")
+            return
+
+        # ── Shared table format (both branches) ───────────────────────────────
+        sig_map = {0.001: "(***)", 0.01: "(**)", 0.05: "(*)", 0.1: "(.)", 1.01: "(-)"}
+        fmt = "  {:<16} {:<6} {:>10.4f} {:>10.4f} {:>9.3f} {:>9.3f} {:<4}"
+        hdr = "  {:<16} {:<6} {:>9} {:>9} {:>10} {:>12}".format("Variable", "Distr", "Coeff", "SE", "z-val", "p-val")
+
+        def sig(pv):
+            try:
+                return next(s for thr, s in sig_map.items() if pv < thr)
+            except StopIteration:
+                return ""
+
+        # ══════════════════════════════════════════════════════════════════
+        # LATENT CLASS BRANCH 
+        # ══════════════════════════════════════════════════════════════════
+        if is_latent_class:
+            C  = self.n_classes
+            Km = getattr(self, 'K_membership', 0)
+
+            se_error = getattr(self, 'se_computation_error', None)
+            if se_error is not None:
+                p(f"  [WARNING] Standard errors could not be computed: {se_error}")
+
+            if se_error is not None or self.pvalues is None:
+                p("  Class Shares:")
+                for idx, share in enumerate(self.class_probs, start=1):
+                    p(f"    class_{idx}: {share:.6f}")
+                p("  Coefficients:")
+                for c_idx, beta in enumerate(self.class_betas, start=1):
+                    idx = self._class_specs[c_idx - 1] if self._class_specs is not None else range(len(beta))
+                    for k, value in zip(idx, beta):
+                        name = self.varnames[k]
+                        p(f"    class_{c_idx}_{name}: {value:.6f}")
+                
+                if self.class_gammas is not None and self._has_membership and self.optimise_membership:
+                    gammas_arr = np.asarray(self.class_gammas)
+                    p("  Membership Parameters:")
+                    for c in range(self.n_classes - 1):
+                        for k in range(gammas_arr.shape[1]):
+                            label = f"gamma_{c + 1}_{self.membership_vars[k]}"
+                            p(f"    {label}: {gammas_arr[c, k]:.6f}")
+                return
+
+            params   = self.se_params
+            se       = self.stderr
+            t_stats  = self.zvalues
+            p_values = self.pvalues
+            n_phi    = C - 1
+            has_gamma = self.gamma_params is not None and len(self.gamma_params) > 0
+
+            p(LINE)
+            p(hdr)
+
+            offset_cum = n_phi
+            for c in range(C):
+                K_c = self._Ks[c]
+                is_base = (c == C - 1)
+                p("")
+                label = f"CLASS {c + 1}   (share = {self.class_probs[c]:.3f})"
+                if is_base:
+                    label += "   (Base)"
+                section(label)
+                p(LINE)
+
+                p("  Class Parameters")
+                p(LINE2)
+                idx = self._class_specs[c]
+                for k in range(K_c):
+                    vname = self.varnames[idx[k]]
+                    pi = offset_cum + k
+                    p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])))
+                offset_cum += K_c
+            
+                if not is_base and has_gamma:
+                    p("")
+                    p("  Membership Parameters")
+                    g0 = c * Km
+                    for k in range(Km):
+                        gi = g0 + k
+                        gname = self.gamma_names[gi]
+                        p(fmt.format(gname[:16], "", self.gamma_params[gi], self.gamma_se[gi],
+                                    self.gamma_t_stats[gi], self.gamma_p_values[gi],
+                                    sig(self.gamma_p_values[gi])))
+            p()
+            section("GOODNESS OF FIT")
+            p(LINE)
+            
+            loglik_null = self.get_loglik_null()
+            adjlik = 1 - (self.loglik / loglik_null)
+            self.adjust_lik_ratio = adjlik
+
+            p("  In-Sample")
+            p(f"  LOGLIK = {self.loglik:.0f}  |  AIC = {self.aic:.0f}  |  BIC = {self.bic:.0f}  |  McFadden Adj.R²: = {adjlik:.3f}")
+            mae = getattr(self, 'mae', None)
+            if mae is not None:
+                p("")
+                p("  Out-of-Sample")
+                p(f"  MAE = {mae:.4f}")
+
+            p(LINE)
+            p("  Significance:  0 '(***)' 0.001 '(**)' 0.01 '(*)' 0.05 '(.)' 0.1 '(-)' 1")
+            p(LINE)
+            return
+
+        # ══════════════════════════════════════════════════════════════════
+        #  MNL / MXL 
+        # ══════════════════════════════════════════════════════════════════
+        randvars_dict     = getattr(self, 'randvarsdict', None) or {}
+        if isinstance(randvars_dict, np.ndarray):
+            randvars_dict = {}
+        transvars_set     = to_set('transvars')
+        randtransvars_set = to_set('randtransvars')
+        randvars_set      = set(randvars_dict.keys())
+
+        # Build ordered output: group coefficients by type
+        # Each group is a list of (display_name, coeff_idx)
+        intercept_rows   = []
+        fixed_rows       = []
+        random_rows      = []   # mean + sd paired
+        trans_rows       = []   # var + lambda paired
+        rand_trans_rows  = []   # mean + sd + lambda grouped
+
+        # Track which indices have been assigned
+        assigned = set()
+
+        # Helper: find sd. index for a variable
+        def find_sd(var):
+            for i, n in enumerate(self.coeff_names):
+                if n == f"sd.{var}":
+                    return i
+            
+            for i, n in enumerate(self.coeff_names):
+                if n == f"chol.{var}.{var}":
+                    return i
+            return None
+
+        # Helper: find lambda. index for a variable
+        def find_lambda(var):
+            for i, n in enumerate(self.coeff_names):
+                if n == f"lambda.{var}":
+                    return i
+            return None
+
+        for i, name in enumerate(self.coeff_names):
+            if i in assigned:
+                continue
+
+            # Intercepts
+            if 'intercept' in name.lower():
+                intercept_rows.append((name, "", i))
+                assigned.add(i)
+
+            # chol. => belongs to random section, added later with its variable
+            elif name.startswith('chol.'):
+                pass  # handled separately in correlation matrix
+
+            # sd. of random variable => handled when processing the mean
+            elif name.startswith('sd.'):
+                pass  # handled with mean
+
+            # lambda. of fixed transformed => handled with its variable
+            elif name.startswith('lambda.'):
+                pass
+
+            # Random transformed variable mean
+            elif name in randtransvars_set:
+                distr = randvars_dict.get(name, '')
+                row = [(name, distr, i)]
+                assigned.add(i)
+                sd_i = find_sd(name)
+                if sd_i is not None:
+                    row.append((f"sd.{name}", "", sd_i))
+                    assigned.add(sd_i)
+                lm_i = find_lambda(name)
+                if lm_i is not None:
+                    row.append((f"lambda.{name}", "", lm_i))
+                    assigned.add(lm_i)
+                rand_trans_rows.extend(row)
+
+            # Random variable mean
+            elif name in randvars_set:
+                distr = randvars_dict.get(name, '')
+                random_rows.append((name, distr, i))
+                assigned.add(i)
+                sd_i = find_sd(name)
+                if sd_i is not None:
+                    random_rows.append((f"sd.{name}", "", sd_i))
+                    assigned.add(sd_i)
+
+            # Fixed transformed variable
+            elif name in transvars_set:
+                trans_rows.append((name, "", i))
+                assigned.add(i)
+                lm_i = find_lambda(name)
+                if lm_i is not None:
+                    trans_rows.append((f"lambda.{name}", "", lm_i))
+                    assigned.add(lm_i)
+
+            # Fixed
+            else:
+                fixed_rows.append((name, "", i))
+                assigned.add(i)
+                
+        for i, name in enumerate(self.coeff_names):
+            if name.startswith('chol.'):
+                assigned.add(i)
+
+        p(LINE)
+        p(hdr)
+
+        def print_rows(title, rows):
+            if not rows:
+                return
+            section(title)
+            p(LINE2)
+            for name, distr, idx in rows:
+                signif = sig(self.pvalues[idx])
+                active = getattr(self, 'active_bounds', {}).get(idx)
+                bound_flag = " (A.B)" if active else ""
+                p(fmt.format(
+                    name[:16],
+                    distr,
+                    #self.coeff_est[idx],
+                    abs(self.coeff_est[idx]) if name.startswith('sd.') or (name.startswith('chol.') and name.split('.')[1] == name.split('.')[2]) else self.coeff_est[idx],
+                    self.stderr[idx],
+                    self.zvalues[idx],
+                    self.pvalues[idx],
+                    signif + bound_flag
+                ))
+        print_rows("INTERCEPTS",              intercept_rows)
+        print_rows("FIXED PARAMETERS",        fixed_rows)
+        print_rows("RANDOM PARAMETERS",       random_rows)
+        print_rows("TRANSFORMED PARAMETERS",  trans_rows)
+        print_rows("RANDOM TRANSFORMED PARAMETERS", rand_trans_rows)
+
+        # ── Correlation Matrix ───────────────────────────────────────────────
+        corr_mat = getattr(self, 'corr_mat', None)
+        corr_pos = getattr(self, 'correlationpos', [])
+        has_correlation = (
+            corr_mat is not None and
+            len(corr_pos) >= 2 and
+            getattr(self, 'Kchol', 0) > 0 and
+            getattr(self, 'correlationLength', 0) >= 2 )
+        
+        if has_correlation:
+            section("CORRELATION MATRIX")
+            p(LINE)
+            corr_names = [str(self.varnames[p_]) for p_ in corr_pos]
+            K = len(corr_names)
+
+            sig_map_corr = {0.001: " (***)", 0.01: " (**)", 0.05: " (*)", 0.1: " (.)", 1.01: " (-)"}
+            chol_pval = {}
+            for ii in range(K):
+                for jj in range(ii):
+                    key = f"chol.{corr_names[ii]}.{corr_names[jj]}"
+                    for ci, cn in enumerate(self.coeff_names):
+                        if cn == key:
+                            chol_pval[(ii, jj)] = self.pvalues[ci]
+                            break
+
+            p("  " + " " * 14 + "".join(f"{n:>14}" for n in corr_names))
+            for i in range(K):
+                row_str = f"  {corr_names[i]:<14}"
+                for j in range(K):
+                    if j < i:
+                        val = corr_mat[i, j]
+                        pv  = chol_pval.get((i, j), 1.0)
+                        sigc = next(s for thr, s in sig_map_corr.items() if pv < thr)
+                        row_str += f"{val:>8.3f}{sigc:<6}"
+                    elif j == i:
+                        row_str += f"{'1.000':>8}    "
+                    else:
+                        row_str += " " * 12
+                p(row_str)
+
+        # ── Goodness of Fit ──────────────────────────────────────────────────
+        section("GOODNESS OF FIT")
+        p(LINE)
+        
+        loglik_null = self.get_loglik_null()
+        adjlik = 1 - (self.loglik / loglik_null)
+        self.adjust_lik_ratio = adjlik
+        
+        
+        p("  In-Sample")
+        p(f"  LOGLIK = {self.loglik:.0f}  |  AIC = {self.aic:.0f}  |  BIC = {self.bic:.0f}  |  McFadden Adj.R²: = {adjlik:.3f}")
+        
+        if self.mae is not None:
+            p("")
+            p("  Out-of-Sample")
+            p(f"  MAE = {self.mae:.4f}")
+
+        p(LINE)
+        p("  Significance:  0 '(***)' 0.001 '(**)' 0.01 '(*)' 0.05 '(.)' 0.1 '(-)' 1")
+        p(LINE)
+        #if file is None and dashboard:         
+            #generate_est_dashboard(model=self)
+    # }
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Print the coefficients and estimation outputs    '''
     ''' ---------------------------------------------------------- '''
-    def summarise(self, file=None):
+    def summarise_Zeke(self, file=None):
     # {
         print("", file=file)
         print(f"Choice Model: {self.descr}", file=file)

@@ -374,8 +374,8 @@ class SA(Search):
         # Define a member function for the perturbation function
         PerturbFn = Callable[[], None]
         self.perturb_function: PerturbFn = self.perturb_single if self.nb_crit == 1 else self.perturb_multi
-        print(self.nb_crit, 'q')
-        print('n')
+        #print(self.nb_crit, 'q')
+        #print('n')
 
     # }
     @classmethod
@@ -755,6 +755,7 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     def finalise(self):
     # {
+        self.report_exploration_summary()
         print(f"Solver[{str(self.idnum)}]. Finalising")
         if self.nb_crit == 1:
             self.log_solution("Final Solution", self.best_sol, file=self.results_file)

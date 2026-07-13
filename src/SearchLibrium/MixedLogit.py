@@ -36,7 +36,7 @@ infinity = float('inf')
 class MixedLogit(DiscreteChoiceModel):
     def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u'], _jax=True):
         super().__init__(_jax)
-        self.descr = "Mixed Logit"
+        self.descr = "MXL"
         self.halton_opts = halton_opts
         self.draws_generator = Draws(k=len(distributions), halton_opts=halton_opts, rvdist=distributions)
         self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters
@@ -459,7 +459,7 @@ class MixedLogit(DiscreteChoiceModel):
         bnds = [[bound[1][0]] * bound[1][1] for bound in bound_dict.items() if bound[1][1] > 0]
         bnds = list(itertools.chain.from_iterable(bnds))
 
-        print(f"[MXL] Starting beta seed length={n_coeff}, first_values={betas[:min(8, len(betas))]!r}")
+        #print(f"[MXL] Starting beta seed length={n_coeff}, first_values={betas[:min(8, len(betas))]!r}")
 
         if self.de_init:
             _v = getattr(self, 'verbose_de', False)
@@ -527,12 +527,12 @@ class MixedLogit(DiscreteChoiceModel):
         # }
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-        print(f"[MXL] Minimization start with betas first_values={betas[:min(8, len(betas))]!r}")
+        #print(f"[MXL] Minimization start with betas first_values={betas[:min(8, len(betas))]!r}")
         try:
             before_fun = self.get_loglik_gradient(betas, self.X, self.y, self.panel_info,
                                                  draws, drawstrans, self.weights,
                                                  self.avail, self.batch_size)[0]
-            print(f"[MXL] Minimization obj before={before_fun:.6g}")
+            #print(f"[MXL] Minimization obj before={before_fun:.6g}")
         except Exception as e:
             print(f"[MXL] Could not evaluate initial objective before minimization: {e}")
 
@@ -570,6 +570,20 @@ class MixedLogit(DiscreteChoiceModel):
         if getattr(self, '_jax', False):
             jax_result = self.optimize_jax(betas, draws, drawstrans)
             if jax_result is not None:
+                beta_segment_names = ["Bf", "Br_b", "chol", "Br_w", "Bftrans",
+                                    "flmbda", "Brtrans_b", "Brtrans_w", "rlmda"]
+                iterations = [self.Kf, self.Kr, self.Kchol, self.Kbw, self.Kftrans,
+                            self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans]
+                self.var_list = self.split_betas(jax_result['x'], iterations, beta_segment_names)
+                self.chol_mat = self.construct_chol_mat(
+                    self.var_list['chol'], self.var_list['Br_w'], self.var_list['Brtrans_w'])
+
+                p = self.compute_probabilities(jax_result['x'], self.X, self.panel_info,
+                                                draws, drawstrans, self.avail, self.var_list, self.chol_mat)
+                self.choice_pred_prob = np.mean(p, axis=3)
+                self.ind_pred_prob = np.mean(self.choice_pred_prob, axis=1)
+                self.pred_prob = np.mean(self.ind_pred_prob, axis=0)
+                self.prob_full = p
                 self.post_process(jax_result, self.Xnames, self.N)
                 return
 

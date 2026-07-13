@@ -1706,6 +1706,9 @@ class HarmonySearch(Search):
 
         print(f"HS[{self.idnum}]. Search complete")
         logger.info("Search ended at: {}".format(str(time.ctime())))
+        
+        self.report_exploration_summary()
+
         return improved
     # }
 
