@@ -1036,7 +1036,7 @@ class HarmonySearch(Search):
         self.local_search_developer(0, phase=phase)
 
         # Also run the original local search changes (1-10) at reduced rate
-        candidate = [sol for sol in self.memory if abs(sol.obj[0]) < BOUND]
+        candidate = [sol for sol in self.memory if abs(sol.obj(0)) < BOUND]
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1058,7 +1058,7 @@ class HarmonySearch(Search):
         else:
             filtered_memory = [sol for sol in memory if abs(sol[crit_names[0]]) < BOUND]
         # OR,
-        # filtered_memory = [sol for sol in memory if abs(sol.obj[0]) < BOUND and abs(sol.obj[1]) < BOUND]
+        # filtered_memory = [sol for sol in memory if abs(sol.obj(0)) < BOUND and abs(sol.obj(1)) < BOUND]
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Sort the new list of solutions by 'sol_num':
@@ -1275,7 +1275,7 @@ class HarmonySearch(Search):
     # {
         if self.nb_crit == 1:
         # {
-            all_solutions = sorted(solutions, key=lambda sol: sol.obj[0])
+            all_solutions = sorted(solutions, key=lambda sol: sol.obj(0))
             best_sols = all_solutions[:self.max_mem]
             best_sol = best_sols[0]
             logger.info("Model with best score had {} classes".format(self.max_classes))
@@ -1344,8 +1344,9 @@ class HarmonySearch(Search):
         # ~~~~~~~~~~~~~~~~
         # Perform logging
         # ~~~~~~~~~~~~~~~~
+        import time as _time
         logger.info("Improved harmony: {}".format(improved_memory))
-        logger.info("Search ended at: {}".format(str(time.ctime())))
+        logger.info("Search ended at: {}".format(str(_time.ctime())))
 
         return improved_memory
     # }
@@ -1390,12 +1391,12 @@ class HarmonySearch(Search):
             # }
             else:
             # {
-                all_solutions = sorted(solutions, key=lambda sol: sol.obj[0])
+                all_solutions = sorted(solutions, key=lambda sol: sol.obj(0))
                 best_solution = all_solutions[0]  # assume already sorted
-                if best_solution.obj[0] < prev or override:
+                if best_solution.obj(0) < prev or override:
                 # {
                     best_model_idx += 1
-                    prev = best_solution.obj[0]
+                    prev = best_solution.obj(0)
                 # }
                 else:  # {
                     break  # Exit the loop immediately
@@ -1432,7 +1433,7 @@ class HarmonySearch(Search):
         # ~~~~~~~~~~~
         # LINE 2
         # ~~~~~~~~~~~
-        init_solns = [sol for sol in solutions if abs(sol.obj[0]) < BOUND]
+        init_solns = [sol for sol in solutions if abs(sol.obj(0)) < BOUND]
         init_0 = [sol[crit[0]] for sol in init_solns]
         init_1 = [sol[crit[1]] for sol in init_solns]
         line_2 = ax.scatter(init_0, init_1, label="Initial solutions", marker='x')
@@ -1442,9 +1443,9 @@ class HarmonySearch(Search):
         # ~~~~~~~~~~~~~~~~~~~~
         fronts = self.get_fronts(solutions)
         pareto = self.get_pareto(fronts, solutions)
-        self.pareto_front = [sol for sol in pareto if abs(sol.obj[0]) < BOUND]  # Store filtered
-        pareto_0 = np.array([sol.obj[0] for sol in pareto])
-        pareto_1 = np.array([sol.obj[1] for sol in pareto])
+        self.pareto_front = [sol for sol in pareto if abs(sol.obj(0)) < BOUND]  # Store filtered
+        pareto_0 = np.array([sol.obj(0) for sol in pareto])
+        pareto_1 = np.array([sol.obj(1) for sol in pareto])
         pareto_1 = np.log(pareto_1) if crit[1] == 'MAE' else pareto_1
 
         # ~~~~~~~~~~~
@@ -1497,20 +1498,20 @@ class HarmonySearch(Search):
         # LINE 2
         # ~~~~~~~~~~~
         init_val = [[] for _ in range(self.nb_crit)]
-        init_sols = [sol for sol in solutions if sol.obj[0] < BOUND and sol['is_initial_sol']]
-        init_val[0] = [sol.obj[0] for sol in init_sols]
+        init_sols = [sol for sol in solutions if sol.obj(0) < BOUND and sol['is_initial_sol']]
+        init_val[0] = [sol.obj(0) for sol in init_sols]
         if crit[0] == 'MAE': init_val[1] = np.log(init_val[1])
-        init_val[1] = [sol.obj[1] for sol in init_sols]
+        init_val[1] = [sol.obj(1) for sol in init_sols]
         if crit[1] == 'MAE': init_val[1] = np.log(init_val[1])
         lns2 = ax.scatter(init_val[0], init_val[1], label="Initial solutions", marker='x', color='black')
 
         # ~~~~~~~~~~~
         # LINE 4
         # ~~~~~~~~~~~
-        pareto = [pareto for _, pareto in enumerate(pareto) if np.abs(pareto.obj[0]) < BOUND]
+        pareto = [pareto for _, pareto in enumerate(pareto) if np.abs(pareto.obj(0)) < BOUND]
         logger.info('Final Pareto: {}'.format(str(pareto)))
-        pareto_0 = np.array([par.obj[0] for par in pareto])
-        pareto_1 = np.array([par.obj[1] for par in pareto])
+        pareto_0 = np.array([par.obj(0) for par in pareto])
+        pareto_1 = np.array([par.obj(1) for par in pareto])
         log_str = ''
         if crit[1] == 'MAE':
             pareto_1 = np.log(pareto_1)
@@ -1623,7 +1624,7 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     def post_process(self, solutions):
     # {
-        valid_solutions = [sol for sol in solutions if sol.obj[0] < BOUND]
+        valid_solutions = [sol for sol in solutions if sol.obj(0) < BOUND]
         valid_solutions = sorted(valid_solutions, key=lambda sol: sol['sol_num'])
 
         all_val_classes, all_val = [[] for _ in range(self.nb_crit)]
@@ -1631,7 +1632,7 @@ class HarmonySearch(Search):
         # {
             for i in range(self.nb_crit):
             # {
-                all_val[i] = [sol.obj[i] for sol in valid_solutions if sol['class_num'] == q]
+                all_val[i] = [sol.obj(i) for sol in valid_solutions if sol['class_num'] == q]
                 crit = self.param.crit(i)
                 if crit == 'MAE': all_val[i] = np.log(all_val[i])
                 all_val_classes[i].append(all_val[i])
@@ -1705,8 +1706,8 @@ class HarmonySearch(Search):
             self.best_sol = self.copy_solution(improved[0])
 
         print(f"HS[{self.idnum}]. Search complete")
-        logger.info("Search ended at: {}".format(str(time.ctime())))
-        
+        logger.info("Search ended at: {}".format(str(_time.ctime())))
+
         self.report_exploration_summary()
 
         return improved

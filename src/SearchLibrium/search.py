@@ -390,7 +390,7 @@ def sort_solutions(fronts, crowd, solutions):
 ''' ---------------------------------------------------------- '''
 def _compute_crowding_dist(fronts, solutions, i):
 # {
-    objective_values = [solution.obj[i] for solution in solutions]
+    objective_values = [solution.obj(i) for solution in solutions]
     max_val = max(objective_values)  # Compute max value for objective i
     min_val = min(objective_values)  # Compute min value for objective i
     range = max_val - min_val
@@ -414,8 +414,8 @@ def compute_crowding_dist_front(front, solutions, dist, index, range):
     for i in front:
         dist.update({i: 0})
 
-    # Sort the solutions in the front by the score 'soln[i].obj[index]'
-    front.sort(key=lambda i: solutions[i].obj[index])
+    # Sort the solutions in the front by the score 'soln[i].obj(index)'
+    front.sort(key=lambda i: solutions[i].obj(index))
 
     # Iterate through solutions in the current ordering
     for i, soln_index in enumerate(front):
@@ -426,7 +426,7 @@ def compute_crowding_dist_front(front, solutions, dist, index, range):
             before = front[i - 1]  # Index of the solution to the left
             after = front[i + 1]  # Index of the solution to the right
             dis = dist.get(soln_index) # QUERY. IS THIS LINE NEEDED?
-            dis += abs(solutions[after].obj[index] - solutions[before].obj[index]) / range  # Compute separation
+            dis += abs(solutions[after].obj(index) - solutions[before].obj(index)) / range  # Compute separation
         # }
         dist.update({soln_index: dis})  # Save the new crowding distance
     # }
@@ -997,7 +997,7 @@ class Solution(UserDict):
 
         """
         IMPORTANT NOTE: The following equivalence property exists:
-             self.obj[i] = self.data[crit[i]] where crit is defined in class Parameter
+             self.obj(i) = self.data[crit[i]] where crit is defined in class Parameter
             and crit[i] in {'bic','aic','loglik','mae'}
         """
 
@@ -3387,7 +3387,7 @@ class Search():
 
 
     ''' ---------------------------------------------------------- '''
-    ''' Function. Set sol.obj[i] = sol[crit[i]]                    '''
+    ''' Function. Set sol.data['obj'][i] = sol[crit[i]]             '''
     ''' ---------------------------------------------------------- '''
     def update_objectives(self, crit, sol):
     # {
