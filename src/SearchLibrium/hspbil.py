@@ -249,7 +249,10 @@ class HSPBIL(HarmonySearch):
 
         all_val, obj_val = self.log_convergence(self.memory)
         if self.generate_plots:
-            self.plot_results(self.memory, all_val, obj_val)
+            try:
+                self.plot_results(self.memory, all_val, obj_val)
+            except Exception as exc:
+                logger.warning(f"Convergence plot failed (non-fatal, search result unaffected): {exc}")
 
     def run_search(self, existing_sols=None):
         import time as _time

@@ -49,6 +49,10 @@ except ImportError:
 
 sol_keys = ['asvars', 'isvars', 'randvars', 'bcvars', 'corvars', 'bctrans', 'cor']
 
+# `logging` (the module) reaches this namespace via `from .search import*` above,
+# but no logger instance did -- log_convergence() called bare `logger.debug(...)`.
+logger = logging.getLogger(__name__)
+
 ''' ---------------------------------------------------------- '''
 ''' CLASS FOR HARMONY SEARCH (HS)                              '''
 ''' ---------------------------------------------------------- '''
@@ -1040,12 +1044,19 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     def log_convergence(self, memory):
     # {
-        crit = self.param.criterions[:self.nb_crit]
+        # self.param.criterions is a list of (name, sign) tuples, e.g.
+        # [('bic', -1)] or [('bic', -1), ('mae', -1)] -- crit_names are just
+        # the names, used to index into each solution dict.
+        crit_names = [c[0] for c in self.param.criterions[:self.nb_crit]]
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Filter out poor solutions:
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        filtered_memory = [sol for sol in memory if abs(sol[crit[0]]) < BOUND and abs(sol[crit[1]]) < BOUND]
+        if len(crit_names) >= 2:
+            filtered_memory = [sol for sol in memory
+                                if abs(sol[crit_names[0]]) < BOUND and abs(sol[crit_names[1]]) < BOUND]
+        else:
+            filtered_memory = [sol for sol in memory if abs(sol[crit_names[0]]) < BOUND]
         # OR,
         # filtered_memory = [sol for sol in memory if abs(sol.obj[0]) < BOUND and abs(sol.obj[1]) < BOUND]
 
@@ -1101,7 +1112,10 @@ class HarmonySearch(Search):
 
         all_val, obj_val = self.log_convergence(self.memory)
         if self.generate_plots:
-            self.plot_results(self.memory, all_val, obj_val)
+            try:
+                self.plot_results(self.memory, all_val, obj_val)
+            except Exception as exc:
+                logger.warning(f"Convergence plot failed (non-fatal, search result unaffected): {exc}")
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1528,26 +1542,32 @@ class HarmonySearch(Search):
         ax2 = ax1.twinx()
         ax1.xaxis.get_major_locator().set_params(integer=True)
 
-        crit = self.param.criterions[:self.nb_crit]
-        label ="Solution estimated at current iteration (" + crit + ")"
+        # self.param.criterions is a list of (name, sign) tuples -- crit_names
+        # are just the names, used in axis labels below.
+        crit_names = [c[0] for c in self.param.criterions[:self.nb_crit]]
+        label = "Solution estimated at current iteration (" + crit_names[0] + ")"
         line_1 = ax1.plot(np.arange(len(all_val[0])), all_val[0], label=label)
 
-        label = "Best solution in memory at current iteration (" + crit + ")"
+        label = "Best solution in memory at current iteration (" + crit_names[0] + ")"
         line_2 = ax1.plot(np.arange(len(best_val[0])), best_val[0], label=label, linestyle="dotted")
 
-        label = "In-sample LL of best solution in memory at current iteration"
-        line_3 = ax2.plot(np.arange(len(best_val[1])), best_val[1], label=label, linestyle="dashed")
+        all_lines = line_1 + line_2
+        ax1.set_ylabel(crit_names[0])
 
-        all_lines = line_1 + line_2 + line_3
+        # Second axis only applies to multi-objective runs (a second criterion).
+        if len(crit_names) >= 2 and len(best_val) >= 2:
+            label = "In-sample LL of best solution in memory at current iteration"
+            line_3 = ax2.plot(np.arange(len(best_val[1])), best_val[1], label=label, linestyle="dashed")
+            all_lines = all_lines + line_3
+            ax2.set_ylabel(crit_names[1])
 
         labels = [line.get_label() for line in all_lines]
         handles, _ = ax1.get_legend_handles_labels()
         lgd = ax1.legend(all_lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.1))
         ax1.set_xlabel("Iterations")
-        ax1.set_ylabel(crit[0])
-        ax2.set_ylabel(crit[1])
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
-        latent_info = "_" + str(self.param.num_classes) + "_classes_" if (self.param.num_classes > 1) else "_"
+        num_classes = getattr(self.param, 'num_classes', 1)
+        latent_info = "_" + str(num_classes) + "_classes_" if num_classes > 1 else "_"
         plot_filename = self.code_name + "_" + latent_info + current_time + "_SOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
@@ -1592,7 +1612,8 @@ class HarmonySearch(Search):
         ax1.set_ylabel(crit[0])
         ax2.set_ylabel(crit[1])
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
-        latent_info = "_" + str(self.param.num_classes) + "_classes_" if (self.param.num_classes > 1) else "_"
+        num_classes = getattr(self.param, 'num_classes', 1)
+        latent_info = "_" + str(num_classes) + "_classes_" if num_classes > 1 else "_"
         plot_filename = self.code_name + "_" + latent_info + current_time + "_SOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
@@ -1626,10 +1647,14 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
-    def plot_results(self, solutions, best_val, all_val):
+    def plot_results(self, solutions, all_val, best_val):
     # {
+        # Both call sites (harmony.py improvise(), hspbil.py improvise()) call
+        # this as plot_results(memory, all_val, best_val) -- i.e. the
+        # log_convergence() return order -- not (solutions, best_val, all_val)
+        # as the parameter names previously implied; renamed to match reality.
         if self.nb_crit == 1:
-            self.plot_single(all_val[0], best_val)
+            self.plot_single(all_val, best_val)
         else:
             self.plot_multi(solutions, all_val)
     # }
