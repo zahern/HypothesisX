@@ -367,7 +367,7 @@ class TA(Search):
         if self.nb_crit == 1:
         # {
             if is_better(sol.obj(0), self.best_sol.obj(0), self.param.sign_crit(0)):
-                self.best_sol.copy_solution(sol)
+                self.best_sol = self.copy_solution(sol)
                 self.no_impr = 0
         # }
         else:

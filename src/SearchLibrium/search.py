@@ -3749,8 +3749,8 @@ class Search():
     ''' and cache the result if it converged.                              '''
     ''' ------------------------------------------------------------------ '''
 
-    def evaluate_solution(self, sol):
-       
+    def evaluate_solution(self, sol, track_best=True):
+
         sig = self.setup_signature(sol)
 
         if sig not in self.explored_specs:
@@ -3763,7 +3763,7 @@ class Search():
                 sol.update_objective(i, score)
             return sol, True
 
-        sol, converged = self._evaluate_solution(sol)
+        sol, converged = self._evaluate_solution(sol, track_best=track_best)
 
         if converged:
             self.evaluated_solutions[sig] = [sol.obj(i) for i in range(self.nb_crit)]
@@ -3780,7 +3780,7 @@ class Search():
     ''' re-estimated. The function returns the estimated solution  '''
     ''' only if it converges.                                      '''
     ''' ---------------------------------------------------------- '''
-    def _evaluate_solution(self, sol):
+    def _evaluate_solution(self, sol, track_best=True):
     # {
         # apply_constraints() was previously only wired into evaluate_lc/
         # evaluate_nested_logit/evaluate_mixed_nested — plain multinomial/mixed
@@ -3836,7 +3836,7 @@ class Search():
             sol['converged'] = True
             self.update_objectives(self.param.criterions, sol)
 
-            if not hasattr(self, 'best_solution') or self.find_best_sol([sol, self.best_solution]) == sol:
+            if track_best and (not hasattr(self, 'best_solution') or self.find_best_sol([sol, self.best_solution]) == sol):
                 self.best_solution = sol
                 if self.last_printed_solution is None or not self.solutions_equal(sol, self.last_printed_solution):
                     self.print_best_solution(sol)

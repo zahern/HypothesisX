@@ -516,7 +516,10 @@ class SA(Search):
         for attempt in range(1, N_trials + 1):
             sol = self.generate_solution()
             sol = self.repair_solution_for_clarity(sol)
-            sol, converged = self.evaluate(sol)
+            # track_best=False: this is a disposable calibration trial, not
+            # part of the accepted search trajectory, so it must not update
+            # (or print) the run's global best solution.
+            sol, converged = self.evaluate(sol, track_best=False)
             if converged:
                 base_sol = sol
                 break
@@ -579,7 +582,10 @@ class SA(Search):
                 print(f"Trial {trial}: Could not generate a new proposed solution, skipping temperature calculation.")
                 continue
 
-            proposed_sol, converged = self.evaluate(proposed_sol)
+            # track_best=False: same reason as above — these proposals are
+            # only used to estimate delta_E for the starting temperature and
+            # are discarded immediately after, they never become current_sol.
+            proposed_sol, converged = self.evaluate(proposed_sol, track_best=False)
             if not converged:
                 print(f"Trial {trial}: Proposed solution did not converge, skipping temperature calculation.")
                 continue
@@ -639,10 +645,10 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function.  Evaluate how good a solution is                 '''
     ''' ---------------------------------------------------------- '''
-    def evaluate(self, sol):
+    def evaluate(self, sol, track_best=True):
     # {
-        sol, converged = self.evaluate_solution(sol)
-        
+        sol, converged = self.evaluate_solution(sol, track_best=track_best)
+
         return sol, converged
     # }
 
