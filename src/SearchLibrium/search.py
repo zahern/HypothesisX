@@ -788,9 +788,8 @@ class Parameters:
         # TODO I Think we could initialise it this way more effictively
         acceptable_keys = [
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
-            '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
-            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts'
-            'de_tol', 'de_polish', 'halton_opts', 'latent_class'
+            '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',            
+            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class'
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
@@ -1244,7 +1243,9 @@ class Search():
         self.param = param  # Record the parameters object to use
         self.nb_crit = param.nb_crit
         self.code_name = "search"
-
+        self.evaluated_solutions = {}    # {hash: solution} for all evaluated solutions
+        self.explored_specs      = set() # Set of hashes for all explored specifications (evaluated or not)
+        self.cache_hits           = 0    # Count of how many times a solution was found in the cache
 
         self.last_printed_solution = None  # Track the last printed solution
         self.best_solution = None  # T
@@ -3739,9 +3740,35 @@ class Search():
         else:
             diff = np.max(abs(sol1.data['obj'] - sol2.data['obj']))
         return diff <= tolerance
+    
 
+    ''' ------------------------------------------------------------------ '''
+    ''' Cached wrapper. If this exact specification (by setup_signature)   '''
+    ''' was already evaluated, reuse the stored objective scores instead   '''
+    ''' of re-fitting the model. Otherwise, fit it via _evaluate_solution  '''
+    ''' and cache the result if it converged.                              '''
+    ''' ------------------------------------------------------------------ '''
 
+    def evaluate_solution(self, sol):
+       
+        sig = self.setup_signature(sol)
 
+        if sig not in self.explored_specs:
+            self.explored_specs.add(sig)
+
+        if sig in self.evaluated_solutions:
+            self.cache_hits += 1
+            known_scores = self.evaluated_solutions[sig]
+            for i, score in enumerate(known_scores):
+                sol.update_objective(i, score)
+            return sol, True
+
+        sol, converged = self._evaluate_solution(sol)
+
+        if converged:
+            self.evaluated_solutions[sig] = [sol.obj(i) for i in range(self.nb_crit)]
+
+        return sol, converged
 
 
     ''' ---------------------------------------------------------- '''
@@ -3753,13 +3780,13 @@ class Search():
     ''' re-estimated. The function returns the estimated solution  '''
     ''' only if it converges.                                      '''
     ''' ---------------------------------------------------------- '''
-    def evaluate_solution(self, sol):
+    def _evaluate_solution(self, sol):
     # {
         sig = self.setup_signature(sol)
         if sig in self._banlist:
             sol['converged'] = False
             return (sol, False)
-
+        
         as_vars, is_vars, rand_vars, bc_vars, corvars, asc_ind = self.get_components(sol)
         all_vars = is_vars + as_vars
         all_vars = [var for var in self.param.varnames if var in all_vars]
@@ -3935,6 +3962,33 @@ class Search():
         return model
     # }
 
+    def report_exploration_summary(self):
+
+        """ Print a summary of the search's exploration-cache activity: how many
+        unique specifications were visited, and how many evaluations were
+        served from cache instead of re-fitting the model. """
+
+        sep = '═' * 60
+        total   = len(self.explored_specs)
+        hits    = self.cache_hits
+        hit_pct = (hits / total * 100) if total else 0.0
+
+        lines = [
+            sep,
+            "  EXPLORATION SUMMARY",
+            sep,
+            f"  Unique specifications explored : {total}",
+            f"  Cache hits                     : {hits}",
+            f"  Cache hit rate                 : {hit_pct:.1f}%",
+            sep,
+        ]
+
+        for line in lines:
+            print(line)
+            try:
+                print(line, file=self.results_file)
+            except Exception:
+                logging.debug("report_exploration_summary: unable to write to results_file")
 
 
 

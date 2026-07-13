@@ -755,6 +755,7 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     def finalise(self):
     # {
+        self.report_exploration_summary()
         print(f"Solver[{str(self.idnum)}]. Finalising")
         if self.nb_crit == 1:
             self.log_solution("Final Solution", self.best_sol, file=self.results_file)

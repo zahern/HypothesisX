@@ -287,6 +287,7 @@ class HSPBIL(HarmonySearch):
 
         print(f"HS+PBIL[{getattr(self, 'idnum', 0)}]. Search complete")
         logger.info("Search ended at: {}".format(str(_time.ctime())))
+        self.report_exploration_summary()
 
         try:
             pm_summary = self.prob_matrix.summary()
@@ -295,5 +296,6 @@ class HSPBIL(HarmonySearch):
                 print(f"  {row}", file=self.results_file)
         except Exception:
             pass
+       
 
         return improved
