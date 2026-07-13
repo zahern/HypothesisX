@@ -115,6 +115,7 @@ try:
     from .hspbil import HSPBIL
     from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, call_banditsa, call_parcopsa, estimate_ctrl
     from .predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
+    from .sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
 
 except ImportError as e:
     from _choice_model import DiscreteChoiceModel
@@ -137,6 +138,7 @@ except ImportError as e:
     from hspbil import HSPBIL
     from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, call_banditsa, call_parsa, call_parcopsa, estimate_ctrl
     from predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
+    from sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
 try:
     from .main import print_ascii_art_logo
 except Exception:

@@ -1,0 +1,3 @@
+include README.md
+include src/SearchLibrium/version.txt
+recursive-include src/SearchLibrium/data *.csv

@@ -8,6 +8,12 @@ version = {file = "src/SearchLibrium/version.txt"}
 [tool.setuptools.packages]
 find = { where = ["src"] }
 
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+SearchLibrium = ["data/*.csv"]
+
 [project]
 name = "SearchLibrium"
 dynamic = ["version"]
@@ -47,6 +53,9 @@ dependencies = [
     "jax>=0.4.30",
     "jaxlib>=0.4.30",
     "jaxopt>=0.8.5",
+    "addicty",
+    "pyfiglet",
+    "colorama",
 ]
 
 [project.optional-dependencies]

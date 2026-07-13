@@ -2004,11 +2004,11 @@ class Search():
 
     def apply_constraints(self, solution) -> Solution:
         '''edits solution to enforce constraints'''
-        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+        if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
             return solution
             
         state = solution['state']
-        constraints = self.pres_spec_constr
+        constraints = self.param.pres_spec_constr
         
         # Basic constraints (existing)
         if 'ps_nest_vars' in constraints:
@@ -2077,9 +2077,9 @@ class Search():
     
     def _get_forced_vars(self):
         """Return list of variables that must always be included (never removed)."""
-        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+        if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
             return []
-        constraints = self.pres_spec_constr
+        constraints = self.param.pres_spec_constr
         forced = list(constraints.get('force_include', []))
         forced.extend(constraints.get('ps_alt_vars', []))
         forced.extend(constraints.get('ps_nest_vars', []))
@@ -2101,9 +2101,9 @@ class Search():
 
     def _enforce_min_behavioral(self, solution):
         """Ensure at least min_count behavioural vars are present per constraint."""
-        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+        if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
             return
-        for rule in self.pres_spec_constr.get('min_behavioral', []):
+        for rule in self.param.pres_spec_constr.get('min_behavioral', []):
             min_count = rule['min']
             pool = set(rule['pool'])
             current = self._all_vars_in_solution(solution) & pool
@@ -2121,10 +2121,10 @@ class Search():
     def _behavioral_vars_protected_from_removal(self, solution):
         """Return set of behavioural vars that cannot be removed (below min)."""
         protected = set()
-        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+        if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
             return protected
         all_v = self._all_vars_in_solution(solution)
-        for rule in self.pres_spec_constr.get('min_behavioral', []):
+        for rule in self.param.pres_spec_constr.get('min_behavioral', []):
             min_count = rule['min']
             pool = set(rule['pool'])
             current = all_v & pool
@@ -2158,9 +2158,9 @@ class Search():
         Each group is a list[str]; at most one member of each group may
         appear in a solution.
         """
-        if not hasattr(self, 'pres_spec_constr') or self.pres_spec_constr is None:
+        if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
             return []
-        return self.pres_spec_constr.get('mutually_exclusive', [])
+        return self.param.pres_spec_constr.get('mutually_exclusive', [])
 
     def _get_excluded_by_mutual_group(self, already_present: set):
         """Return the set of variables that are blocked because a partner
@@ -3744,6 +3744,11 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def evaluate_solution(self, sol):
     # {
+        # apply_constraints() was previously only wired into evaluate_lc/
+        # evaluate_nested_logit/evaluate_mixed_nested — plain multinomial/mixed
+        # logit (the model types the README's own Quick Start demonstrates)
+        # never got force_include/mutually_exclusive/etc. enforced. Fixed here.
+        sol = self.apply_constraints(sol)
         sig = self.setup_signature(sol)
         if sig in self._banlist:
             sol['converged'] = False
@@ -4548,6 +4553,7 @@ class Search():
         return model
 
     def evaluate_rrm(self, sol):
+        sol = self.apply_constraints(sol)
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
         bc_vars = self.define_bc_vars(sol)
         bc_vars = [v for v in bc_vars if v not in self.param.isvarnames]
@@ -4573,6 +4579,7 @@ class Search():
 
     def evaluate_mixed_rrm(self, sol):
         """Estimate a Mixed Random Regret model with random coefficients."""
+        sol = self.apply_constraints(sol)
         as_vars, is_vars, rand_vars, cor_vars = (
             sol['asvars'], sol['isvars'], sol['randvars'], sol['corvars'])
         bc_vars = self.define_bc_vars(sol)

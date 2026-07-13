@@ -1,3 +1,4 @@
+MANIFEST.in
 README.md
 pyproject.toml
 src/SearchLibrium/version.txt
@@ -16,6 +17,7 @@ src/SearchLibrium/boxcox_functions.py
 src/SearchLibrium/call_meta.py
 src/SearchLibrium/constraints_builder.py
 src/SearchLibrium/harmony.py
+src/SearchLibrium/hspbil.py
 src/SearchLibrium/latent_class.py
 src/SearchLibrium/main.py
 src/SearchLibrium/main_debug.py
@@ -29,7 +31,9 @@ src/SearchLibrium/multinomial_nested.py
 src/SearchLibrium/multinomial_probit.py
 src/SearchLibrium/ordered_logit.py
 src/SearchLibrium/ordered_logit_mixed.py
+src/SearchLibrium/predict.py
 src/SearchLibrium/rrm.py
+src/SearchLibrium/sample_data.py
 src/SearchLibrium/sapbil.py
 src/SearchLibrium/search.py
 src/SearchLibrium/selection_models.py
@@ -47,3 +51,6 @@ src/SearchLibrium.egg-info/entry_points.txt
 src/SearchLibrium.egg-info/requires.txt
 src/SearchLibrium.egg-info/top_level.txt
 src/SearchLibrium/bhhh/minimize.py
+src/SearchLibrium/data/Swissmetro_final.csv
+src/SearchLibrium/data/TravelMode.csv
+src/SearchLibrium/data/electricity.csv

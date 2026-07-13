@@ -11,32 +11,51 @@ from .misc import*
 
 from addicty import Dict
 
+try:
+    from .sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data
+except ImportError:
+    from sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data
+
+# Bundled locally as of 0.0.141 (SearchLibrium/data/*.csv) — previously fetched from these
+# URLs at call time. Kept here only as provenance / a fallback if a local file is ever missing.
 problem_set = Dict()
 problem_set.electricity = 'https://raw.githubusercontent.com/zahern/HypothesisX/refs/heads/main/data/electricity.csv'
 problem_set.travel_mode = 'https://raw.githubusercontent.com/zahern/HypothesisX/refs/heads/main/data/TravelMode.csv'
 problem_set.swiss_metro = 'https://raw.githubusercontent.com/zahern/HypothesisX/refs/heads/main/data/Swissmetro_final.csv'
 
+_LOCAL_LOADERS = {
+    'electricity': load_electricity_data,
+    'travel_mode': load_travel_mode_data,
+    'swiss_metro': load_swiss_metro_data,
+}
+
 def preview_dataset():
-    # Preview datasets
-    for name, url in problem_set.items():
+    # Preview the bundled datasets (falls back to the remote URL if the local
+    # loader fails for some reason, e.g. a very old install missing the data files).
+    for name, loader in _LOCAL_LOADERS.items():
         try:
             print(f"\nDataset: {name}")
-
-            df = pd.read_csv(url)
+            df = loader()
             print(df.head())  # Show first 5 rows
             print(df.info())  # Show column info
         except Exception as e:
-            print(f"Could not load {name}: {e}")
+            print(f"Could not load {name} locally ({e}); trying remote fallback...")
+            try:
+                df = pd.read_csv(problem_set[name])
+                print(df.head())
+                print(df.info())
+            except Exception as e2:
+                print(f"Could not load {name}: {e2}")
 
 def prepare_dataset(item):
     if item == 'travel_mode':
-        data = pd.read_csv(problem_set[item])
+        data = _LOCAL_LOADERS['travel_mode']()
         data['AV'] = 1
         data['CHOICE'] = data['choice'].map({'no': 0, 'yes': 1})
     elif item == 'swiss_metro':
         'header'
         '''custom_id,alt,FIRST,PURPOSE,LUGGAGE,DEST,CHOICE,MALE,GROUP,SURVEY,TICKET,AGE,ID,SP,GA,WHO,INCOME,ORIGIN,TIME,COST,HEADWAY,SEATS,AV'''
-        data = pd.read_csv(problem_set[item])
+        data = _LOCAL_LOADERS['swiss_metro']()
         #data['AV'] = 1
         #data['CHOICE'] = data['choice'].map({'no': 0, 'yes': 1})
 

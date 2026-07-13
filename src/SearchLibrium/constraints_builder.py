@@ -422,7 +422,15 @@ class ConstraintBuilder:
                 for k, v in value.items():
                     summary_lines.append(f"  {k}: {v}")
             elif isinstance(value, list):
-                summary_lines.append(f"{key}: {', '.join(value)}")
+                # Items aren't always strings — mutually_exclusive stores a list of
+                # groups (each a list of var names), min_behavioral a list of dicts.
+                formatted = []
+                for item in value:
+                    if isinstance(item, (list, tuple)):
+                        formatted.append("[" + ", ".join(str(v) for v in item) + "]")
+                    else:
+                        formatted.append(str(item))
+                summary_lines.append(f"{key}: {', '.join(formatted)}")
             else:
                 summary_lines.append(f"{key}: {value}")
         

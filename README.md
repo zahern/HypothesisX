@@ -411,16 +411,29 @@ After every `call_siman` run a dashboard is printed:
 
 ## Bundled datasets
 
+Three example choice datasets ship inside the package (`SearchLibrium/data/*.csv`) — no
+download required, and they work offline (e.g. on HPC compute nodes with no internet egress):
+
 ```python
-import SearchLibrium as sl
-sl.main.preview_dataset()   # prints head of each dataset
+from SearchLibrium import (
+    load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets,
+)
+
+preview_datasets()   # prints shape + head of all three
+
+df = load_swiss_metro_data()   # the dataset used in Quick Start above
 ```
 
-| Name | Description |
-| ---- | ----------- |
-| `electricity` | Stated-preference electricity plan choice |
-| `travel_mode` | Mode choice: air / train / bus / car |
-| `swiss_metro` | Swiss Metro SP study (SM / train / car) |
+| Name | Loader | Description | Alts | Rows |
+| ---- | ------ | ----------- | ---- | ---- |
+| `electricity` | `load_electricity_data()` | Stated-preference electricity plan choice | 4 | 17,232 |
+| `travel_mode` | `load_travel_mode_data()` | Mode choice: air / train / bus / car | 4 | 840 |
+| `swiss_metro` | `load_swiss_metro_data()` | Swiss Metro SP study (SM / train / car) | 3 | 24,948 |
+
+Each loader's docstring documents the exact `Parameters(...)` call for that dataset — the
+three use different column-naming conventions (e.g. `travel_mode`'s choice column is a
+`"yes"/"no"` string keyed by `mode`, not a `0/1` int keyed by `alt`), so see
+`help(load_travel_mode_data)` rather than assuming a single shared schema.
 
 ---
 
