@@ -261,9 +261,9 @@ class MixedLogit(DiscreteChoiceModel):
               init_coeff=None, maxiter=2000, correlated_vars=None,
               n_draws=1000, halton=True, minimise_func=None,
               batch_size=None, halton_opts=None, ftol=1e-6,
-              gtol=1e-6, return_hess=True, return_grad=True, method="bfgs",
+              gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True, fixed_thetas=None,
-              l1_penalty=0.0):
+              l1_penalty=0.1, l2_penalty=0.5):
     # {
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

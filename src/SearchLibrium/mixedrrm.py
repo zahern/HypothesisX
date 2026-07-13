@@ -58,6 +58,6 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
             return -loglik
 
         # Optimize the negative log-likelihood
-        self.result = minimize(neg_log_likelihood, self.beta, method='BFGS', tol=1e-6)
+        self.result = minimize(neg_log_likelihood, self.beta, method='SLSQP', tol=1e-6)
         self.beta = self.result.x
         self.post_process()

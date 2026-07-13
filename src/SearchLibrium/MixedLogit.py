@@ -134,13 +134,14 @@ class MixedLogit(DiscreteChoiceModel):
     def setup(self, X, y, varnames=None, alts=None, isvars=None, transvars=None,
               transformation="boxcox", ids=None, weights=None, avail=None,
               randvars=None, panels=None, base_alt=None, fit_intercept=False,
-              init_coeff=None, maxiter=1000, correlated_vars=None,
+              init_coeff=None, maxiter=2000, correlated_vars=None,
               n_draws=1000, halton=True, minimise_func=None,
-              batch_size=None, halton_opts=None, ftol=1e-12,
+              batch_size=None, halton_opts=None, ftol=1e-6,
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
-              de_polish=False, l1_penalty=0.0):
+              de_polish=False, l1_penalty=0.1, l2_penalty=0.5,
+              sd_penalty=0.001):
         # {
         self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -186,6 +187,8 @@ class MixedLogit(DiscreteChoiceModel):
         self.total_fun_eval = 0
         self.method = method.lower() if hasattr(method, 'lower') else method
         self.l1_penalty = float(l1_penalty)
+        self.l2_penalty = float(l2_penalty)
+        self.sd_penalty = float(sd_penalty)
         self.jac = self.return_grad  # scipy optimize parameter
         self.n_draws = n_draws
         self.batch_size = min(n_draws, batch_size) if batch_size is not None else n_draws
@@ -600,11 +603,64 @@ class MixedLogit(DiscreteChoiceModel):
         args = (self.X, self.y, self.panel_info, draws, drawstrans, self.weights, self.avail, self.batch_size)
         bounds = bnds if self.method == "L-BFGS-B" else None
         options = {'gtol': self.gtol, 'maxiter': self.maxiter, 'disp': False}
-        result = minimise_func(self.get_loglik_gradient, betas, jac=self.jac, method=self.method,
+
+        # ── SD penalty wrapper: regularise SD params away from exactly zero ──
+        # When an SD parameter hits zero, the gradient vanishes and BFGS gets stuck.
+        # A small L2 penalty that activates below a threshold keeps SDs bounded
+        # away from zero without affecting the well-identified estimates.
+        if self.sd_penalty > 0 and self.Kbw > 0:
+            # SD param indices: end of beta vector, before Kftrans and Krtrans
+            sd_start = self.Kf + self.Kr + self.Kchol
+            sd_end   = sd_start + self.Kbw
+            _orig_obj = self.get_loglik_gradient
+
+            def _penalised_obj(betas, *obj_args):
+                f, g = _orig_obj(betas, *obj_args)
+                for i in range(sd_start, sd_end):
+                    if i >= len(betas):
+                        break
+                    sd_val = betas[i]
+                    if sd_val < 0.05:
+                        p = self.sd_penalty * (sd_val - 0.05) ** 2
+                        f += p
+                        if g is not None and len(g) > i:
+                            g[i] += 2.0 * self.sd_penalty * (sd_val - 0.05)
+                return f, g
+
+            obj_fn = _penalised_obj
+        else:
+            obj_fn = self.get_loglik_gradient
+
+        result = minimise_func(obj_fn, betas, jac=self.jac, method=self.method,
                                args=args, tol=self.ftol, bounds=bounds, options=options)
-        print(f"[MXL] Minimization completed: success={result.get('success', None)}, fun={result.get('fun', float('nan')):.6g}, nit={result.get('nit', '?')}")
+        print(f"[MXL] Primary minimization ({self.method}): success={result.get('success', None)}, fun={result.get('fun', float('nan')):.6g}, nit={result.get('nit', '?')}")
         if 'x' in result:
-            print(f"[MXL] Minimization final betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
+            print(f"[MXL] Primary betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
+
+        # ── BFGS polish: after non-BFGS methods (SLSQP, Powell, etc.),
+        # run a quick BFGS to get the inverse Hessian for standard errors.
+        if (self.method not in ('bfgs', 'l-bfgs-b')
+                and 'x' in result
+                and result.get('success', False)):
+            try:
+                polish_opts = {'gtol': self.gtol * 10, 'maxiter': min(self.maxiter // 5, 200), 'disp': False}
+                polish_bnds = bnds  # re-use same bounds
+                # Use original objective (no SD penalty) for clean Hessian
+                polish_result = minimise_func(
+                    self.get_loglik_gradient,
+                    np.asarray(result['x']).copy(),
+                    jac=True, method='L-BFGS-B',
+                    args=args, tol=self.ftol,
+                    bounds=polish_bnds, options=polish_opts,
+                )
+                if polish_result.get('fun', float('inf')) < result.get('fun', float('inf')) + 0.1:
+                    print(f"[MXL] BFGS polish: success={polish_result.get('success')}, "
+                          f"fun={polish_result.get('fun', float('nan')):.6g}")
+                    result = polish_result
+                else:
+                    print(f"[MXL] BFGS polish skipped (worse objective)")
+            except Exception as e:
+                print(f"[MXL] BFGS polish failed: {e}")
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         if hasattr(self, 'method') and self.method == "L-BFGS-B":  # {

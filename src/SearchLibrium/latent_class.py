@@ -66,6 +66,10 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.descr = "LC-MXL"
         self.coeff_est = None
         self.coeff_names = None
+        self.stderr = None
+        self.zvalues = None
+        self.pvalues = None
+        self.pvalues_member = None
         self.class_betas = None
         self.class_probs = None
         self.class_gammas = None
@@ -1473,16 +1477,24 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             params = np.concatenate([phi_vals, beta_flat])
             n_gamma = 0
 
-        # ── JAX autograd Hessian → covariance (strict: no numerical fallback) ──
+        # ── JAX autograd Hessian → covariance (numerical fallback) ──
         H_a = self._autograd_hessian(params)
-        if H_a is None or not np.isfinite(H_a).all():
-            raise RuntimeError(
-                "JAX autograd Hessian unavailable — cannot compute standard errors. "
-                "Ensure JAX is installed, the model was fit with _jax=True (default), "
-                "and all latent classes share the same variable set."
-            )
-        info = H_a   # hessian(-negloglik) = -hessian(loglik) = observed info
-        se_method = "autograd-hessian"
+        if H_a is not None and np.isfinite(H_a).all():
+            info = H_a   # hessian(-negloglik) = -hessian(loglik) = observed info
+            se_method = "autograd-hessian"
+        else:
+            # JAX unavailable (or classes with differing variable sets):
+            # fall back to a finite-difference Hessian so searches always
+            # get standard errors and p-values.
+            H_num = self._numerical_hessian(params, eps=eps)
+            if not np.isfinite(H_num).all():
+                raise RuntimeError(
+                    "Hessian could not be computed (autograd unavailable and "
+                    "finite-difference Hessian is non-finite) — standard errors "
+                    "are not available for this model."
+                )
+            info = -H_num   # observed info = -hessian(loglik)
+            se_method = "numerical-hessian (finite differences)"
 
         cond_number = np.nan
         cov = None
@@ -1610,6 +1622,16 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 for v in mem_vars:
                     gamma_names.append(f"gamma_class_{c + 1}_{v}")
             param_names += gamma_names
+
+        # ── Standard attributes aligned with coeff_est / coeff_names ──────
+        # The specification search reads model.stderr / model.pvalues to drive
+        # significance-based refinement and PBIL probability updates, so the
+        # class-beta block (which is what coeff_est holds) must be exposed here.
+        n_beta = beta_flat.size
+        self.stderr  = se[n_phi:n_phi + n_beta]
+        self.zvalues = t_stats[n_phi:n_phi + n_beta]
+        self.pvalues = p_values[n_phi:n_phi + n_beta]
+        self.pvalues_member = gamma_p_values
 
         return {
             "params":      params,

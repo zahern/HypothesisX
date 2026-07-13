@@ -592,6 +592,7 @@ class Parameters:
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
+        sd_penalty=0.001,
         intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
 
         
@@ -683,9 +684,10 @@ class Parameters:
         self.de_maxiter = de_maxiter
         self.de_tol = de_tol
         self.de_polish = de_polish
+        self.sd_penalty = sd_penalty
 
         # ── Regularisation (primarily for latent class) ──────────────
-        self.l1_penalty = kwargs.get('l1_penalty', 0.0)
+        self.l1_penalty = kwargs.get('l1_penalty', 0.1)
         self.l2_penalty = kwargs.get('l2_penalty', 0.5)
 
         self.intercept_opts = intercept_opts
@@ -787,6 +789,7 @@ class Parameters:
         acceptable_keys = [
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
             '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
+            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts'
             'de_tol', 'de_polish', 'halton_opts', 'latent_class'
         ]
 
@@ -1008,6 +1011,27 @@ class Solution(UserDict):
                 setattr(self, key, value)
     # }
 
+    def __deepcopy__(self, memo):
+    # {
+        # Fitted model objects stored under 'model' hold module/JAX references
+        # that cannot be deep-copied (TypeError: cannot pickle 'module' object).
+        # The fitted model is read-only after estimation, so the copy shares it
+        # by reference; everything else is deep-copied as usual.
+        cls = self.__class__
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        new.data = {}
+        for k, v in self.data.items():
+            new.data[k] = v if k == 'model' else copy.deepcopy(v, memo)
+        for k, v in self.__dict__.items():
+            if k == 'data':
+                continue
+            try:
+                setattr(new, k, copy.deepcopy(v, memo))
+            except TypeError:
+                setattr(new, k, v)  # share unpicklable attributes by reference
+        return new
+    # }
 
     def __eq__(self, other):
         """
@@ -3999,7 +4023,8 @@ class Search():
             de_popsize=getattr(self.param, 'de_popsize', 4),
             de_maxiter=getattr(self.param, 'de_maxiter', 3),
             de_tol=getattr(self.param, 'de_tol', 0.5),
-            de_polish=getattr(self.param, 'de_polish', False))
+            de_polish=getattr(self.param, 'de_polish', False),
+            sd_penalty=getattr(self.param, 'sd_penalty', 0.001))
         model.fit()
         
         return model
@@ -4031,8 +4056,8 @@ class Search():
             random_state=seed if seed is not None else 0,
             optimise_membership=optimise_membership,
             membership_maxiter=100,
-            l1_penalty=getattr(self.param, 'l1_penalty', 0.0),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.0),
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
         )
 
         membership_vars = None
@@ -4280,6 +4305,14 @@ class Search():
         sol['coeff'] = model.coeff_est
         sol['model_n'] = 'latent_class'
         converged = model.converged
+
+        # Standard errors / p-values: needed by significance-based refinement
+        # and PBIL updates. A failed Hessian must not abort the search.
+        if converged and getattr(model, 'pvalues', None) is None:
+            try:
+                model.compute_standard_errors()
+            except Exception as exc:
+                print(f"[LC] standard errors unavailable for this candidate: {exc}")
 
         aic = getattr(model, 'aic', float('inf'))
         bic = getattr(model, 'bic', float('inf'))
