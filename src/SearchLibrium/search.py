@@ -3914,7 +3914,9 @@ class Search():
                 self.param.df[col_name] = self.param.df[alt_var] * (self.param.alt_var == choice)
 
                 if self.param.nb_crit > 1:
-                    self.param.df_test[col_name] = self.param.df_test[alt_var] * (self.param.alt_var == choice)
+                    # Must compare against the split TEST alt array, not the
+                    # full training self.param.alt_var (shape mismatch else).
+                    self.param.df_test[col_name] = self.param.df_test[alt_var] * (self.param.test_alt_var == choice)
 
                 asvars_new.append(col_name)
             # }
