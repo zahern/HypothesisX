@@ -328,7 +328,9 @@ class OrderedLogit():
         # Note: [1:]  => Ignore first element
         # Note: |cut[:-1]| = |cut[1:]| = self.J and |low| = |high| = self.N x self.J
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        cut = self.np.concatenate(([-self.np.inf], thresholds, [self.np.inf]))
+        # jax.numpy.concatenate (self.np when _jax=True) requires actual
+        # ndarrays, unlike regular numpy which auto-converts bare lists.
+        cut = self.np.concatenate((self.np.array([-self.np.inf]), thresholds, self.np.array([self.np.inf])))
         y_latent = self.y_latent[:, None]  # Add a second dimension => |y_latent| = (self.N, 1)
         low = cut[:-1] - y_latent  # Compute: cut[j] - y_latent[n] for j in range(0, self.J - 1)
         high = cut[1:] - y_latent  # Compute: cut[j + 1] - y_latent[n] for j in range(1, self.J - 1)
@@ -464,9 +466,14 @@ class OrderedLogit():
     def get_hessian(self, eps=1e-6):
     # {
         N = self.nparams  # Cardinality of hessian matrix
-        hessian = self.np.zeros((N, N))  # Initialise hessian matrix
+        # This manual finite-difference scheme mutates `params`/`hessian`
+        # in-place throughout (params[i] = ..., hessian[i, :] = ...), which
+        # jax arrays (self.np.zeros/self.np.copy when _jax=True) don't
+        # support -- it isn't JAX-traced anyway, so use plain, mutable numpy
+        # regardless of self._jax.
+        hessian = np.zeros((N, N))  # Initialise hessian matrix
         delta = [eps] * N
-        params = self.np.copy(self.params)
+        params = np.array(self.params)
         df_0 = self.compute_gradient_central(params, delta)
         for i in range(N):  # i.e., for i = 0, 1, ..., N-1
         # {
@@ -553,8 +560,9 @@ class OrderedLogit():
         hessian = self.get_hessian(tol)
         inverse = self.np.linalg.pinv(hessian) # Conventional approach
         diag = self.np.diagonal(inverse)
-        diag_copy = self.np.copy(diag)
-        diag_copy[diag_copy < minval] = minval
+        # jax arrays (self.np when _jax=True) don't support boolean-mask
+        # in-place assignment; clip() returns a new array either way.
+        diag_copy = self.np.clip(self.np.copy(diag), minval, None)
 
         # DEBUG:
         #for i, value in enumerate(diag_copy):
@@ -706,7 +714,10 @@ class OrderedLogit():
         delta = self.np.ones(self.nparams) * tol
         bounds_beta = [(-self.np.inf, self.np.inf)] * (self.K + 1+int(self.fit_intercept))  # K+1 betas + 1 threshold. [-inf, inf]
         bounds_delta = [(minval, self.np.inf)] * (self.J - 2)  # These are deltas. [0, inf]
-        bounds = self.np.concatenate((bounds_beta, bounds_delta))
+        # bounds_beta/bounds_delta are plain Python lists of tuples; jax.numpy
+        # (self.np when _jax=True) requires actual ndarrays for concatenate,
+        # unlike regular numpy which auto-converts -- convert explicitly.
+        bounds = self.np.concatenate((self.np.array(bounds_beta), self.np.array(bounds_delta)))
         args = (delta,)  # Make sure this is a tuple by adding a comma
         optimize_result = minimize(fun=self.get_loglike_gradient, x0=start, args=args,
             method='L-BFGS-B', tol=tol, jac=True, options=options, bounds=bounds)
@@ -723,7 +734,21 @@ class OrderedLogitLong(OrderedLogit):
     ''' ---------------------------------------------------------- '''
 
     def __init__(self, **kwargs):
-        super(OrderedLogit,self).__init__()
+        # NOTE: intentionally NOT calling OrderedLogit.__init__ (which would
+        # invoke self.setup(**kwargs) via its own body, before this class's
+        # own setup() override runs again below). But `super(OrderedLogit,
+        # self).__init__()` skips OrderedLogit entirely in the MRO and calls
+        # object.__init__() instead, so self._jax/self.np (normally set in
+        # OrderedLogit.__init__) were never initialized -- replicate that
+        # minimal setup here directly.
+        _jax = kwargs.get('_jax', True)
+        self._jax = _jax
+        if _jax:
+            import jax.numpy as jnp
+            self.np = jnp
+        else:
+            import numpy as np
+            self.np = np
         self.delta_transform = True
         self.setup(**kwargs)
 
@@ -779,7 +804,8 @@ class OrderedLogitLong(OrderedLogit):
         try:
             self.X = kwargs.get('X').reshape(self.N, self.J, self.K)
         except:
-            self.X = kwargs.get('X').reshape(self.N_obs/self.J, self.J, self.K)
+            # true division produces a float, which .reshape() rejects
+            self.X = kwargs.get('X').reshape(self.N_obs // self.J, self.J, self.K)
         self.y = kwargs.get('y').reshape(self.N, self.J)
         # Validate inputs
         if self.J <= 1:

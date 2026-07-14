@@ -10,6 +10,11 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
     def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u'], **kwargs):
         RandomRegret.__init__(self, **kwargs)
         MixedLogit.__init__(self, halton_opts=halton_opts, distributions=distributions)
+        # RandomRegret's setup()/setup_long()/setup_short() never call
+        # MixedLogit.setup(), so fn_generate_draws (normally assigned there,
+        # defaulting to Halton draws) is never set -- generate_draws() then
+        # crashes with AttributeError the first time fit() is called.
+        self.fn_generate_draws = self.generate_draws_halton
 
 
 
