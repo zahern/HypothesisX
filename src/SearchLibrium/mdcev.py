@@ -353,6 +353,22 @@ class MDCEVModel:
 
         self.mle_success_ = bool(res.success)
         self.mle_message_ = str(res.message)
+
+        # fit_mle() refines baseline_utility_/alpha_/gamma_ beyond the initial
+        # self.fit(...) call above, but fit_result_ (what summary() reads)
+        # was never refreshed -- summary() would silently keep reporting the
+        # pre-MLE heuristic estimates. participation_rate/mean_allocation/
+        # mean_budget are observed-data statistics, unaffected by refinement.
+        old_result = self.fit_result_
+        self.fit_result_ = MDCEVFitResult(
+            labels=old_result.labels,
+            baseline_utility=self.baseline_utility_.copy(),
+            alpha=self.alpha_.copy(),
+            gamma=self.gamma_.copy(),
+            participation_rate=old_result.participation_rate,
+            mean_allocation=old_result.mean_allocation,
+            mean_budget=old_result.mean_budget,
+        )
         return self
 
     def summary(self) -> pd.DataFrame:
