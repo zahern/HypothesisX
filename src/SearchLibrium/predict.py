@@ -88,6 +88,14 @@ class DestinationPredictor:
         if prob is None:
             prob = getattr(self.model, 'choice_pred_prob', None)
         if prob is not None and hasattr(prob, 'shape') and len(prob.shape) == 2:
+            # JAX-fitted models (_jax=True, the default) leave this as a
+            # jax.Array. Downstream code (predict_destinations()) runs plain
+            # numpy ops (argmax/argsort) per row in a Python loop; numpy
+            # dispatching those against an un-converted jax.Array is
+            # catastrophically slow (~4s per argsort call observed, i.e.
+            # hours instead of seconds for a few thousand trips) rather than
+            # erroring, so convert once here up front.
+            prob = np.asarray(prob)
             self._probs = prob
             return prob
 
@@ -106,8 +114,9 @@ class DestinationPredictor:
             avail.reshape(self.n_trips, self.n_dests),
             return_logsum=True,
         )
+        probs = np.asarray(probs)  # see conversion note above
         self._probs = probs
-        self._logsums = logsums
+        self._logsums = np.asarray(logsums)
         return probs
 
     # ------------------------------------------------------------------
@@ -147,7 +156,11 @@ class DestinationPredictor:
                 (self.idca[self.trip_id_col] == tid)
                 & (self.idca[self.choice_col] == 1)
             ]
-            actual_code = int(actual[self.dest_col].iloc[0]) if len(actual) else -1
+            # dest_col isn't always integer-coded (e.g. string alt labels
+            # like 'CAR'/'SM'/'TRAIN') -- keep the raw value so it compares
+            # correctly against dest_codes/best_code, which retain whatever
+            # dtype the source data used.
+            actual_code = actual[self.dest_col].iloc[0] if len(actual) else -1
 
             rows.append({
                 self.trip_id_col: tid,
