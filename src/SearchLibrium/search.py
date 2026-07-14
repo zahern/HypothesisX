@@ -87,6 +87,7 @@ except ImportError:
     from .ordered_logit import OrderedLogitLong
     from . import misc
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
+    from addicty import Dict
 
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS                                                  '''
@@ -788,8 +789,9 @@ class Parameters:
         # TODO I Think we could initialise it this way more effictively
         acceptable_keys = [
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
-            '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',            
-            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class'
+            '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
+            'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class',
+            'num_classes',
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
@@ -1985,12 +1987,15 @@ class Search():
         if model_n == 'nested_logit':
             all_vars = list(set(asvars+isvars))
             logging.info('prereqs')
-            if 'ps_alt_vars' in self.param.pres_spec_constr:
-                ps_alt_vars = self.param.pres_spec_constr['ps_alt_vars']
+            # pres_spec_constr defaults to None when no constraints are supplied
+            # at all -- 'x in None' raises TypeError, so guard with `or {}`.
+            _psc = self.param.pres_spec_constr or {}
+            if 'ps_alt_vars' in _psc:
+                ps_alt_vars = _psc['ps_alt_vars']
             else:
                 ps_alt_vars = None
-            if 'ps_nest_vars' in self.param.pres_spec_constr:
-                ps_nest_vars = self.param.pres_spec_constr['ps_nest_vars']
+            if 'ps_nest_vars' in _psc:
+                ps_nest_vars = _psc['ps_nest_vars']
             else:
                 ps_nest_vars = None
             state = Dict({'all_vars': all_vars,
@@ -4404,7 +4409,10 @@ class Search():
         if len(all_vars) == 0:
             raise ValueError('need a variable: todo debug why')
         all_vars = [var for var in self.param.varnames if var in all_vars]
-        nest_vars = [var for var in self.param.varnest if var in all_vars]
+        # varnest (nest-level utility variables) is optional and has no default
+        # in Parameters.__init__ -- most nested_logit specs don't use nest-level
+        # covariates at all, so treat missing/None as "no nest variables".
+        nest_vars = [var for var in (getattr(self.param, 'varnest', None) or []) if var in all_vars]
 
         X, y = self.param.df[all_vars].values, self.param.choices
         X_nest = self.param.df[nest_vars]
