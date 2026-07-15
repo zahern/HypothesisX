@@ -448,6 +448,10 @@ class SA(Search):
         # ── best specification: copy-paste ready Python dict ─────────────────
         self.best_file     = _open('best.txt')
 
+        # ADDED: one block per temperature step, tracking how the probability
+        # matrix evolves across the whole run.
+        self.pbil_log_file = _open('pbil_matrix.txt')
+
         # Write run header to results.txt
         criterions = getattr(self.param, 'criterions', [])
         models     = getattr(self.param, 'models_avail', [])
@@ -466,7 +470,8 @@ class SA(Search):
     def close_files(self):
     # {
         for f in (self.results_file, self.progress_file,
-                  self.debug_file, self.archive_file, self.best_file):
+                  self.debug_file, self.archive_file, self.best_file,
+                self.pbil_log_file):
             try:
                 f.flush()
                 f.close()
@@ -910,7 +915,7 @@ class SA(Search):
         self.perturb_solution(chosen_sol)   # Perturb chosen solution
     # }
 
-    def perturb_solution(self, sol):
+    def perturb_solution_Zeke(self, sol):
     # {
         # Snapshot signature BEFORE any perturbation
         b = self.setup_signature(sol)
@@ -1058,6 +1063,106 @@ class SA(Search):
         return self.current_sol
     # }
 
+    # Neighbour-generation is delegated to self._pbil_perturb (in Search),
+    # so pbil_enabled=False and pbil_enabled=True run through the exact same
+    # weighted dimension-selection mechanism — the flag only decides, at the
+    # very end, whether the matrix updates from this move. That's what makes
+    # a frozen-matrix run a valid control condition for a learning run,
+    # rather than a differently-shaped algorithm.
+    #
+    # Within one multi-step move, a later perturbation is rejected if it
+    # cancels a change already made earlier in the same move (e.g. adding a
+    # variable, then removing it two steps later) — otherwise combined moves
+    # can waste attempts on changes that net out to nothing.
+    def perturb_solution(self, sol):
+
+        baseline_sig = self.setup_signature(sol)
+        curr_score   = [sol.obj(i) for i in range(self.nb_crit)]
+        new_sol      = self.copy_solution(sol)
+
+        n_perturbations = np.random.randint(1, 6)
+        max_attempts     = 15
+        attempts, real_perturbations = 0, 0
+
+        added_asvars, removed_asvars     = set(), set()
+        added_randvars, removed_randvars = set(), set()
+        changed_dists                    = set()
+        added_corvars, removed_corvars   = set(), set()
+        added_bcvars, removed_bcvars     = set(), set()
+
+        while real_perturbations < n_perturbations and attempts < max_attempts:
+            attempts += 1
+            prev_sol  = self.copy_solution(new_sol)
+            candidate = self._pbil_perturb(new_sol)
+
+            if candidate is None or self.setup_signature(candidate) == self.setup_signature(prev_sol):
+                continue
+            new_sol = candidate
+
+            asvars_added     = set(new_sol['asvars']) - set(prev_sol['asvars'])
+            asvars_removed   = set(prev_sol['asvars']) - set(new_sol['asvars'])
+            randvars_added   = set(new_sol['randvars']) - set(prev_sol['randvars'])
+            randvars_removed = set(prev_sol['randvars']) - set(new_sol['randvars'])
+            dist_changed = {
+                v for v in new_sol['randvars']
+                if v in prev_sol['randvars'] and new_sol['randvars'][v] != prev_sol['randvars'][v]
+            }
+            corvars_added   = set(new_sol.get('corvars', []))  - set(prev_sol.get('corvars', []))
+            corvars_removed = set(prev_sol.get('corvars', [])) - set(new_sol.get('corvars', []))
+            bcvars_added    = set(new_sol.get('bcvars', []))   - set(prev_sol.get('bcvars', []))
+            bcvars_removed  = set(prev_sol.get('bcvars', []))  - set(new_sol.get('bcvars', []))
+
+            undoes = (
+                asvars_added   & removed_asvars   or asvars_removed   & added_asvars   or
+                randvars_added & removed_randvars or randvars_removed & added_randvars or
+                corvars_added  & removed_corvars  or corvars_removed  & added_corvars  or
+                bcvars_added   & removed_bcvars   or bcvars_removed   & added_bcvars   or
+                dist_changed & changed_dists
+            )
+            if undoes:
+                new_sol = prev_sol
+                continue
+
+            added_asvars     |= asvars_added;   removed_asvars   |= asvars_removed
+            added_randvars   |= randvars_added; removed_randvars |= randvars_removed
+            changed_dists    |= dist_changed
+            added_corvars    |= corvars_added;  removed_corvars  |= corvars_removed
+            added_bcvars     |= bcvars_added;   removed_bcvars   |= bcvars_removed
+            real_perturbations += 1
+
+        new_sol = self.apply_constraints(new_sol)
+        new_sol = self.repair_solution_for_clarity(new_sol)
+
+        if self.setup_signature(new_sol) == baseline_sig:
+            return sol
+
+        try:
+            new_sol, converged = self.evaluate(new_sol)
+        except Exception as exc:
+            logging.warning("SA: evaluation failed — %s", exc)
+            self.not_converged += 1
+            return self.current_sol
+
+        if not converged:
+            self.not_converged += 1
+            return self.current_sol
+
+        new_score = [new_sol.obj(i) for i in range(self.nb_crit)]
+        if self.accept_change(curr_score, new_score):
+            accd = True
+            self.no_impr = 0
+            self.accepted += 1
+            self.current_sol = new_sol
+            self.update_best(new_sol)
+            if self.pbil_enabled:
+                self._update_probability_matrix(new_sol)
+        else:
+            accd = False
+            self.not_accepted += 1
+
+        self.log_kpi(new_sol, self.debug_file, accd)
+        return self.current_sol
+
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
@@ -1203,6 +1308,7 @@ class SA(Search):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.report_progress(self.results_file)  # text narrative → results.txt
         self.report_progress()                   # CSV row → progress.csv + text to stdout
+        self.log_prob_matrix()                   # txt progression → prob_matrix.txt
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.t = self.rate * self.t  # Reduce the temperature accordingly
 

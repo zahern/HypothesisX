@@ -122,9 +122,9 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function. Constructor                                      '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, param: Parameters, ctrl=None, idnum=None):
+    def __init__(self, param: Parameters, ctrl=None, idnum=None, **kwargs):
     # {
-        super().__init__(param)           # Call base class constructor
+        super().__init__(param, idnum, **kwargs)           # Call base class constructor
         self.idnum = idnum or 'HS'
 
         self.min_classes = getattr(param, 'min_classes', 1)
@@ -278,7 +278,15 @@ class HarmonySearch(Search):
         # }'''
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.param.generator.rand() > prop:
-            new_sol = self.generate_solution()  # Generate a new solution
+                if self.pbil_enabled:
+                    specs = sample_solution_from_matrix(
+                        self.prob_matrix, self.param.all_bcvars,
+                        self._ps_asvars, self._ps_randvars, self._ps_bcvars, self._ps_corvars,
+                        rng=self.param.generator,
+                    )
+                    new_sol = self.solution_from_specs(specs)
+                else:
+                    new_sol = self.generate_solution()  # Generate a new solution
         else:
         # {
             choice = self.param.generator.choice(len(memory)) # Choose one of the member solutions
@@ -293,7 +301,15 @@ class HarmonySearch(Search):
 
             # Randomly select a subset of the variables from the chosen solution
             size = int((len(chosen_sol['asvars'])) * prop)
-            new_asvars = list(self.param.generator.choice(chosen_sol['asvars'], size=size, replace=False))
+
+            if self.pbil_enabled and size > 0:
+                weights = np.array([self.prob_matrix[v]['inclusion'] for v in chosen_sol['asvars']])
+                weights = weights / weights.sum()
+                new_asvars = list(self.param.generator.choice(chosen_sol['asvars'], size=size, replace=False, p=weights
+                ))
+            else:
+                new_asvars = list(self.param.generator.choice(chosen_sol['asvars'], size=size, replace=False))
+
             n_asvars = sorted(list(set().union(new_asvars, self.param.ps_asvars)))
             new_asvars = self.remove_redundant_asvars(n_asvars, self.param.trans_asvars, self.param.asvarnames)
             new_sol['asvars'] = new_asvars
@@ -428,7 +444,15 @@ class HarmonySearch(Search):
     def pitch_adjustment(self, sol, pitch):
     # {
         adjusted_solution = copy.deepcopy(sol)
-        perturbations = [self.perturb_asfeature, self.perturb_isfeature, self.perturb_model_t]
+
+        if self.pbil_enabled:
+            perturbation_count = 1 + int(self.param.generator.rand() < max(0.0, min(1.0, pitch)))
+            for _ in range(perturbation_count):
+                candidate = self._pbil_perturb(adjusted_solution)
+                if candidate is not None:
+                    adjusted_solution = candidate
+        else:
+            perturbations = [self.perturb_asfeature, self.perturb_isfeature, self.perturb_model_t]
 
         if self.param.allow_random:
             perturbations.append(self.perturb_randfeature)

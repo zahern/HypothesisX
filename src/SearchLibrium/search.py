@@ -77,6 +77,7 @@ try:
     from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     import misc
     from addicty import Dict
+    from pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, classify_significance, sample_solution_from_matrix, summarize_prob_matrix
 except ImportError:
     from .misc import list_of_zeros, make_list
     from .MixedLogit import MixedLogit
@@ -88,7 +89,8 @@ except ImportError:
     from . import misc
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from addicty import Dict
-
+    from .pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, classify_significance, sample_solution_from_matrix, summarize_prob_matrix
+    
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS                                                  '''
 ''' ---------------------------------------------------------- '''
@@ -541,7 +543,6 @@ class Parameters:
     ps_isvars: List of prespecified individual-specific variables
     ps_randvars: Dictionary of variables and their prespecified coefficient distribution
     ps_bcvars: List of variables that include prespecified Box-Cox transformation
-
     ps_corvars: List of variables with prespecified correlation
     ps_bctrans: Prespecified transformation boolean.
     ps_cor : Prespecified correlation boolean.
@@ -1287,7 +1288,221 @@ class Search():
 
         # Pre-compute pairwise correlations & VIF for collinearity-aware solution generation
         self._precompute_correlations()
+
+        # This block is initialised unconditionally, regardless of pbil_enabled.
+        # A search running with the flag off still reads this matrix during
+        # neighbour-generation — it just never updates it. Keeping initialisation
+        # unconditional means both modes run through identical code, differing
+        # only in whether update_prob_matrix ever gets called, which is what
+        # makes the flag a clean on/off switch rather than a second code path.
+        varnames      = list(param.asvarnames or [])
+        distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])
+        self.prob_matrix = initialize_prob_matrix(varnames, param.asvarnames, distributions)
+
+        self._ps_asvars    = set(getattr(param, "ps_asvars", []) or [])
+        self._ps_randvars  = set((getattr(param, "ps_randvars", {}) or {}).keys())
+        self._ps_bcvars    = set(getattr(param, "ps_bcvars", []) or [])
+        self._ps_corvars   = set(getattr(param, "ps_corvars", []) or [])
+        self._pbil_updates = 0
+        self.pbil_enabled  = kwargs.get("pbil_enabled", False)
+
     # }
+
+    def _available_dimensions(self, sol):
+        """Which PBIL decision types are even applicable to this solution
+        right now — e.g. correlation only makes sense with 2+ random vars."""
+        dims = ["inclusion", "random"]
+        if self.param.isvarnames:
+            dims.append("isvars")
+        if self.param.models_avail and len(self.param.models_avail) > 1:
+            dims.append("model_t")
+        if sol.get("randvars"):
+            dims.append("distribution")
+        if len(sol.get("randvars", {})) >= 2:
+            dims.append("correlation")
+        if self.param.asvarnames:
+            dims.append("boxcox")
+        return dims
+
+    def _pbil_perturb(self, sol):
+        """Picks one decision type uniformly, then applies a single weighted
+        add/remove/change within that type. Dimension choice is uniform across
+        types regardless of how many variables fall in each — a deliberate
+        choice so the search doesn't over-explore inclusion/exclusion just
+        because it happens to have more candidate variables than, say,
+        correlation does."""
+        dims = self._available_dimensions(sol)
+        if not dims:
+            return None
+        dim = np.random.choice(dims)
+        return {
+            "inclusion":    self._pbil_inclusion,
+            "random":       self._pbil_random,
+            "distribution": self._pbil_distribution,
+            "correlation":  self._pbil_correlation,
+            "boxcox":       self._pbil_boxcox,
+            "isvars":       self.perturb_isfeature,
+            "model_t":      self.perturb_model_t,
+        }[dim](sol)
+
+    def _pbil_inclusion(self, sol):
+        """Weighted add/remove of an alternative-specific variable. Direction
+        (add vs. remove) is chosen by the average learned inclusion
+        probability of the candidates on each side, and the specific variable
+        within that side is drawn proportional to its own probability —
+        higher-probability variables are more likely to be added, and
+        lower-probability variables are more likely to be removed."""
+        in_vars  = [v for v in sol["asvars"] if v not in self._ps_asvars]
+        out_vars = [v for v in self.param.asvarnames
+                    if v not in sol["asvars"] and v not in self._ps_asvars]
+
+        if not in_vars and not out_vars:
+            return None
+
+        p_add = 0.5
+        if out_vars:
+            p_add = float(np.mean([self.prob_matrix[v]["inclusion"] for v in out_vars]))
+
+        if out_vars and (not in_vars or np.random.rand() < p_add):
+            weights = np.array([self.prob_matrix[v]["inclusion"] for v in out_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(out_vars, p=weights)
+            return self.add_asvar(var, sol)
+
+        if in_vars:
+            weights = np.array([1 - self.prob_matrix[v]["inclusion"] for v in in_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(in_vars, p=weights)
+            return self.remove_asvar(var, sol)
+
+        return None
+
+    def _pbil_random(self, sol):
+        """Weighted toggle of an in-model variable between fixed and random,
+        using the same add/remove-by-probability pattern as inclusion, but
+        scoped to variables already in the solution."""
+        candidates = [v for v in sol["asvars"] if v not in self._ps_randvars]
+        fixed_vars  = [v for v in candidates if v not in sol["randvars"]]
+        random_vars = [v for v in candidates if v in sol["randvars"]]
+
+        if not fixed_vars and not random_vars:
+            return None
+
+        p_make_random = 0.5
+        if fixed_vars:
+            p_make_random = float(np.mean([self.prob_matrix[v]["random"] for v in fixed_vars]))
+
+        if fixed_vars and (not random_vars or np.random.rand() < p_make_random):
+            weights = np.array([self.prob_matrix[v]["random"] for v in fixed_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(fixed_vars, p=weights)
+            return self.add_randvar(var, sol)
+
+        if random_vars:
+            weights = np.array([1 - self.prob_matrix[v]["random"] for v in random_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(random_vars, p=weights)
+            return self.remove_randvar(var, sol)
+
+        return None
+
+    def _pbil_distribution(self, sol):
+        """Changes one random variable's distribution, drawing the new
+        distribution proportional to its learned probability rather than
+        uniformly among the alternatives — so distributions that have
+        historically coincided with significant coefficients get tried more
+        often."""
+        candidates = [v for v in sol["randvars"] if v not in self._ps_randvars]
+        if not candidates:
+            return None
+
+        var = np.random.choice(candidates)
+        current = sol["randvars"][var]
+        p = self.prob_matrix[var]["dist"]
+        alt_dists = [d for d in p if d != current]
+        if not alt_dists:
+            return None
+
+        weights = np.array([p[d] for d in alt_dists])
+        weights = weights / weights.sum()
+        new_dist = np.random.choice(alt_dists, p=weights)
+
+        new_sol = self.copy_solution(sol)
+        new_sol["randvars"][var] = new_dist
+        return new_sol
+
+    def _pbil_correlation(self, sol):
+        """Weighted add/remove of a variable to/from the correlated set,
+        same probability-weighted pattern as inclusion/random."""
+        candidates = [v for v in sol["randvars"] if v not in self._ps_corvars and v not in sol.get("bcvars", [])]
+        corr_vars    = [v for v in candidates if v in sol.get("corvars", [])]
+        uncorr_vars  = [v for v in candidates if v not in sol.get("corvars", [])]
+
+        if not corr_vars and not uncorr_vars:
+            return None
+
+        p_add = 0.5
+        if uncorr_vars:
+            p_add = float(np.mean([self.prob_matrix[v]["correlated"] for v in uncorr_vars]))
+
+        if uncorr_vars and (not corr_vars or np.random.rand() < p_add):
+            weights = np.array([self.prob_matrix[v]["correlated"] for v in uncorr_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(uncorr_vars, p=weights)
+            return self.add_corvar(var, sol)
+
+        if corr_vars:
+            weights = np.array([1 - self.prob_matrix[v]["correlated"] for v in corr_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(corr_vars, p=weights)
+            return self.remove_corvar(var, sol)
+
+        return None
+
+    def _pbil_boxcox(self, sol):
+        """Weighted add/remove of Box-Cox transformation, restricted to
+        variables the matrix marked eligible at initialisation (p["boxcox"]
+        is not None) and excluding anything currently correlated, since the
+        two are mutually exclusive by design."""
+        eligible = [v for v in sol["asvars"]
+                    if v not in self._ps_bcvars and v not in sol.get("corvars", [])
+                    and v in sol["asvars"]]
+        bc_vars     = [v for v in eligible if v in sol.get("bcvars", [])]
+        non_bc_vars = [v for v in eligible if v not in sol.get("bcvars", [])]
+
+        if not bc_vars and not non_bc_vars:
+            return None
+
+        p_add = 0.5
+        if non_bc_vars:
+            p_add = float(np.mean([self.prob_matrix[v]["boxcox"] for v in non_bc_vars]))
+
+        if non_bc_vars and (not bc_vars or np.random.rand() < p_add):
+            weights = np.array([self.prob_matrix[v]["boxcox"] for v in non_bc_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(non_bc_vars, p=weights)
+            return self.add_bcvar(var, sol)
+
+        if bc_vars:
+            weights = np.array([1 - self.prob_matrix[v]["boxcox"] for v in bc_vars])
+            weights = weights / weights.sum()
+            var = np.random.choice(bc_vars, p=weights)
+            return self.remove_bcvar(var, sol)
+
+        return None
+
+    def _update_probability_matrix(self, sol):
+        """Wrapper tying the pure functions in pbil.py to this instance's
+        state. Kept thin on purpose — all the actual update logic lives in
+        pbil.py so it can be tested independent of any Search instance."""
+        sig = build_significance_map(sol, p_val_threshold=getattr(self.param, "p_val", 0.05))
+        sig_vars, insig_vars = classify_significance(sol, sig)
+        self.prob_matrix = update_prob_matrix(
+            self.prob_matrix, sol, self.t, self.tI,
+            sig_vars, insig_vars,
+            self._ps_asvars, self._ps_randvars, self._ps_bcvars, self._ps_corvars,
+        )
+        self._pbil_updates += 1
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Pre-compute pairwise Pearson correlations and    '''
@@ -3268,12 +3483,17 @@ class Search():
         # }
         return solution
     # }
-
-
-
-
-
-
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Randomly include correlaion feature              '''
+    ''' ---------------------------------------------------------- '''
+    def add_corvar(self, new_corvar, solution):
+    # {
+        solution['corvars'] = sorted(set(solution['corvars']) | {new_corvar})
+        if len(solution['corvars']) < 2:
+            solution['corvars'] = []
+            solution['cor'] = False
+        return solution
+    # }
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Perturbation of the distribution                 '''
@@ -4851,6 +5071,26 @@ class Search():
             self.run_search()
         '''
     # }
+    
+    def log_prob_matrix(self, file=None):
+        """One block per call — intended to run once per temperature step so
+        the matrix's evolution can be reviewed after the run, not just its
+        final state."""
+        target = file if file is not None else getattr(self, "pbil_log_file", None)
+        header = (
+            f"Step={getattr(self, 'step', '?')}  t={getattr(self, 't', float('nan')):.4g}  "
+            f"pbil_enabled={self.pbil_enabled}  updates_so_far={self._pbil_updates}"
+        )
+        print(header, file=target)
+        for row in summarize_prob_matrix(self.prob_matrix):
+            distr_str = " ".join(f"{d}={v}" for d, v in row["p_distr"].items())
+            bc_str = f"{row['p_bc']:.3f}" if row['p_bc'] is not None else "n/a"
+            print(
+                f"  {row['var']:<22s}  incl={row['p_incl']:.3f}  rand={row['p_rand']:.3f}  "
+                f"corr={row['p_corr']:.3f}  bc={bc_str}  dist={distr_str}",
+                file=target,
+            )
+        print("", file=target)
 
 
 # }
