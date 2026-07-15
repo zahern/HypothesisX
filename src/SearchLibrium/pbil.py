@@ -175,8 +175,48 @@ def update_prob_matrix(matrix, sol, t_current, t_initial,
             indicator = 1.0 if var in sig_vars["lambda"] else 0.0
             lr = learning_rate("boxcox", t_current, t_initial)
             p["boxcox"] = _clamp((1 - lr) * p["boxcox"] + lr * indicator)
+        print(summarize_prob_matrix_table( matrix))
+        return matrix
+    
+def summarize_prob_matrix_table(prob_matrix: dict, top_n: int = 15, all_randvars: list = None, all_corvars: list = None) -> str:
+    """
+    Return a formatted summary of the probability matrix,
+    sorted by inclusion probability descending.
+    """
+    rows = sorted(
+        prob_matrix.items(),
+        key=lambda kv: kv[1]["inclusion"],
+        reverse=True
+    )[:top_n]
 
-    return matrix
+    header = (
+        f"\n{'Variable':<14} {'Incl':>6} {'Rand':>6} "
+        f"{'n':>5} {'ln':>5} {'tn':>5} {'u':>5} {'t':>5} "
+        f"{'Corr':>6} {'BC':>6}"
+    )
+    sep   = "-" * 74
+    lines = [header, sep]
+
+    for var, p in rows:
+        d  = p["dist"]
+        bc = f"{p['boxcox']:.3f}" if p["boxcox"] is not None else "  N/A"
+        if all_randvars is not None and var not in all_randvars:
+            lines.append(
+                f"{var:<14} {p['inclusion']:>6.3f} {'N/A':>6} "
+                f"{'N/A':>5} {'N/A':>5} {'N/A':>5} {'N/A':>5} {'N/A':>5} "
+                f"{'N/A':>6} {bc:>6}"
+            )
+        else:
+            corr_val = f"{p['correlated']:>6.3f}" if all_corvars is None or var in all_corvars else "   N/A"
+            lines.append(
+                f"{var:<14} {p['inclusion']:>6.3f} {p['random']:>6.3f} "
+                f"{d.get('n',0):>5.3f} {d.get('ln',0):>5.3f} "
+                f"{d.get('tn',0):>5.3f} {d.get('u',0):>5.3f} "
+                f"{d.get('t',0):>5.3f} "
+                f"{corr_val} {bc:>6}"
+            )
+
+    return "\n".join(lines)
 
 
 def build_significance_map(sol, p_val_threshold=0.05):
@@ -211,8 +251,10 @@ def classify_significance(sol, sig):
         "lambda": {v for v in asvars if sig.get(f"lambda.{v}", False)},
     }
     insig_vars = {
-        "mean": {v for v in asvars if not sig.get(v, False)},
-        "sd":   {v for v in asvars if not sig.get(f"sd.{v}", False)},
+        "mean":   {v for v in asvars if not sig.get(v, False)},
+        "sd":     {v for v in asvars if not sig.get(f"sd.{v}", False)},
+        "chol":   {k for k, ok in sig.items() if k.startswith("chol.") and not ok},
+        "lambda": {v for v in asvars if not sig.get(f"lambda.{v}", False)},
     }
     return sig_vars, insig_vars
 
@@ -258,6 +300,7 @@ def sample_variable(var, matrix, all_bcvars, ps_asvars, ps_randvars,
 
     return {"var": var, "is_random": is_random, "dist": dist,
             "is_corr": is_corr, "has_bc": has_bc}
+
 
 
 def sample_solution_from_matrix(matrix, all_bcvars, ps_asvars, ps_randvars,

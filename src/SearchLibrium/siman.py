@@ -622,13 +622,15 @@ class SA(Search):
         Class 1: cannot Have Price and Price_2
         #TODO placeholder
         '''
-        debug_counter = 0
+        
         if solution.data['model_n'] == 'mixed_logit':
+            debug_counter = 0
             while len(solution.data['randvars']) == 0:
                 debug_counter+=1
                 if debug_counter >= 10:
                     print('add rand feature bug not changing')
                 self.perturb_add_randfeature(solution)
+                break
 
 
 

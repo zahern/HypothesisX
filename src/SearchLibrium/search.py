@@ -589,7 +589,8 @@ class Parameters:
     def __init__(self, criterions, df, varnames, df_test=None, distr=None, avail=None, test_avail=None,
         weights=None, choice_set=None, choices=None,
         test_choices=None, alt_var=None, test_alt_var=None, choice_id=None, test_choice_id=None,
-        ind_id=None, test_ind_id=None, isvarnames=None, asvarnames=None, trans_asvars=None,
+        ind_id=None, test_ind_id=None, isvarnames=None, asvarnames=None, 
+        all_bcvars=None, all_corvars=None, all_randvars=None,
         ftol=1e-6, gtol=1e-6, gtol_membership_func=1e-5, pre_spec_constraints = None,
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
@@ -658,7 +659,9 @@ class Parameters:
         if asvarnames is None and isvarnames is None:
             logging.info('Warning: asvarnames and isvarnames is None. Setting asvarnames as varnames')
             self.asvarnames = varnames
-        self.trans_asvars = trans_asvars
+        self.all_bcvars   = all_bcvars   or []
+        self.all_randvars = all_randvars or []
+        self.all_corvars  = all_corvars  or []
         self.ftol, self.gtol = ftol, gtol
         self.gtol_membership_func = gtol_membership_func
 
@@ -734,7 +737,9 @@ class Parameters:
 
         self.isvarnames = self.isvarnames or []  # i.e., Set self.isvarnames to [] if undefined (a.k.a., None)
         self.asvarnames = self.asvarnames or []     # i.e., Set self.asvarnames to [] if undefined (a.k.a., None)
-        self.trans_asvars = self.trans_asvars or []  # i.e., Set self.trans_asvar to [] if undefined (a.k.a., None)
+        self.all_bcvars   = self.all_bcvars   or []
+        self.all_randvars = self.all_randvars or []
+        self.all_corvars  = self.all_corvars  or []
 
         if self.allow_random is False:
             self.allow_latent_random = False
@@ -888,13 +893,13 @@ class Parameters:
         self.avail_isvars = [var for var in self.isvarnames if var not in self.ps_isvars]
 
         # Available variables for coeff distribution selection
-        self.avail_rvars = [var for var in self.asvarnames if var not in self.ps_randvars]
+        self.avail_rvars   = [var for var in self.all_randvars if var not in self.ps_randvars and var in self.asvarnames]
 
         # Available alternative-specific variables for transformation
-        self.avail_bcvars = [var for var in self.asvarnames if var not in self.ps_bcvars]
+        self.avail_bcvars  = [var for var in self.all_bcvars   if var not in self.ps_bcvars   and var in self.asvarnames]
 
         # Available alternative-specific variables for correlation
-        self.avail_corvars = [var for var in self.asvarnames if var not in self.ps_corvars]
+        self.avail_corvars = [var for var in self.all_corvars  if var not in self.ps_corvars  and var in self.asvarnames]
 
 
         #Available_models
@@ -1283,8 +1288,8 @@ class Search():
         self.LCC_CLASS = kwargs.get('LCC_CLASS', None)
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        asvars_new = self.create_dummy_column(self.param.asvarnames)
-        asvars_new = self.remove_redundant_asvars(asvars_new, self.param.trans_asvars, self.param.asvarnames)
+        asvars_new = self.create_dummy_column(self.param.asvarnames)        
+        asvars_new = self.remove_redundant_asvars(asvars_new, self.param.all_bcvars, self.param.asvarnames)
 
         # Pre-compute pairwise correlations & VIF for collinearity-aware solution generation
         self._precompute_correlations()
@@ -1297,7 +1302,7 @@ class Search():
         # makes the flag a clean on/off switch rather than a second code path.
         varnames      = list(param.asvarnames or [])
         distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])
-        self.prob_matrix = initialize_prob_matrix(varnames, param.asvarnames, distributions)
+        self.prob_matrix = initialize_prob_matrix(varnames, param.all_bcvars, distributions)
 
         self._ps_asvars    = set(getattr(param, "ps_asvars", []) or [])
         self._ps_randvars  = set((getattr(param, "ps_randvars", {}) or {}).keys())
@@ -1989,7 +1994,7 @@ class Search():
             asvar_select_pos = [i for i, x in enumerate(ind_availasvar) if x == 1]
         asvars = [self.param.avail_asvars[i] for i in asvar_select_pos]
         asvars.extend(self.param.ps_asvars)
-        asvars = self.remove_redundant_asvars(asvars, self.param.trans_asvars, self.param.asvarnames)
+        asvars = self.remove_redundant_asvars(asvars, self.param.all_bcvars, self.param.asvarnames)
         asvars = self._apply_mutual_exclusion_filter(asvars)
         return asvars
     # }
@@ -2026,15 +2031,25 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def select_bcvars(self, asvars):
     # {
-        bcvars = []
-        bctrans = self.param.ps_bctrans if self.param.ps_bctrans is not None else self.random_coin_flip()
-        if bctrans:
-        # {
-
-            bcvars = [var for var in self.param.avail_bcvars]
+        bcvars  = []
+        bctrans = self.param.ps_bctrans
+        if bctrans is None:
+            eligible = [v for v in asvars
+                        if v in self.param.all_bcvars and self.prob_matrix[v]["boxcox"] is not None]
+            if eligible:
+                avg_bc  = np.mean([self.prob_matrix[v]["boxcox"] for v in eligible])
+                bctrans = (np.random.rand() < avg_bc)
+            else:
+                bctrans = False
+        if bctrans and self.param.avail_bcvars:
+            for var in self.param.avail_bcvars:
+                if var not in asvars:
+                    continue
+                if var in self.param.all_bcvars and var not in self.param.ps_corvars:
+                    p_bc = self.prob_matrix[var].get("boxcox", 0.5)
+                    if p_bc is not None and np.random.rand() < p_bc:
+                        bcvars.append(var)
             bcvars.extend(self.param.ps_bcvars)
-            bcvars = [var for var in bcvars if var in asvars and var not in self.param.ps_corvars]
-        # }
         return bcvars, bctrans
     # }
 
@@ -2151,17 +2166,18 @@ class Search():
     def select_corvars(self, randvars, bcvars):
     # {
         corvars = []
-        cor = self.random_coin_flip() if self.param.ps_cor is None else self.param.ps_cor
+        cor = self.param.ps_cor if self.param.ps_cor is not None else (np.random.rand() < 0.5)
         if cor:
-        # {
-            ind_availcorvar = [int(self.random_coin_flip()) for _ in range(len(self.param.avail_corvars))]
-            corvar_select_pos = [i for i, x in enumerate(ind_availcorvar) if x == 1]
-            corvars = [var for var in self.param.avail_corvars if self.param.avail_corvars.index(var) in corvar_select_pos]
+            for var in self.param.avail_corvars:
+                if var not in randvars or var in bcvars:
+                    continue
+                p_corr = self.prob_matrix[var].get("correlated", 0.5)
+                if np.random.rand() < p_corr:
+                    corvars.append(var)
             corvars.extend(self.param.ps_corvars)
-            corvars = [var for var in corvars if var in randvars.keys() and var not in bcvars]
+            corvars = [v for v in corvars if v in randvars and v not in bcvars]
             if len(corvars) < 2:
                 cor, corvars = False, []
-        # }
         return cor, corvars
     # }
 
@@ -2751,7 +2767,7 @@ class Search():
         solution['asvars'] = sorted(list(set_asvars)) # Convert back to list and sort
         #todo need to add to clas member spec
         
-        args = (solution['asvars'], self.param.trans_asvars, self.param.asvarnames)
+        args = (solution['asvars'], self.param.all_bcvars, self.param.asvarnames)
         solution['asvars'] = self.remove_redundant_asvars(*args)
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2765,12 +2781,17 @@ class Search():
                         r_vars.update({i: self.param.ps_randvars[i]})
                 # }
             # }
-            solution['randvars'] = {k: v for k, v in r_vars.items() if k in solution['asvars'] and v != 'f'}
+            solution['randvars'] = {k: v for k, v in r_vars.items()
+                        if k in solution['asvars'] and v != 'f' and k in self.param.avail_rvars}
         # }
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if solution['corvars']:
             solution['corvars'] = [var for var in solution['corvars']
-                                   if var in solution['randvars'] and var not in solution['bcvars']]
+                                if var in solution['randvars'] and var not in solution['bcvars']
+                                and var in self.param.avail_corvars]
+            if len(solution['corvars']) < 2:
+                solution['corvars'] = []
+                solution['cor']     = False
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.param.ps_intercept is None:
             solution['asc_ind'] = self.random_coin_flip()
@@ -2784,7 +2805,7 @@ class Search():
         blocked = self._get_excluded_by_mutual_group(set(solution.get('asvars', [])) | set(solution.get('isvars', [])))
         candidate = [v for v in candidate if v not in blocked]
         if len(candidate) > 0:
-            new_asvar = self.random_choice(candidate)
+            new_asvar = self.weighted_choice(candidate, "inclusion")
             solution = self.add_asvar(new_asvar, solution)
         return  solution
 
@@ -2815,20 +2836,26 @@ class Search():
         solution['randvars'] = {var: val for var, val in solution['randvars'].items() if var in solution['asvars']}
         solution['bcvars'] = [var for var in solution['bcvars'] if
                               var not in self.param.ps_corvars and var in solution['asvars']]
-        solution['corvars'] = [var for var in solution['corvars'] if
-                               var not in self.param.ps_bcvars and var in solution['asvars']]
+        solution['corvars'] = [var for var in solution['corvars']
+                    if var not in self.param.ps_bcvars
+                    and var not in solution['bcvars']
+                    and var in list(solution['randvars'].keys())
+                    and var in self.param.avail_corvars]
+        if len(solution['corvars']) < 2:
+            solution['corvars'] = []
+            solution['cor']     = False
         
         return  solution
 
     # }
 
     def perturb_remove_asfeature(self, solution):
-    # { # need to only remove asvars if no others
-        if len(solution['asvars']) >1:
-            rem_asvar = self.random_choice(solution['asvars'])    # Randomly choose one
-
-            #solution = self.remove_asvar(rem_asvar, solution)
-            solution['asvars'].remove(rem_asvar)
+        if len(solution['asvars']) > 1:
+            candidates = [var for var in solution['asvars']
+                        if var not in solution['bcvars'] and var not in solution['corvars']]
+            if len(candidates) > 1:
+                rem_asvar = self.weighted_choice(candidates, "inclusion", invert=True)
+                solution = self.remove_asvar(rem_asvar, solution)
         return solution
     # }
 
@@ -3320,14 +3347,10 @@ class Search():
 
     def perturb_add_randfeature(self, solution):
     # {
-        #ROB I believe we only want yo add a randvar is its in asvar
-        candidates = [var for var in self.param.asvarnames if var not in solution['randvars'] and var in solution['asvars']]
-        #NOT THIS (I THINK)
-        #candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]                                                                                                                 
+        candidates = [var for var in self.param.avail_rvars if var not in solution['randvars'] and var in solution['asvars']]
         if len(candidates) > 0:
-            new_randvar = self.random_choice(candidates)
+            new_randvar = self.weighted_choice(candidates, "random")
             self.add_randvar(new_randvar, solution)
-
         return solution
     # }
 
@@ -3345,11 +3368,9 @@ class Search():
     # {
         candidates = [var for var in solution['randvars'] if var not in self.param.ps_randvars]
         if len(candidates) > 0:
-            rem_randvar = self.random_choice(candidates) # Choose a random variable to remove
+            rem_randvar = self.weighted_choice(candidates, "random", invert=True)
             self.remove_randvar(rem_randvar, solution)
-            self.remove_corvar(rem_randvar, solution) # Remove from corvars as well if it exists
-            solution['randvars'] = self.normalize_randvars(solution['asvars'], solution['randvars'])
-            self.align_model_with_solution(solution)
+            self.remove_corvar(rem_randvar, solution)
         return solution
     # }
 
@@ -3403,12 +3424,12 @@ class Search():
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if bctrans and self.param.avail_bcvars:
         # {
-            # NEW CODE
+            # NEW CODE            
             candidate = [var for var in solution['asvars']
-                         if var not in solution['bcvars'] and var not in self.param.ps_corvars]
+                        if var not in solution['bcvars'] and var in self.param.all_bcvars and var not in self.param.ps_corvars]
             if len(candidate) > 0:
             # {
-                new_bcvar = self.random_choice(candidate)
+                new_bcvar = self.weighted_choice(candidate, "boxcox")
                 self.add_bcvar(new_bcvar, solution)
             # }
         # }            
@@ -3429,12 +3450,29 @@ class Search():
     # {
         if solution['bcvars']:
         # {
-            rem_bcvar = self.random_choice(solution['bcvars'])
+            rem_bcvar = self.weighted_choice(solution['bcvars'], "boxcox", invert=True)
             if rem_bcvar not in self.param.ps_bcvars:
                 self.remove_bcvar(rem_bcvar, solution)
         # }
         return solution
     # }
+
+    def weighted_choice(self, candidates, prob_key, invert=False):
+        """
+        Choose one element from `candidates` with probability proportional
+        to prob_matrix[var][prob_key]. If invert=True, uses 1 - p instead
+        (useful for removal operations).
+        """
+        if not candidates:
+            return None
+        probs = np.array([self.prob_matrix[v][prob_key] for v in candidates])
+        if invert:
+            probs = 1.0 - probs
+        total = probs.sum()
+        if total <= 0:
+            return np.random.choice(candidates)
+        probs = probs / total
+        return np.random.choice(candidates, p=probs)
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Select variables to be correlated                '''
@@ -3447,7 +3485,7 @@ class Search():
         # Update corvars:
         if cor:
         # {
-            new_corvars = [var for var in solution['randvars'] if var not in solution['bcvars']]
+            new_corvars = [var for var in solution['randvars'] if var not in solution['bcvars'] and var in self.param.all_corvars]
             solution['corvars'] = sorted(set(solution['corvars']).union(new_corvars))
             # }
 
@@ -3480,12 +3518,10 @@ class Search():
     def perturb_remove_corfeature(self, solution):
     # {
         if solution['corvars']:
-        # {
             candidates = [var for var in solution['corvars'] if var not in self.param.ps_corvars]
             if len(candidates) > 0:
-                rem_corvar = self.random_choice(candidates)
+                rem_corvar = self.weighted_choice(candidates, "correlated", invert=True)
                 self.remove_corvar(rem_corvar, solution)
-        # }
         return solution
     # }
     ''' ---------------------------------------------------------- '''
@@ -4093,6 +4129,16 @@ class Search():
             # ── Convergence diagnostic: explain why the model did not converge
             self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
         # }
+        print(f"[EVAL] sol#{sol.get('sol_num','?')}")
+        print(f"  model     : {sol.get('model_n')}")
+        print(f"  converged : {sol.get('converged')}")
+        print(f"  asvars    : {sorted(str(v) for v in sol.get('asvars', []))}")
+        print(f"  isvars    : {sorted(str(v) for v in sol.get('isvars', []))}")
+        print(f"  randvars  : {dict(sorted((str(k), str(v)) for k, v in sol.get('randvars', {}).items()))}")
+        print(f"  corvars   : {sorted(str(v) for v in sol.get('corvars', []))}")
+        print(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")
+        print(f"  bic       : {sol.get('bic')}")
+        print(f"  converged    : {sol.get('converged')}")
 
         if self.param.verbose:
             print("** verbose: TRUE (param.verbose...) ** turn off if dont want to print")
@@ -5081,22 +5127,14 @@ class Search():
         """One block per call — intended to run once per temperature step so
         the matrix's evolution can be reviewed after the run, not just its
         final state."""
-        target = file if file is not None else getattr(self, "pbil_log_file", None)
-        header = (
-            f"Step={getattr(self, 'step', '?')}  t={getattr(self, 't', float('nan')):.4g}  "
-            f"pbil_enabled={self.pbil_enabled}  updates_so_far={self._pbil_updates}"
+        top_n = top_n or len(self.param.asvarnames)
+        table = summarize_prob_matrix(
+            self.prob_matrix, top_n=top_n,
+            all_randvars=self.param.all_randvars,
+            all_corvars=self.param.all_corvars,
         )
-        print(header, file=target)
-        for row in summarize_prob_matrix(self.prob_matrix):
-            distr_str = " ".join(f"{d}={v}" for d, v in row["p_distr"].items())
-            bc_str = f"{row['p_bc']:.3f}" if row['p_bc'] is not None else "n/a"
-            print(
-                f"  {row['var']:<22s}  incl={row['p_incl']:.3f}  rand={row['p_rand']:.3f}  "
-                f"corr={row['p_corr']:.3f}  bc={bc_str}  dist={distr_str}",
-                file=target,
-            )
-        print("", file=target)
-
+        print(table, file=file)
+        print(table, file=self.pbil_log_file)
 
 # }
 
