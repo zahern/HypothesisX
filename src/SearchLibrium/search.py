@@ -1325,7 +1325,7 @@ class Search():
             dims.append("distribution")
         if len(sol.get("randvars", {})) >= 2:
             dims.append("correlation")
-        if self.param.asvarnames:
+        if self.param.avail_bcvars:
             dims.append("boxcox")
         return dims
 
@@ -1358,24 +1358,23 @@ class Search():
         higher-probability variables are more likely to be added, and
         lower-probability variables are more likely to be removed."""
         in_vars  = [v for v in sol["asvars"] if v not in self._ps_asvars]
-        out_vars = [v for v in self.param.asvarnames
-                    if v not in sol["asvars"] and v not in self._ps_asvars]
-
+        out_vars = [v for v in self.param.avail_asvars
+                if v not in sol["asvars"] and v not in self._ps_asvars]
         if not in_vars and not out_vars:
             return None
 
         p_add = 0.5
         if out_vars:
-            p_add = float(np.mean([self.prob_matrix[v]["inclusion"] for v in out_vars]))
+            p_add = float(np.mean([self._pm(v, "inclusion") for v in out_vars]))
 
         if out_vars and (not in_vars or np.random.rand() < p_add):
-            weights = np.array([self.prob_matrix[v]["inclusion"] for v in out_vars])
+            weights = np.array([self._pm(v, "inclusion") for v in out_vars])
             weights = weights / weights.sum()
             var = np.random.choice(out_vars, p=weights)
             return self.add_asvar(var, sol)
 
         if in_vars and len(sol["asvars"]) > 1:   # ADDED — never remove the last asvar
-            weights = np.array([1 - self.prob_matrix[v]["inclusion"] for v in in_vars])
+            weights = np.array([1 - self._pm(v, "inclusion") for v in in_vars])
             weights = weights / weights.sum()
             var = np.random.choice(in_vars, p=weights)
             return self.remove_asvar(var, sol)
@@ -1387,7 +1386,7 @@ class Search():
         using the same add/remove-by-probability pattern as inclusion, but
         scoped to variables already in the solution."""
         candidates = [v for v in sol["asvars"] if v not in self._ps_randvars]
-        fixed_vars  = [v for v in candidates if v not in sol["randvars"]]
+        fixed_vars  = [v for v in candidates if v not in sol["randvars"] and v in self.param.avail_rvars]
         random_vars = [v for v in candidates if v in sol["randvars"]]
 
         if not fixed_vars and not random_vars:
@@ -1395,17 +1394,17 @@ class Search():
 
         p_make_random = 0.5
         if fixed_vars:
-            p_make_random = float(np.mean([self.prob_matrix[v]["random"] for v in fixed_vars]))
+            p_make_random = float(np.mean([self._pm(v, "random") for v in fixed_vars]))
 
         if fixed_vars and (not random_vars or np.random.rand() < p_make_random):
-            weights = np.array([self.prob_matrix[v]["random"] for v in fixed_vars])
+            weights = np.array([self._pm(v, "random") for v in fixed_vars])
             weights = weights / weights.sum()
             var = np.random.choice(fixed_vars, p=weights)
             self.add_randvar(var, sol)      # was: return self.add_randvar(var, sol)
             return sol
 
         if random_vars:
-            weights = np.array([1 - self.prob_matrix[v]["random"] for v in random_vars])
+            weights = np.array([1 - self._pm(v, "random") for v in random_vars])
             weights = weights / weights.sum()
             var = np.random.choice(random_vars, p=weights)
             self.remove_randvar(var, sol)   # was: return self.remove_randvar(var, sol)
@@ -1425,7 +1424,7 @@ class Search():
 
         var = np.random.choice(candidates)
         current = sol["randvars"][var]
-        p = self.prob_matrix[var]["dist"]
+        p = self._pm(var, "dist")
         alt_dists = [d for d in p if d != current]
         if not alt_dists:
             return None
@@ -1443,23 +1442,23 @@ class Search():
         same probability-weighted pattern as inclusion/random."""
         candidates = [v for v in sol["randvars"] if v not in self._ps_corvars and v not in sol.get("bcvars", [])]
         corr_vars    = [v for v in candidates if v in sol.get("corvars", [])]
-        uncorr_vars  = [v for v in candidates if v not in sol.get("corvars", [])]
+        uncorr_vars  = [v for v in candidates if v not in sol.get("corvars", []) and v in self.param.avail_corvars]
 
         if not corr_vars and not uncorr_vars:
             return None
 
         p_add = 0.5
         if uncorr_vars:
-            p_add = float(np.mean([self.prob_matrix[v]["correlated"] for v in uncorr_vars]))
+            p_add = float(np.mean([self._pm(v, "correlated") for v in uncorr_vars]))
 
         if uncorr_vars and (not corr_vars or np.random.rand() < p_add):
-            weights = np.array([self.prob_matrix[v]["correlated"] for v in uncorr_vars])
+            weights = np.array([self._pm(v, "correlated") for v in uncorr_vars])
             weights = weights / weights.sum()
             var = np.random.choice(uncorr_vars, p=weights)
             return self.add_corvar(var, sol)
 
         if corr_vars:
-            weights = np.array([1 - self.prob_matrix[v]["correlated"] for v in corr_vars])
+            weights = np.array([1 - self._pm(v, "correlated") for v in corr_vars])
             weights = weights / weights.sum()
             var = np.random.choice(corr_vars, p=weights)
             self.remove_corvar(var, sol)    # was: return self.remove_corvar(var, sol)
@@ -1476,24 +1475,24 @@ class Search():
                     if v not in self._ps_bcvars and v not in sol.get("corvars", [])
                     and v in sol["asvars"]]
         bc_vars     = [v for v in eligible if v in sol.get("bcvars", [])]
-        non_bc_vars = [v for v in eligible if v not in sol.get("bcvars", [])]
+        non_bc_vars = [v for v in eligible if v not in sol.get("bcvars", []) and v in self.param.avail_bcvars]
 
         if not bc_vars and not non_bc_vars:
             return None
 
         p_add = 0.5
         if non_bc_vars:
-            p_add = float(np.mean([self.prob_matrix[v]["boxcox"] for v in non_bc_vars]))
+            p_add = float(np.mean([self._pm(v, "boxcox") for v in non_bc_vars]))
 
         if non_bc_vars and (not bc_vars or np.random.rand() < p_add):
-            weights = np.array([self.prob_matrix[v]["boxcox"] for v in non_bc_vars])
+            weights = np.array([self._pm(v, "boxcox") for v in non_bc_vars])
             weights = weights / weights.sum()
             var = np.random.choice(non_bc_vars, p=weights)
             self.add_bcvar(var, sol)        
             return sol
 
         if bc_vars:
-            weights = np.array([1 - self.prob_matrix[v]["boxcox"] for v in bc_vars])
+            weights = np.array([1 - self._pm(v, "boxcox") for v in bc_vars])
             weights = weights / weights.sum()
             var = np.random.choice(bc_vars, p=weights)
             self.remove_bcvar(var, sol)     
@@ -2035,9 +2034,9 @@ class Search():
         bctrans = self.param.ps_bctrans
         if bctrans is None:
             eligible = [v for v in asvars
-                        if v in self.param.all_bcvars and self.prob_matrix[v]["boxcox"] is not None]
+                        if v in self.param.all_bcvars and self._pm(v, "boxcox") is not None]
             if eligible:
-                avg_bc  = np.mean([self.prob_matrix[v]["boxcox"] for v in eligible])
+                avg_bc  = np.mean([self._pm(v, "boxcox") for v in eligible])
                 bctrans = (np.random.rand() < avg_bc)
             else:
                 bctrans = False
@@ -2046,7 +2045,7 @@ class Search():
                 if var not in asvars:
                     continue
                 if var in self.param.all_bcvars and var not in self.param.ps_corvars:
-                    p_bc = self.prob_matrix[var].get("boxcox", 0.5)
+                    p_bc = self._pm(var, "boxcox")
                     if p_bc is not None and np.random.rand() < p_bc:
                         bcvars.append(var)
             bcvars.extend(self.param.ps_bcvars)
@@ -3465,7 +3464,7 @@ class Search():
         """
         if not candidates:
             return None
-        probs = np.array([self.prob_matrix[v][prob_key] for v in candidates])
+        probs = np.array([self._pm(v, prob_key) for v in candidates])
         if invert:
             probs = 1.0 - probs
         total = probs.sum()
@@ -3474,6 +3473,11 @@ class Search():
         probs = probs / total
         return np.random.choice(candidates, p=probs)
 
+    def _pm(self, var, key, default=0.5):
+        """Safe prob_matrix accessor — ported from Mario's select_randvars pattern."""
+        entry = self.prob_matrix.get(var)
+        return default if entry is None else entry.get(key, default)
+    
     ''' ---------------------------------------------------------- '''
     ''' Function. Select variables to be correlated                '''
     ''' ---------------------------------------------------------- '''
