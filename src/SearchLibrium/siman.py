@@ -450,7 +450,7 @@ class SA(Search):
 
         # ADDED: one block per temperature step, tracking how the probability
         # matrix evolves across the whole run.
-        self.pbil_log_file = _open('pbil_matrix.txt')
+        self.pbil_log_file = _open('pbil_matrix.txt')        
 
         # Write run header to results.txt
         criterions = getattr(self.param, 'criterions', [])
@@ -591,6 +591,7 @@ class SA(Search):
             # only used to estimate delta_E for the starting temperature and
             # are discarded immediately after, they never become current_sol.
             proposed_sol, converged = self.evaluate(proposed_sol, track_best=False)
+            print(f"Trial {trial}: Proposed solution evaluated. Converged: {converged}")
             if not converged:
                 print(f"Trial {trial}: Proposed solution did not converge, skipping temperature calculation.")
                 continue

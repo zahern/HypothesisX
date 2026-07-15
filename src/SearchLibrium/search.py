@@ -1369,7 +1369,7 @@ class Search():
             var = np.random.choice(out_vars, p=weights)
             return self.add_asvar(var, sol)
 
-        if in_vars:
+        if in_vars and len(sol["asvars"]) > 1:   # ADDED — never remove the last asvar
             weights = np.array([1 - self.prob_matrix[v]["inclusion"] for v in in_vars])
             weights = weights / weights.sum()
             var = np.random.choice(in_vars, p=weights)
@@ -1396,13 +1396,15 @@ class Search():
             weights = np.array([self.prob_matrix[v]["random"] for v in fixed_vars])
             weights = weights / weights.sum()
             var = np.random.choice(fixed_vars, p=weights)
-            return self.add_randvar(var, sol)
+            self.add_randvar(var, sol)      # was: return self.add_randvar(var, sol)
+            return sol
 
         if random_vars:
             weights = np.array([1 - self.prob_matrix[v]["random"] for v in random_vars])
             weights = weights / weights.sum()
             var = np.random.choice(random_vars, p=weights)
-            return self.remove_randvar(var, sol)
+            self.remove_randvar(var, sol)   # was: return self.remove_randvar(var, sol)
+            return sol
 
         return None
 
@@ -1455,7 +1457,8 @@ class Search():
             weights = np.array([1 - self.prob_matrix[v]["correlated"] for v in corr_vars])
             weights = weights / weights.sum()
             var = np.random.choice(corr_vars, p=weights)
-            return self.remove_corvar(var, sol)
+            self.remove_corvar(var, sol)    # was: return self.remove_corvar(var, sol)
+            return sol
 
         return None
 
@@ -1481,13 +1484,15 @@ class Search():
             weights = np.array([self.prob_matrix[v]["boxcox"] for v in non_bc_vars])
             weights = weights / weights.sum()
             var = np.random.choice(non_bc_vars, p=weights)
-            return self.add_bcvar(var, sol)
+            self.add_bcvar(var, sol)        
+            return sol
 
         if bc_vars:
             weights = np.array([1 - self.prob_matrix[v]["boxcox"] for v in bc_vars])
             weights = weights / weights.sum()
             var = np.random.choice(bc_vars, p=weights)
-            return self.remove_bcvar(var, sol)
+            self.remove_bcvar(var, sol)     
+            return sol
 
         return None
 

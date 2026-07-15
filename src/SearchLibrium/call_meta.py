@@ -23,15 +23,14 @@ try:
     from siman import*
     from banditsa import*
     from threshold import*
-    from sapbil import SAPBIL, ProbabilityMatrix
-    from hspbil import HSPBIL
+    
+    
 except ImportError:
     from .harmony import*
     from .siman import*
     from .banditsa import*
     from .threshold import*
-    from .sapbil import SAPBIL, ProbabilityMatrix
-    from .hspbil import HSPBIL
+      
 
 import numpy as np
 
@@ -375,7 +374,7 @@ def call_sapbil(parameters, init_sol=None, ctrl=None, **kwargs):
     print(_describe_ctrl(ctrl, "sa"))
     print()
 
-    solver = SAPBIL(parameters, init_sol, ctrl, id_num, **kwargs)
+    solver = SA(parameters, init_sol, ctrl, id_num, pbil_enabled=True, **kwargs)
     solver.run()
     solver.close_files()
     best = solver.return_best()
@@ -524,7 +523,7 @@ def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
     print(_describe_ctrl(ctrl, 'hs'))
     print()
 
-    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num)
+    solver = HarmonySearch(parameters, init_sol, ctrl, idnum=id_num, pbil_enabled=True, **kwargs)
     existing = [init_sol] if init_sol is not None else None
     solver.run_search(existing_sols=existing)
     solver.close_files()
