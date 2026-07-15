@@ -77,7 +77,8 @@ try:
     from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     import misc
     from addicty import Dict
-    from pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, classify_significance, sample_solution_from_matrix, summarize_prob_matrix
+    from pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, \
+        classify_significance, sample_solution_from_matrix, summarize_prob_matrix_table
 except ImportError:
     from .misc import list_of_zeros, make_list
     from .MixedLogit import MixedLogit
@@ -89,7 +90,8 @@ except ImportError:
     from . import misc
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from addicty import Dict
-    from .pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, classify_significance, sample_solution_from_matrix, summarize_prob_matrix
+    from .pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, \
+        classify_significance, sample_solution_from_matrix, summarize_prob_matrix_table
     
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS                                                  '''
@@ -5127,12 +5129,12 @@ class Search():
         '''
     # }
     
-    def log_prob_matrix(self, file=None):
+    def log_prob_matrix(self, file=None, top_n: int = None):
         """One block per call — intended to run once per temperature step so
         the matrix's evolution can be reviewed after the run, not just its
         final state."""
         top_n = top_n or len(self.param.asvarnames)
-        table = summarize_prob_matrix(
+        table = summarize_prob_matrix_table(
             self.prob_matrix, top_n=top_n,
             all_randvars=self.param.all_randvars,
             all_corvars=self.param.all_corvars,

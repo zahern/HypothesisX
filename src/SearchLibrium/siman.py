@@ -324,7 +324,9 @@ class SA(Search):
 
     #for testing
     verbose = True
-    def __init__(self, param:Parameters, init_sol, ctrl, idnum=generate_random_run_name(), **kwargs):
+    def __init__(self, param:Parameters, init_sol, ctrl, idnum=None, **kwargs):
+        if idnum is None:
+            idnum = generate_random_run_name()
     # {
         super().__init__(param, idnum, **kwargs)     # Call base class constructor
 

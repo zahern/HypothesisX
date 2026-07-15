@@ -175,8 +175,8 @@ def update_prob_matrix(matrix, sol, t_current, t_initial,
             indicator = 1.0 if var in sig_vars["lambda"] else 0.0
             lr = learning_rate("boxcox", t_current, t_initial)
             p["boxcox"] = _clamp((1 - lr) * p["boxcox"] + lr * indicator)
-        print(summarize_prob_matrix_table( matrix))
-        return matrix
+    print(summarize_prob_matrix_table( matrix))
+    return matrix
     
 def summarize_prob_matrix_table(prob_matrix: dict, top_n: int = 15, all_randvars: list = None, all_corvars: list = None) -> str:
     """
