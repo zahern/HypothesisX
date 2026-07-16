@@ -157,15 +157,12 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 if v in varnames:
                     _member_util_exclude.add(varnames.index(v))
         elif member_params_spec is not None:
-            if hasattr(member_params_spec, 'shape'):
-                raw = member_params_spec.ravel() if member_params_spec.ndim > 1 else member_params_spec
-                for v in raw:
-                    if isinstance(v, str) and v != '_inter' and v in varnames:
-                        _member_util_exclude.add(varnames.index(v))
-            else:
-                for v in member_params_spec:
-                    if isinstance(v, str) and v != '_inter' and v in varnames:
-                        _member_util_exclude.add(varnames.index(v))
+            flat_members = []
+            for arr in member_params_spec:
+                flat_members.extend(list(arr))
+            for v in flat_members:
+                if isinstance(v, str) and v != '_inter' and v in varnames:
+                    _member_util_exclude.add(varnames.index(v))
 
         if class_params_spec is not None:
             self._class_specs = []
@@ -208,13 +205,10 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             self._has_membership = True
 
             if member_params_spec is not None:
-                if hasattr(member_params_spec, 'shape'):
-                    if member_params_spec.ndim == 1:
-                        member_vars = list(np.unique(member_params_spec))
-                    else:
-                        member_vars = list(np.unique(np.concatenate(member_params_spec)))
-                else:
-                    member_vars = list(member_params_spec)
+                flat_members = []
+                for arr in member_params_spec:
+                    flat_members.extend(list(arr))
+                member_vars = list(np.unique(flat_members)) if flat_members else []
             else:
                 member_vars = list(membership_vars)
 
@@ -1010,7 +1004,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.aic = 2 * self.num_params - 2 * self.loglik
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
 
-        self.estim_time_sec = time.time() - start_time
+        self.estim_time_sec = time.time() - start_time        
         self.post_process()
 
         return self

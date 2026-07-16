@@ -1285,7 +1285,7 @@ class Search():
 
         # ── Latent class feature toggles ────────────────────────────────
         self.optimise_class = kwargs.get('optimise_class', False)
-        self.optimise_membership = kwargs.get('optimise_membership', False)
+        self.optimise_membership = kwargs.get('optimise_membership', True)
         self.fixed_solution = kwargs.get('fixed_solution', None)
         self.LCC_CLASS = kwargs.get('LCC_CLASS', None)
 
@@ -1329,6 +1329,11 @@ class Search():
             dims.append("correlation")
         if self.param.avail_bcvars:
             dims.append("boxcox")
+        if getattr(self.param, 'latent_class', False):
+            if sol.get('class_params_spec') is not None:
+                dims.append("class_params")
+            if sol.get('member_params_spec') is not None:
+                dims.append("member_params")
         return dims
 
     def _pbil_perturb(self, sol):
@@ -1349,7 +1354,9 @@ class Search():
             "correlation":  self._pbil_correlation,
             "boxcox":       self._pbil_boxcox,
             "isvars":       self.perturb_isfeature,
-            "model_t":      self.perturb_model_t,
+            "class_params":  self.perturb_class_paramfeature,
+            "member_params": self.perturb_member_paramfeature,
+            "model_t":      self.perturb_model_t
         }[dim](sol)
 
     def _pbil_inclusion(self, sol):
@@ -2243,10 +2250,24 @@ class Search():
             )
         else:
             state = None
+
+        class_params_spec = None
+        member_params_spec = None
+        if getattr(self.param, 'latent_class', False):
+            num_classes = getattr(self.param, 'num_classes', 2)
+            if asvars:
+                class_params_spec = np.empty(num_classes, dtype=object)
+                for c in range(num_classes):
+                    class_params_spec[c] = list(asvars)
+            if isvars:
+                n_member = max(1, num_classes - 1)
+                member_params_spec = np.empty(n_member, dtype=object)
+                for c in range(n_member):
+                    member_params_spec[c] = list(isvars)
        
         solution = Solution(self.nb_crit, asvars=asvars, isvars=isvars, bcvars=bcvars, corvars=corvars,
             bctrans=bctrans, cor=cor, randvars=randvars, model_n = model_n, state = state,
-             asc_ind=asc_ind)
+             asc_ind=asc_ind, class_params_spec=class_params_spec, member_params_spec=member_params_spec)
         solution = self.align_model_with_solution(solution)
         self._enforce_min_behavioral(solution)
 
@@ -2767,6 +2788,18 @@ class Search():
         
         solution['asvars'] = sorted(list(set_asvars)) # Convert back to list and sort
         #todo need to add to clas member spec
+
+        if getattr(self.param, 'latent_class', False):
+            class_params_spec = solution.get('class_params_spec', None)
+            num_classes = getattr(self.param, 'num_classes', 2)
+            if class_params_spec is None:
+                class_params_spec = np.empty(num_classes, dtype=object)
+                for c in range(num_classes):
+                    class_params_spec[c] = []
+            for c in range(len(class_params_spec)):
+                if new_asvar not in class_params_spec[c]:
+                    class_params_spec[c] = np.append(class_params_spec[c], new_asvar)
+            solution['class_params_spec'] = class_params_spec
         
         args = (solution['asvars'], self.param.all_bcvars, self.param.asvarnames)
         solution['asvars'] = self.remove_redundant_asvars(*args)
@@ -2846,6 +2879,15 @@ class Search():
             solution['corvars'] = []
             solution['cor']     = False
         
+        if getattr(self.param, 'latent_class', False):
+            class_params_spec = solution.get('class_params_spec', None)
+            if class_params_spec is not None:
+                for c in range(len(class_params_spec)):
+                    class_params_spec[c] = np.array(
+                        [v for v in class_params_spec[c] if v != rem_asvar], dtype=object
+                    )
+                solution['class_params_spec'] = class_params_spec
+        
         return  solution
 
     # }
@@ -2876,8 +2918,34 @@ class Search():
         set_isvars.add(new_isvar)
         solution['isvars'] = sorted(list(set_isvars))
         #need to remove from asvars and isvars
+        # Any variable that is now an isvar can no longer be a class-utility
+        # variable — capture it before filtering so we can purge it from
+        # class_params_spec too, not just from asvars.
+        demoted = [var for var in solution['asvars'] if var in solution['isvars']]
         solution['asvars'] = [var for var in solution['asvars'] if var not in solution['isvars']]
         solution['randvars'] = {var: val for var, val in solution['randvars'].items() if var in solution['isvars']}
+
+        if getattr(self.param, 'latent_class', False):
+            if demoted:
+                class_params_spec = solution.get('class_params_spec', None)
+                if class_params_spec is not None:
+                    for c in range(len(class_params_spec)):
+                        class_params_spec[c] = np.array(
+                            [v for v in class_params_spec[c] if v not in demoted], dtype=object
+                        )
+                    solution['class_params_spec'] = class_params_spec
+
+            member_params_spec = solution.get('member_params_spec', None)
+            num_classes = getattr(self.param, 'num_classes', 2)
+            if member_params_spec is None:
+                n_member = max(1, num_classes - 1)
+                member_params_spec = np.empty(n_member, dtype=object)
+                for c in range(n_member):
+                    member_params_spec[c] = []
+            for c in range(len(member_params_spec)):
+                if new_isvar not in member_params_spec[c]:
+                    member_params_spec[c] = np.append(member_params_spec[c], new_isvar)
+            solution['member_params_spec'] = member_params_spec
         return solution
     # }
 
@@ -2908,6 +2976,16 @@ class Search():
             return solution
         solution['isvars'] = [var for var in solution['isvars'] if var != rem_isvar]
         solution['isvars'] = sorted(list(set(solution['isvars']).union(self.param.ps_isvars)))
+
+        if getattr(self.param, 'latent_class', False):
+            member_params_spec = solution.get('member_params_spec', None)
+            if member_params_spec is not None:
+                for c in range(len(member_params_spec)):
+                    member_params_spec[c] = np.array(
+                        [v for v in member_params_spec[c] if v != rem_isvar], dtype=object
+                    )
+                solution['member_params_spec'] = member_params_spec
+
         return  solution
     # }
 
@@ -2915,8 +2993,8 @@ class Search():
     # {
         if solution['isvars']:
             rem_isvar = self.random_choice(solution['isvars'])
-            #solution = self.remove_isvar(rem_isvar, solution)
-            solution['isvars'].remove(rem_isvar)
+            solution = self.remove_isvar(rem_isvar, solution)
+            
 
         return  solution
 
@@ -3066,18 +3144,6 @@ class Search():
             solution = self.local_search(candidates, make_change, solution, obj_num)
         return solution
     # }
-
-
-
-
-    
-    
-
-
-
-
-    
-
     
     ''' ---------------------------------------------------------- '''
     ''' Function. Local search                                     '''
@@ -3108,34 +3174,22 @@ class Search():
 
         if member_params_spec is None or len(member_params_spec) == 0:
             member_params_spec = np.array([[new_param]], dtype=object)
-        else:
-            available_arrays = [
-                i for i, arr in enumerate(member_params_spec)
-                if new_param not in arr
-            ]
-            if len(available_arrays) == 0:
-                import re
-                member_params_spec = replace_item_if_exists(
-                    member_params_spec, new_param, new_param
-                )
-            else:
-                choose_add = np.random.choice(available_arrays)
-                base_string = ''.join(filter(str.isalpha, str(new_param)))
-                converted_list = [
-                    ''.join(filter(str.isalpha, str(item)))
-                    for item in member_params_spec[choose_add]
-                ]
-                if base_string in converted_list:
-                    matching_indices = [
-                        index for index, item in enumerate(converted_list)
-                        if item == base_string
-                    ][0]
-                    member_params_spec[choose_add][matching_indices] = new_param
-                else:
-                    member_params_spec[choose_add] = np.sort(
-                        np.append(member_params_spec[choose_add], new_param)
-                    )
+            solution['member_params_spec'] = member_params_spec
+            return
 
+        available_arrays = [
+            i for i, arr in enumerate(member_params_spec)
+            if new_param not in arr
+        ]
+        if len(available_arrays) == 0:
+            # new_param is already present in every class — nothing to add
+            solution['member_params_spec'] = member_params_spec
+            return
+
+        choose_add = np.random.choice(available_arrays)
+        member_params_spec[choose_add] = np.sort(
+            np.append(member_params_spec[choose_add], new_param)
+        )
         solution['member_params_spec'] = member_params_spec
 
     def perturb_add_member_paramfeature(self, solution):
@@ -3145,7 +3199,7 @@ class Search():
         if member_params_spec is None or len(member_params_spec) == 0:
             all_vars = getattr(self.param, 'mem_vars', None)
             if all_vars is None:
-                all_vars = list(self.param.varnames)
+                all_vars = list(self.param.isvarnames)
             candidate = np.random.choice(all_vars)
             self.add_member_paramfeature(candidate, solution)
             return solution
@@ -3155,7 +3209,7 @@ class Search():
                 pick = np.random.choice(range(len(member_params_spec)))
                 all_vars = getattr(self.param, 'mem_vars', None)
                 if all_vars is None:
-                    all_vars = list(self.param.varnames)
+                    all_vars = list(self.param.isvarnames)
                 candidates = [
                     var for var in all_vars
                     if var not in member_params_spec[pick]
@@ -3230,34 +3284,27 @@ class Search():
         available = [i for i, arr in enumerate(class_params_spec)
                      if new_param not in arr]
         if len(available) == 0:
-            import re
-            class_params_spec = replace_item_if_exists(
-                class_params_spec, new_param, new_param
-            )
-        else:
-            choose = np.random.choice(available)
-            base = ''.join(filter(str.isalpha, str(new_param)))
-            converted = [''.join(filter(str.isalpha, str(item))) for item in class_params_spec[choose]]
-            if base in converted:
-                idx = [i for i, item in enumerate(converted) if item == base][0]
-                class_params_spec[choose][idx] = new_param
-            else:
-                class_params_spec[choose] = np.sort(
-                    np.append(class_params_spec[choose], new_param)
-                )
+            # new_param is already present in every class — nothing to add
+            solution['class_params_spec'] = class_params_spec
+            return
+
+        choose = np.random.choice(available)
+        class_params_spec[choose] = np.sort(
+            np.append(class_params_spec[choose], new_param)
+        )
         solution['class_params_spec'] = class_params_spec
 
     def perturb_add_class_paramfeature(self, solution):
         """Randomly add a variable to a class specification."""
         class_params_spec = solution.get('class_params_spec', None)
         if class_params_spec is None:
-            candidate = np.random.choice(list(self.param.varnames))
+            candidate = np.random.choice(list(self.param.asvarnames))
             self.add_class_paramfeature(candidate, solution)
             return solution
 
         for _ in range(4):
             pick = np.random.choice(range(len(class_params_spec)))
-            all_vars = list(self.param.varnames)
+            all_vars = list(self.param.asvarnames)
             candidates = [v for v in all_vars if v not in class_params_spec[pick]]
             if candidates:
                 self.add_class_paramfeature(np.random.choice(candidates), solution)
@@ -4142,7 +4189,12 @@ class Search():
         print(f"  isvars    : {sorted(str(v) for v in sol.get('isvars', []))}")
         print(f"  randvars  : {dict(sorted((str(k), str(v)) for k, v in sol.get('randvars', {}).items()))}")
         print(f"  corvars   : {sorted(str(v) for v in sol.get('corvars', []))}")
-        print(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")
+        print(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")        
+        _cps = sol.get('class_params_spec', None)
+        print(f"  class_params_spec  : {sorted(str(v) for v in _cps) if _cps is not None else None}")
+
+        _mps = sol.get('member_params_spec', None)
+        print(f"  member_params_spec : {sorted(str(v) for v in _mps) if _mps is not None else None}")
         print(f"  bic       : {sol.get('bic')}")
         print(f"  converged    : {sol.get('converged')}")
 
@@ -4405,10 +4457,10 @@ class Search():
 
         membership_vars = None
         if member_params_spec is not None:
-            if hasattr(member_params_spec, 'shape') and member_params_spec.ndim > 1:
-                membership_vars = list(np.unique(np.concatenate(member_params_spec)))
-            else:
-                membership_vars = list(np.unique(member_params_spec))
+            flat_members = []
+            for arr in member_params_spec:
+                flat_members.extend(list(arr))
+            membership_vars = list(np.unique(flat_members)) if flat_members else []
 
         X_df = X
         if hasattr(X, 'values'):
