@@ -17,6 +17,7 @@ run a valid, like-for-like control condition for an enabled-matrix run.
 """
 
 import numpy as np
+import re
 
 # Global probability floor/ceiling. Keeps every probability strictly
 # inside (0, 1) so no decision ever becomes fully deterministic — the
@@ -90,6 +91,36 @@ def initialize_prob_matrix(asvarnames, all_bcvars, distributions):
         }
     return matrix
 
+def initialize_prob_matrix_lc(asvarnames, isvarnames, num_classes, all_bcvars, distributions):
+    """
+    Builds one probability matrix per latent class instead of a single
+    flat matrix. Every class gets an entry per utility variable (asvar).
+    Every class except the last (base/reference class, whose membership
+    is implicit and never estimated) also gets an entry per membership
+    variable (isvar), since C classes only have C-1 membership equations.
+
+    Returns a list of length num_classes, each element a dict keyed by
+    variable name. Membership entries only carry 'inclusion' — gamma
+    coefficients are plain fixed effects, so distribution/random/
+    correlation/box-cox dimensions don't apply to them.
+    """
+    n_distr = max(len(distributions), 1)
+    matrices = []
+    for c in range(num_classes):
+        matrix = {}
+        for var in asvarnames:
+            matrix[var] = {
+                "inclusion":  0.5,
+                "random":     0.5,
+                "dist":       {d: 1.0 / n_distr for d in distributions},
+                "correlated": 0.5,
+                "boxcox":     0.5 if var in all_bcvars else None,
+            }
+        if c != num_classes - 1:  # base class has no membership equation
+            for var in isvarnames:
+                matrix[var] = {"inclusion": 0.5}
+        matrices.append(matrix)
+    return matrices
 
 def update_prob_matrix(matrix, sol, t_current, t_initial,
                         sig_vars, insig_vars,
@@ -176,7 +207,55 @@ def update_prob_matrix(matrix, sol, t_current, t_initial,
             lr = learning_rate("boxcox", t_current, t_initial)
             p["boxcox"] = _clamp((1 - lr) * p["boxcox"] + lr * indicator)
     print(summarize_prob_matrix_table( matrix))
+    
     return matrix
+
+def update_prob_matrix_lc(matrices, sol, t_current, t_initial, ps_asvars, ps_isvars):
+    """Per-class analogue of update_prob_matrix. Each class's matrix
+    learns independently: a variable can become more likely in class 1
+    while becoming less likely in class 2, based on that class's own
+    p-value for that variable.
+
+    Utility entries carry a 'dist' sub-key (from initialize_prob_matrix_lc);
+    membership entries don't — used here to tell the two apart without
+    needing a separate isvarnames lookup per entry.
+    """
+    model = sol.get("model")
+    if model is None:
+        return matrices
+
+    class_params_spec = sol.get('class_params_spec', None)
+    member_params_spec = sol.get('member_params_spec', None)
+    class_sig, member_sig = classify_significance_lc(sol)
+    lr = learning_rate("inclusion", t_current, t_initial)
+    num_classes = len(matrices)
+
+    for c in range(num_classes):
+        matrix = matrices[c]
+        in_class_vars = set(class_params_spec[c]) if class_params_spec is not None else set()
+        in_member_vars = (
+            set(member_params_spec[c])
+            if (member_params_spec is not None and c < len(member_params_spec))
+            else set()
+        )
+        sig_c = class_sig.get(c, {})
+        sig_m = member_sig.get(c, {})
+
+        for var, p in matrix.items():
+            is_membership_entry = "dist" not in p
+            if is_membership_entry:
+                if var in ps_isvars or var not in in_member_vars or var not in sig_m:
+                    continue  # not present this round / no p-value → no update
+                indicator = 1.0 if sig_m[var] else 0.0
+                p["inclusion"] = _clamp((1 - lr) * p["inclusion"] + lr * indicator)
+            else:
+                if var in ps_asvars or var not in in_class_vars or var not in sig_c:
+                    continue
+                indicator = 1.0 if sig_c[var] else 0.0
+                p["inclusion"] = _clamp((1 - lr) * p["inclusion"] + lr * indicator)
+    print(summarize_prob_matrix_table_lc( matrices))
+    return matrices
+
     
 def summarize_prob_matrix_table(prob_matrix: dict, top_n: int = 15, all_randvars: list = None, all_corvars: list = None) -> str:
     """
@@ -259,6 +338,45 @@ def classify_significance(sol, sig):
     return sig_vars, insig_vars
 
 
+
+def classify_significance_lc(sol, p_val_threshold=0.05):
+    """Per-class analogue of classify_significance. Parses the fitted
+    model's coeff_names ("class_{c}_{var}") and gamma_names
+    ("gamma_class_{c}_{var}") back into per-class significance maps.
+
+    Returns (class_sig, member_sig), each a dict keyed by class index
+    (0-based) -> {var: bool_significant}.
+    """
+    model = sol.get("model")
+    if model is None:
+        return {}, {}
+
+    class_sig = {}
+    coeff_names = list(getattr(model, "coeff_names", None) or [])
+    pvalues = np.array(getattr(model, "pvalues", None)) if getattr(model, "pvalues", None) is not None else np.array([])
+    for name, pv in zip(coeff_names, pvalues):
+        m = re.match(r'^class_(\d+)_(.+)$', str(name))
+        if not m:
+            continue
+        c = int(m.group(1)) - 1
+        var = m.group(2)
+        class_sig.setdefault(c, {})[var] = bool(pv <= p_val_threshold)
+
+    member_sig = {}
+    gamma_names = list(getattr(model, "gamma_names", None) or [])
+    gamma_pvalues = getattr(model, "gamma_p_values", None)
+    gamma_pvalues = np.array(gamma_pvalues) if gamma_pvalues is not None else np.array([])
+    for name, pv in zip(gamma_names, gamma_pvalues):
+        m = re.match(r'^gamma_class_(\d+)_(.+)$', str(name))
+        if not m:
+            continue
+        c = int(m.group(1)) - 1
+        var = m.group(2)
+        member_sig.setdefault(c, {})[var] = bool(pv <= p_val_threshold)
+
+    return class_sig, member_sig
+
+
 def sample_variable(var, matrix, all_bcvars, ps_asvars, ps_randvars,
                      ps_bcvars, ps_corvars, rng=np.random):
     """
@@ -332,3 +450,61 @@ def summarize_prob_matrix(matrix):
             "p_distr": {d: round(v, 3) for d, v in p["dist"].items()},
         })
     return rows
+
+def summarize_prob_matrix_table_lc(matrices, top_n=15, all_randvars=None, all_corvars=None):
+    """Same format as summarize_prob_matrix_table, but one table per class.
+    Utility vs membership entries are told apart by the 'dist' key —
+    utility entries carry it (from initialize_prob_matrix_lc), membership
+    entries don't — so no isvarnames lookup is needed here."""
+    num_classes = len(matrices)
+    sections = []
+
+    header = (
+        f"\n{'Variable':<14} {'Incl':>6} {'Rand':>6} "
+        f"{'n':>5} {'ln':>5} {'tn':>5} {'u':>5} {'t':>5} "
+        f"{'Corr':>6} {'BC':>6}"
+    )
+    sep = "-" * 74
+
+    for c, matrix in enumerate(matrices):
+        is_base = (c == num_classes - 1)
+        label = f"CLASS {c + 1}" + ("  (Base — no membership equation)" if is_base else "")
+        lines = [f"\n=== {label} — Utility Variables ===", header, sep]
+
+        util_rows = sorted(
+            ((v, p) for v, p in matrix.items() if "dist" in p),
+            key=lambda kv: kv[1]["inclusion"], reverse=True
+        )[:top_n]
+        for var, p in util_rows:
+            d = p["dist"]
+            bc = f"{p['boxcox']:.3f}" if p["boxcox"] is not None else "  N/A"
+            if all_randvars is not None and var not in all_randvars:
+                lines.append(
+                    f"{var:<14} {p['inclusion']:>6.3f} {'N/A':>6} "
+                    f"{'N/A':>5} {'N/A':>5} {'N/A':>5} {'N/A':>5} {'N/A':>5} "
+                    f"{'N/A':>6} {bc:>6}"
+                )
+            else:
+                corr_val = f"{p['correlated']:>6.3f}" if all_corvars is None or var in all_corvars else "   N/A"
+                lines.append(
+                    f"{var:<14} {p['inclusion']:>6.3f} {p['random']:>6.3f} "
+                    f"{d.get('n',0):>5.3f} {d.get('ln',0):>5.3f} "
+                    f"{d.get('tn',0):>5.3f} {d.get('u',0):>5.3f} "
+                    f"{d.get('t',0):>5.3f} "
+                    f"{corr_val} {bc:>6}"
+                )
+
+        member_rows = sorted(
+            ((v, p) for v, p in matrix.items() if "dist" not in p),
+            key=lambda kv: kv[1]["inclusion"], reverse=True
+        )
+        if member_rows:
+            lines.append(f"\n--- {label} — Membership Variables ---")
+            lines.append(f"{'Variable':<14} {'Incl':>6}")
+            lines.append("-" * 22)
+            for var, p in member_rows:
+                lines.append(f"{var:<14} {p['inclusion']:>6.3f}")
+
+        sections.append("\n".join(lines))
+
+    return "\n".join(sections)

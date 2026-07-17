@@ -1307,8 +1307,12 @@ class DiscreteChoiceModel(ABC):
                     g0 = c * Km
                     for k in range(Km):
                         gi = g0 + k
+                        # gamma_names are stored as "gamma_class_{c}_{var}" — the
+                        # class is already shown by the section header above, so
+                        # only the variable name needs to be displayed here.
                         gname = self.gamma_names[gi]
-                        p(fmt.format(gname[:16], "", self.gamma_params[gi], self.gamma_se[gi],
+                        var_name = gname.split(f"gamma_class_{c + 1}_", 1)[-1]
+                        p(fmt.format(var_name[:16], "", self.gamma_params[gi], self.gamma_se[gi],
                                     self.gamma_t_stats[gi], self.gamma_p_values[gi],
                                     sig(self.gamma_p_values[gi])))
             p()

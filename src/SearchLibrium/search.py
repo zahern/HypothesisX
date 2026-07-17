@@ -78,7 +78,8 @@ try:
     import misc
     from addicty import Dict
     from pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, \
-        classify_significance, sample_solution_from_matrix, summarize_prob_matrix_table
+        classify_significance,  summarize_prob_matrix_table, \
+        initialize_prob_matrix_lc, update_prob_matrix_lc, summarize_prob_matrix_table_lc
 except ImportError:
     from .misc import list_of_zeros, make_list
     from .MixedLogit import MixedLogit
@@ -91,7 +92,8 @@ except ImportError:
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from addicty import Dict
     from .pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, \
-        classify_significance, sample_solution_from_matrix, summarize_prob_matrix_table
+        classify_significance, sample_solution_from_matrix, summarize_prob_matrix_table, \
+        initialize_prob_matrix_lc, update_prob_matrix_lc, summarize_prob_matrix_table_lc
     
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS                                                  '''
@@ -1306,6 +1308,13 @@ class Search():
         distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])
         self.prob_matrix = initialize_prob_matrix(varnames, param.all_bcvars, distributions)
 
+        if getattr(param, 'latent_class', False):
+            num_classes = getattr(param, 'num_classes', 2)
+            self.prob_matrix_lc = initialize_prob_matrix_lc(
+                varnames, list(param.isvarnames or []), num_classes,
+                param.all_bcvars, distributions,
+            )
+
         self._ps_asvars    = set(getattr(param, "ps_asvars", []) or [])
         self._ps_randvars  = set((getattr(param, "ps_randvars", {}) or {}).keys())
         self._ps_bcvars    = set(getattr(param, "ps_bcvars", []) or [])
@@ -1513,6 +1522,15 @@ class Search():
         """Wrapper tying the pure functions in pbil.py to this instance's
         state. Kept thin on purpose — all the actual update logic lives in
         pbil.py so it can be tested independent of any Search instance."""
+        if getattr(self.param, 'latent_class', False):
+            ps_isvars = set(getattr(self.param, 'ps_isvars', []) or [])
+            self.prob_matrix_lc = update_prob_matrix_lc(
+                self.prob_matrix_lc, sol, self.t, self.tI,
+                self._ps_asvars, ps_isvars,
+            )
+            self._pbil_updates += 1
+            return
+
         sig = build_significance_map(sol, p_val_threshold=getattr(self.param, "p_val", 0.05))
         sig_vars, insig_vars = classify_significance(sol, sig)
         self.prob_matrix = update_prob_matrix(
@@ -2375,6 +2393,7 @@ class Search():
         """Ensure at least min_count behavioural vars are present per constraint."""
         if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
             return
+        is_lc = getattr(self.param, 'latent_class', False)
         for rule in self.param.pres_spec_constr.get('min_behavioral', []):
             min_count = rule['min']
             pool = set(rule['pool'])
@@ -2383,12 +2402,26 @@ class Search():
             if deficit <= 0:
                 continue
             available = list(pool - current)
-            if available:
-                to_add = np.random.choice(
-                    available, size=min(deficit, len(available)), replace=False
-                ).tolist()
-                if 'asvars' in solution:
-                    solution['asvars'] = list(set(to_add + solution['asvars']))
+            if not available:
+                continue
+            to_add = np.random.choice(
+                available, size=min(deficit, len(available)), replace=False
+            ).tolist()
+
+            if is_lc:
+                class_params_spec = solution.get('class_params_spec', None)
+                num_classes = getattr(self.param, 'num_classes', 2)
+                if class_params_spec is None:
+                    class_params_spec = np.empty(num_classes, dtype=object)
+                    for c in range(num_classes):
+                        class_params_spec[c] = []
+                for var in to_add:
+                    for c in range(len(class_params_spec)):
+                        if var not in class_params_spec[c]:
+                            class_params_spec[c] = np.append(class_params_spec[c], var)
+                solution['class_params_spec'] = class_params_spec
+            elif 'asvars' in solution:
+                solution['asvars'] = list(set(to_add + solution['asvars']))
 
     def _behavioral_vars_protected_from_removal(self, solution):
         """Return set of behavioural vars that cannot be removed (below min)."""
@@ -2448,13 +2481,15 @@ class Search():
     def _enforce_mutual_exclusion(self, solution):
         """Ensure at most one variable per mutually-exclusive group is present.
 
-        If more than one is found, keep the first (arbitrary) and
-        remove the rest from asvars, isvars, and class/member specs.
+        If more than one is found, keep the first (arbitrary) and remove
+        the rest — from every class's utility/membership spec for latent
+        class models, or from asvars/isvars/randvars/bcvars/corvars otherwise.
         """
         groups = self._get_mutual_exclusion_groups()
         if not groups:
             return
         all_v = self._all_vars_in_solution(solution)
+        removed_any = set()
         for group in groups:
             present = [v for v in group if v in all_v]
             if len(present) <= 1:
@@ -2472,6 +2507,19 @@ class Search():
                     solution['bcvars'] = [x for x in solution['bcvars'] if x != v]
                 if 'corvars' in solution and v in solution['corvars']:
                     solution['corvars'] = [x for x in solution['corvars'] if x != v]
+                removed_any.add(v)
+
+        if removed_any:
+            cp = solution.get('class_params_spec', None)
+            if cp is not None:
+                for i in range(len(cp)):
+                    cp[i] = np.array([v for v in cp[i] if v not in removed_any], dtype=object)
+                solution['class_params_spec'] = cp
+            mp = solution.get('member_params_spec', None)
+            if mp is not None:
+                for i in range(len(mp)):
+                    mp[i] = np.array([v for v in mp[i] if v not in removed_any], dtype=object)
+                solution['member_params_spec'] = mp
 
     def _cull_attrited_vars(self):
         """Remove variables from the available pools that have exceeded the
@@ -2783,26 +2831,10 @@ class Search():
     # {
         set_asvars = set(solution['asvars'])
         set_asvars.add(new_asvar)
-        #if self.param.latent_class: #add only if latent class
-        #    self.add_class_paramfeature(new_asvar, solution)
-        
         solution['asvars'] = sorted(list(set_asvars)) # Convert back to list and sort
-        #todo need to add to clas member spec
 
-        if getattr(self.param, 'latent_class', False):
-            class_params_spec = solution.get('class_params_spec', None)
-            num_classes = getattr(self.param, 'num_classes', 2)
-            if class_params_spec is None:
-                class_params_spec = np.empty(num_classes, dtype=object)
-                for c in range(num_classes):
-                    class_params_spec[c] = []
-            for c in range(len(class_params_spec)):
-                if new_asvar not in class_params_spec[c]:
-                    class_params_spec[c] = np.append(class_params_spec[c], new_asvar)
-            solution['class_params_spec'] = class_params_spec
-        
         args = (solution['asvars'], self.param.all_bcvars, self.param.asvarnames)
-        solution['asvars'] = self.remove_redundant_asvars(*args)
+        solution['asvars'] = self.remove_redundant_asvars(*args)        
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         r_vars = {}
@@ -2877,16 +2909,7 @@ class Search():
                     and var in self.param.avail_corvars]
         if len(solution['corvars']) < 2:
             solution['corvars'] = []
-            solution['cor']     = False
-        
-        if getattr(self.param, 'latent_class', False):
-            class_params_spec = solution.get('class_params_spec', None)
-            if class_params_spec is not None:
-                for c in range(len(class_params_spec)):
-                    class_params_spec[c] = np.array(
-                        [v for v in class_params_spec[c] if v != rem_asvar], dtype=object
-                    )
-                solution['class_params_spec'] = class_params_spec
+            solution['cor']     = False       
         
         return  solution
 
@@ -3039,18 +3062,29 @@ class Search():
 
         # ── Specification ───────────────────────────────────────────────────
         section("SPECIFICATION")
-        asvars   = solution.get('asvars',   [])
-        isvars   = solution.get('isvars',   [])
-        randvars = solution.get('randvars', {})
-        bcvars   = solution.get('bcvars',   [])
 
-        row("ASvars", ', '.join(f"'{v}'" for v in asvars) if asvars else '—')
-        if isvars:
-            row("ISvars", ', '.join(f"'{v}'" for v in isvars))
-        if randvars:
-            row("RANDvars", ', '.join(f"'{k}':'{v}'" for k, v in randvars.items()))
-        if bcvars:
-            row("BCvars", ', '.join(f"'{v}'" for v in bcvars))
+        if getattr(self.param, 'latent_class', False):
+            class_params_spec = solution.get('class_params_spec', None)
+            member_params_spec = solution.get('member_params_spec', None)
+            if class_params_spec is not None:
+                for c, arr in enumerate(class_params_spec):
+                    row(f"Class_{c + 1}", ', '.join(f"'{v}'" for v in arr) if len(arr) else '—')
+            if member_params_spec is not None:
+                for c, arr in enumerate(member_params_spec):
+                    row(f"Membership_{c + 1}", ', '.join(f"'{v}'" for v in arr) if len(arr) else '—')
+        else:
+            asvars   = solution.get('asvars',   [])
+            isvars   = solution.get('isvars',   [])
+            randvars = solution.get('randvars', {})
+            bcvars   = solution.get('bcvars',   [])
+
+            row("ASvars", ', '.join(f"'{v}'" for v in asvars) if asvars else '—')
+            if isvars:
+                row("ISvars", ', '.join(f"'{v}'" for v in isvars))
+            if randvars:
+                row("RANDvars", ', '.join(f"'{k}':'{v}'" for k, v in randvars.items()))
+            if bcvars:
+                row("BCvars", ', '.join(f"'{v}'" for v in bcvars))
 
         p(LINE)
 
@@ -4110,10 +4144,11 @@ class Search():
         if sig in self._banlist:
             sol['converged'] = False
             return (sol, False)
-        
-        as_vars, is_vars, rand_vars, bc_vars, corvars, asc_ind = self.get_components(sol)
-        all_vars = is_vars + as_vars
-        all_vars = [var for var in self.param.varnames if var in all_vars]
+
+        # _all_vars_in_solution already handles both cases correctly:
+        # plain asvars/isvars for MNL/MXL/etc, or the union across all
+        # classes' class_params_spec/member_params_spec for latent class.
+        all_vars = [var for var in self.param.varnames if var in self._all_vars_in_solution(sol)]
 
         # Estimate model if input variables are present in specification
         if not all_vars:
@@ -4135,10 +4170,9 @@ class Search():
             sol['converged'] = False
             self._banlist.add(sig)
             if hasattr(self, 'best_solution') and self.best_solution is not None:
-                fail_vars = set(as_vars + is_vars)
-                base_as = set(self.best_solution.get('asvars', []))
-                base_is = set(self.best_solution.get('isvars', []))
-                new_vars = fail_vars - (base_as | base_is)
+                fail_vars = set(all_vars)
+                base_vars = self._all_vars_in_solution(self.best_solution)
+                new_vars = fail_vars - base_vars
                 if new_vars:
                     for v in new_vars:
                         self._var_failures[v] = self._var_failures.get(v, 0) + 1
@@ -4171,10 +4205,9 @@ class Search():
             #     currently-accepted best (neighbour) model.
             #     Skip entirely on init / startup — no baseline yet.
             if hasattr(self, 'best_solution') and self.best_solution is not None:
-                fail_vars = set(as_vars + is_vars)
-                base_as = set(self.best_solution.get('asvars', []))
-                base_is = set(self.best_solution.get('isvars', []))
-                new_vars = fail_vars - (base_as | base_is)
+                fail_vars = set(all_vars)
+                base_vars = self._all_vars_in_solution(self.best_solution)
+                new_vars = fail_vars - base_vars
                 if new_vars:
                     for v in new_vars:
                         self._var_failures[v] = self._var_failures.get(v, 0) + 1
@@ -4189,14 +4222,25 @@ class Search():
         print(f"  isvars    : {sorted(str(v) for v in sol.get('isvars', []))}")
         print(f"  randvars  : {dict(sorted((str(k), str(v)) for k, v in sol.get('randvars', {}).items()))}")
         print(f"  corvars   : {sorted(str(v) for v in sol.get('corvars', []))}")
-        print(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")        
-        _cps = sol.get('class_params_spec', None)
-        print(f"  class_params_spec  : {sorted(str(v) for v in _cps) if _cps is not None else None}")
-
-        _mps = sol.get('member_params_spec', None)
-        print(f"  member_params_spec : {sorted(str(v) for v in _mps) if _mps is not None else None}")
+        print(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")
         print(f"  bic       : {sol.get('bic')}")
         print(f"  converged    : {sol.get('converged')}")
+
+        _cps = sol.get('class_params_spec', None)
+        if _cps is not None:
+            print("  class_params_spec :")
+            for c, arr in enumerate(_cps):
+                print(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
+        else:
+            print("  class_params_spec  : None")
+
+        _mps = sol.get('member_params_spec', None)
+        if _mps is not None:
+            print("  member_params_spec:")
+            for c, arr in enumerate(_mps):
+                print(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
+        else:
+            print("  member_params_spec : None")
 
         if self.param.verbose:
             print("** verbose: TRUE (param.verbose...) ** turn off if dont want to print")
@@ -4477,6 +4521,7 @@ class Search():
             avail=avail,
             membership_vars=membership_vars,
             member_params_spec=member_params_spec,
+            class_params_spec=class_params_spec,
         )
         model.fit(em_method="squarem")
         model.get_loglik_null()
@@ -4663,20 +4708,56 @@ class Search():
     def evaluate_lc(self, sol):
     # {
         sol = self.apply_constraints(sol)
-        as_vars = sol.get('asvars', [])
-        is_vars = sol.get('isvars', [])
-        asc_ind = sol.get('asc_ind', False)
-        bc_vars = self.define_bc_vars(sol)
-        all_vars = [var for var in self.param.varnames if var in (as_vars + is_vars)]
 
+        # asvars/isvars are not perturbed independently for latent class —
+        # class_params_spec/member_params_spec (per class) are the only
+        # source of truth. all_vars is the union across all classes.
         class_params_spec = sol.get('class_params_spec', None)
         member_params_spec = sol.get('member_params_spec', None)
-        num_classes = getattr(self.param, 'num_classes', 2)
+        num_classes = getattr(self.param, 'num_classes', 2) # Change if requiered
+        asc_ind = sol.get('asc_ind', False)
+        bc_vars = self.define_bc_vars(sol)
+
+        all_vars_set = self._all_vars_in_solution(sol)
+        all_vars = [var for var in self.param.varnames if var in all_vars_set]
+
+        # Defensive guard: drop any spec entry that no longer corresponds to
+        # an actual column in all_vars.
+        all_vars_check = set(all_vars)
+        if class_params_spec is not None:
+            for c in range(len(class_params_spec)):
+                stale = [v for v in class_params_spec[c] if v not in all_vars_check and v != '_inter']
+                if stale:
+                    print(f"[LC] WARNING: dropping stale class_params_spec[{c}] entries not in all_vars: {stale}")
+                class_params_spec[c] = np.array(
+                    [v for v in class_params_spec[c] if v in all_vars_check or v == '_inter'], dtype=object
+                )
+            sol['class_params_spec'] = class_params_spec
+        if member_params_spec is not None:
+            for c in range(len(member_params_spec)):
+                stale = [v for v in member_params_spec[c] if v not in all_vars_check and v != '_inter']
+                if stale:
+                    print(f"[LC] WARNING: dropping stale member_params_spec[{c}] entries not in all_vars: {stale}")
+                member_params_spec[c] = np.array(
+                    [v for v in member_params_spec[c] if v in all_vars_check or v == '_inter'], dtype=object
+                )
+            sol['member_params_spec'] = member_params_spec
 
         X = self.param.df[all_vars].values
         y = self.param.choices
         ids = self.param.choice_id if self.param.choice_id is not None else self.param.ind_id
 
+        """
+        # TEMP DEBUG — remove after diagnosing
+        print(f"[FIT-TIME DEBUG] all_vars={all_vars}")
+        print(f"[FIT-TIME DEBUG] class_params_spec at fit time:")
+        for c, arr in enumerate(class_params_spec):
+            print(f"    Class_{c+1}: {list(arr)}")
+        print(f"[FIT-TIME DEBUG] member_params_spec at fit time:")
+        if member_params_spec is not None:
+            for c, arr in enumerate(member_params_spec):
+                print(f"    Class_{c+1}: {list(arr)}")
+        """
         alts = self.param.alt_var
         if alts is None:
             alts = np.ones(len(y), dtype=int)
@@ -4695,7 +4776,15 @@ class Search():
             alts=alts,
             base_alt=self.param.base_alt,
         )
-
+        """
+        # TEMP DEBUG — remove after diagnosing
+        print(f"[POST-FIT DEBUG] model.varnames = {model.varnames}")
+        print(f"[POST-FIT DEBUG] model.K = {model.K}")
+        print(f"[POST-FIT DEBUG] model._Ks = {model._Ks}")
+        for c, idx in enumerate(model._class_specs):
+            names_at_idx = [model.varnames[i] for i in idx]
+            print(f"[POST-FIT DEBUG] model._class_specs[{c}] = {list(idx)} -> {names_at_idx}")
+        """
         sol['model'] = model
         sol['coeff'] = model.coeff_est
         sol['model_n'] = 'latent_class'
@@ -4718,7 +4807,7 @@ class Search():
         if getattr(self.param, 'verbose', False):
             model.summarise()
 
-        tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, {}, bc_vars, [], converged, sol)
+        tuple_ = (aic, bic, loglik, mae, sorted(all_vars_set), [], {}, bc_vars, [], converged, sol)
         return tuple_
     # }
 
@@ -4768,9 +4857,9 @@ class Search():
             y_test = self.param.test_choices
             test_model = NestedLogit()
             test_model.setup(X=X_test, y=y_test, varnames=all_vars, isvars=is_vars,
-                             alts=self.param.test_alt_var, ids=self.param.test_choice_id,
-                             nests=nests, lambdas=lambdas, fit_intercept=asc_ind,
-                             return_grad=False)
+                            alts=self.param.test_alt_var, ids=self.param.test_choice_id,
+                            nests=nests, lambdas=lambdas, fit_intercept=asc_ind,
+                            return_grad=False)
             test_model.fit()
             model.mae = self.compute_mae(test_model)
 
@@ -5186,13 +5275,21 @@ class Search():
         the matrix's evolution can be reviewed after the run, not just its
         final state."""
         top_n = top_n or len(self.param.asvarnames)
-        table = summarize_prob_matrix_table(
-            self.prob_matrix, top_n=top_n,
-            all_randvars=self.param.all_randvars,
-            all_corvars=self.param.all_corvars,
-        )
+        
+        if getattr(self.param, 'latent_class', False):
+            
+            table = summarize_prob_matrix_table_lc(
+                self.prob_matrix_lc, top_n=top_n,
+                all_randvars=self.param.all_randvars,
+                all_corvars=self.param.all_corvars,
+            )
+        else:
+            table = summarize_prob_matrix_table(
+                self.prob_matrix, top_n=top_n,
+                all_randvars=self.param.all_randvars,
+                all_corvars=self.param.all_corvars,
+            )
         print(table, file=file)
         print(table, file=self.pbil_log_file)
-
 # }
 
