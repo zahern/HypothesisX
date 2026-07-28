@@ -1703,6 +1703,26 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def remove_redundant_asvars(self, asvars, transasvars, asvarnames):
     # {
+        # Gather variables that are part of an asvar_alt_spec constraint so
+        # that both the generic column AND its alt-specific dummies are kept
+        # together (the constraint requires both forms to coexist).
+        constraints = getattr(self.param, 'pres_spec_constr', None) or {}
+        alt_spec_map = constraints.get('asvar_alt_spec', {})
+        constrained_base = set()
+        constrained_dummies = set()
+        if alt_spec_map:
+            for base_var, alts in alt_spec_map.items():
+                if base_var in asvars:
+                    constrained_base.add(base_var)
+                for alt in alts:
+                    dummy_name = f"{base_var}_{alt}"
+                    if dummy_name in asvars:
+                        constrained_dummies.add(dummy_name)
+
+        # Merge constrained vars -- they always travel together so exclude
+        # them from the either/or logic below.
+        constrained_merged = constrained_base | constrained_dummies
+
         # Filter out elements from asvars that contain any substring present in transasvars.
         redundant_asvars = [var for var in asvars if any(subvar in var for subvar in transasvars)]
         unique_vars = [var for var in asvars if var not in redundant_asvars]
@@ -1710,8 +1730,10 @@ class Search():
         # When transformations are not applied, the redundancy is created
         # if a variable has both generic & alt-spec coeffs
         if len(transasvars) == 0:  # {
-            gen_var_select = [var for var in asvars if var in asvarnames]
-            alspec_final = [var for var in asvars if var not in gen_var_select]
+            gen_var_select = [var for var in asvars
+                              if var in asvarnames and var not in constrained_merged]
+            alspec_final = [var for var in asvars
+                            if var not in asvarnames and var not in constrained_merged]
         # }
         else:
         # {
@@ -1719,12 +1741,16 @@ class Search():
             for var in transasvars:
             # {
                 redun_vars = [item for item in asvars if var in item]
-                gen_var = [var for var in redun_vars if var in asvarnames]
+                gen_var = [v for v in redun_vars
+                           if v in asvarnames and v not in constrained_merged]
                 if gen_var:
                     gen_var_select.append(np.random.choice(gen_var))
-                alspec_redun_vars = [item for item in asvars if var in item and item not in asvarnames]
-                trans_alspec = [item for item in alspec_redun_vars if any(sub_item in item for sub_item in boxc_l)]
-                lin_alspec = [var for var in alspec_redun_vars if var not in trans_alspec]
+                alspec_redun_vars = [item for item in asvars
+                                     if var in item and item not in asvarnames
+                                     and item not in constrained_merged]
+                trans_alspec = [item for item in alspec_redun_vars
+                                if any(sub_item in item for sub_item in boxc_l)]
+                lin_alspec = [v for v in alspec_redun_vars if v not in trans_alspec]
                 choice = np.random.randint(2)  # Chooses a 0 or 1
                 ref = lin_alspec if choice else trans_alspec
                 alspec_final.extend(ref)
@@ -1738,6 +1764,8 @@ class Search():
         else:
             final_asvars = alspec_final
 
+        # Append constrained vars (both generic base and alt-specific dummies)
+        final_asvars.extend(list(constrained_merged))
         final_asvars.extend(unique_vars)  # Extend the list
 
         # Remove duplicates while preserving the order of elements
@@ -1771,6 +1799,7 @@ class Search():
         asvars.extend(self.param.ps_asvars)
         asvars = self.remove_redundant_asvars(asvars, self.param.trans_asvars, self.param.asvarnames)
         asvars = self._apply_mutual_exclusion_filter(asvars)
+        asvars = self._apply_incompatible_specs_filter(asvars)
         return asvars
     # }
 
@@ -1785,6 +1814,7 @@ class Search():
         isvars = [self.param.avail_isvars[i] for i in isvar_select_pos]
         isvars.extend(self.param.ps_isvars)
         isvars = self._apply_mutual_exclusion_filter(isvars)
+        isvars = self._apply_incompatible_specs_filter(isvars)
         return isvars
     # }
 
@@ -2084,6 +2114,9 @@ class Search():
         # ── Mutual-exclusion constraint ──
         self._enforce_mutual_exclusion(solution)
 
+        # ── Incompatible alt-specific specs constraint ──
+        self._enforce_incompatible_specs(solution)
+
         # ── Min-behavioural constraint (soft: at least n from a pool) ──
         self._enforce_min_behavioral(solution)
 
@@ -2176,6 +2209,17 @@ class Search():
             return []
         return self.param.pres_spec_constr.get('mutually_exclusive', [])
 
+    def _get_incompatible_specs_groups(self):
+        """Return the list of incompatible alt-specific variable groups, or [].
+
+        Each group is a list[str] of alt-specific column names (e.g.,
+        ``TIME_Car``, ``COST_Car``); at most one member of each group
+        may appear in a solution.
+        """
+        if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
+            return []
+        return self.param.pres_spec_constr.get('incompatible_specs', [])
+
     def _get_excluded_by_mutual_group(self, already_present: set):
         """Return the set of variables that are blocked because a partner
         from the same mutually-exclusive group is *already_present*.
@@ -2186,6 +2230,37 @@ class Search():
             if gset & already_present:
                 excluded.update(gset)
         return excluded
+
+    def _get_excluded_by_incompatible_specs(self, already_present: set):
+        """Return the set of alt-specific column names that are blocked
+        because a partner from the same incompatible-spec group is
+        *already_present*.
+        """
+        excluded = set()
+        for group in self._get_incompatible_specs_groups():
+            gset = set(group)
+            if gset & already_present:
+                excluded.update(gset)
+        return excluded
+
+    def _apply_incompatible_specs_filter(self, varlist):
+        """Given a list of variables, keep at most one per incompatible-spec
+        group.  For each group the first variable encountered is kept;
+        subsequent members are dropped.
+        """
+        groups = self._get_incompatible_specs_groups()
+        if not groups:
+            return varlist
+        blocked = set()
+        for group in groups:
+            seen_first = False
+            for v in varlist:
+                if v in group:
+                    if seen_first:
+                        blocked.add(v)
+                    else:
+                        seen_first = True
+        return [v for v in varlist if v not in blocked]
 
     def _enforce_mutual_exclusion(self, solution):
         """Ensure at most one variable per mutually-exclusive group is present.
@@ -2202,6 +2277,34 @@ class Search():
             if len(present) <= 1:
                 continue
             keep = set(present[:1])
+            remove = set(present[1:])
+            for v in remove:
+                if 'asvars' in solution and v in solution['asvars']:
+                    solution['asvars'] = [x for x in solution['asvars'] if x != v]
+                if 'isvars' in solution and v in solution['isvars']:
+                    solution['isvars'] = [x for x in solution['isvars'] if x != v]
+                if 'randvars' in solution and v in solution['randvars']:
+                    del solution['randvars'][v]
+                if 'bcvars' in solution and v in solution['bcvars']:
+                    solution['bcvars'] = [x for x in solution['bcvars'] if x != v]
+                if 'corvars' in solution and v in solution['corvars']:
+                    solution['corvars'] = [x for x in solution['corvars'] if x != v]
+
+    def _enforce_incompatible_specs(self, solution):
+        """Ensure at most one alt-specific variable per incompatible group.
+
+        Operates on the alt-specific dummy column names (e.g.
+        ``TIME_Car``, ``COST_Car``).  If multiple members of a group
+        are present, keep the first and remove the rest from asvars.
+        """
+        groups = self._get_incompatible_specs_groups()
+        if not groups:
+            return
+        all_v = self._all_vars_in_solution(solution)
+        for group in groups:
+            present = [v for v in group if v in all_v]
+            if len(present) <= 1:
+                continue
             remove = set(present[1:])
             for v in remove:
                 if 'asvars' in solution and v in solution['asvars']:
@@ -2234,13 +2337,50 @@ class Search():
             print(f"  [attrition] '{v}' removed from search after {self._var_failures[v]} failures")
 
     def _apply_latent_class_constraints(self, solution, lc_constraints):
-        """Apply constraints specific to latent class models."""
-        # Example: force variables to appear only in certain classes
+        """Apply constraints specific to latent class models.
+
+        Populates solution['class_params_spec'] from the constraint builder's
+        class_specific_vars dict, so that the search respects per-class
+        variable assignments.
+        """
+        n_classes = lc_constraints.get('n_classes', 2)
+
+        # --- class-specific variable assignments ---
         if 'class_specific_vars' in lc_constraints:
-            # This would require more complex logic depending on latent class implementation
-            # For now, just ensure variables are included
-            for class_vars in lc_constraints['class_specific_vars'].values():
-                solution['asvars'] = list(set(class_vars + solution['asvars']))
+            class_spec_vars = lc_constraints['class_specific_vars']
+            # Build / update class_params_spec
+            existing = solution.data.get('class_params_spec', None)
+            if existing is None or len(existing) != n_classes:
+                existing = np.empty(n_classes, dtype=object)
+                for c in range(n_classes):
+                    existing[c] = np.array([], dtype='<U64')
+
+            for c in range(n_classes):
+                key = f'class_{c}'
+                if key in class_spec_vars:
+                    vars_c = class_spec_vars[key]
+                    current = list(existing[c]) if len(existing[c]) > 0 else []
+                    merged = list(set(current + vars_c))
+                    existing[c] = np.array(merged, dtype='<U64')
+
+            solution['class_params_spec'] = existing
+
+            # Also ensure all class-specific vars are in asvars (the flat list used
+            # by variable-selection operators for discovery)
+            all_class_vars = []
+            for vars_c in class_spec_vars.values():
+                all_class_vars.extend(vars_c)
+            solution['asvars'] = list(set(all_class_vars + solution['asvars']))
+
+        # --- membership variable constraints ---
+        if 'membership_vars' in lc_constraints:
+            member_vars = list(lc_constraints['membership_vars'].keys())
+            existing_member = solution.data.get('member_params_spec', None)
+            if existing_member is None or len(existing_member) == 0:
+                solution['member_params_spec'] = np.array(member_vars, dtype='<U64')
+            else:
+                merged = list(set(list(existing_member) + member_vars))
+                solution['member_params_spec'] = np.array(merged, dtype='<U64')
     
     def _apply_mixed_model_constraints(self, solution, mm_constraints):
         """Apply constraints specific to mixed models."""
@@ -2562,6 +2702,7 @@ class Search():
     # {
         candidate = [var for var in self.param.asvarnames if var not in solution['asvars']]
         blocked = self._get_excluded_by_mutual_group(set(solution.get('asvars', [])) | set(solution.get('isvars', [])))
+        blocked |= self._get_excluded_by_incompatible_specs(set(solution.get('asvars', [])) | set(solution.get('isvars', [])))
         candidate = [v for v in candidate if v not in blocked]
         if len(candidate) > 0:
             new_asvar = self.random_choice(candidate)
@@ -2637,6 +2778,7 @@ class Search():
     # {
         candidate = [var for var in self.param.isvarnames if var not in solution['isvars']]
         blocked = self._get_excluded_by_mutual_group(set(solution.get('asvars', [])) | set(solution.get('isvars', [])))
+        blocked |= self._get_excluded_by_incompatible_specs(set(solution.get('asvars', [])) | set(solution.get('isvars', [])))
         candidate = [v for v in candidate if v not in blocked]
         if len(candidate) > 0:
         # {
@@ -3883,47 +4025,72 @@ class Search():
     def create_dummy_column(self, asvars):
     # {
         """
-        This function generates a random boolean array with the same
-        length as 'asvars'. For each 'True' in the array, it creates a
-        new dataframe column for each choice alternative where the value
-        is the product of the variable and a boolean that indicates if
-        the choice alternative is the current alternative. It then adds
-        these alternative-specific variables into a new list and extends
-        it with the remaining variables from 'asvars' that were not
-        chosen for alternative-specific coefficients.
+        Generates alternative-specific dummy columns for variables that
+        receive alternative-specific coefficients.  For variables listed
+        in the ``asvar_alt_spec`` constraint, dummies are created *only*
+        for the specified alternatives (the original variable is kept
+        for the remaining alternatives as a generic coefficient).  For
+        all other variables the existing random-selection behaviour is
+        preserved: a random subset is turned into full alt-specific
+        dummies and the remaining variables stay generic.
 
-        The new asvar includes the new dummy columns created and the remaining
-        variables from 'asvars' that were not chosen for alternative-specific coefficients.
+        The new asvar list includes the new dummy columns alongside the
+        variables that were not chosen for alternative-specific
+        coefficients.
         """
 
-        # Generate a random boolean array with the same length as asvars
-        rand_array = np.random.choice([True, False], len(asvars))
+        constraints = getattr(self.param, 'pres_spec_constr', None) or {}
+        alt_spec_map = constraints.get('asvar_alt_spec', {})
 
-        # Initialize a list for storing new alternative-specific variables
+        # Separate constrained vars from free vars
+        constrained_asvars = [v for v in asvars if v in alt_spec_map]
+        free_asvars = [v for v in asvars if v not in alt_spec_map]
+
+        # Generate a random boolean array for free vars only
+        rand_array = np.random.choice([True, False], len(free_asvars))
+
         asvars_new = []
 
-        # Extract variables randomly chosen to have alternative-specific coefficients
-        alt_spec_vars = [var for var, bool in zip(asvars, rand_array) if bool]
+        # 1. Process constrained variables (subset alt-specific)
+        for alt_var in constrained_asvars:
+        # {
+            specified_alts = alt_spec_map[alt_var]
+            for choice in specified_alts:
+            # {
+                col_name = f"{alt_var}_{choice}"
+                if col_name not in self.param.df.columns:
+                    self.param.df[col_name] = self.param.df[alt_var] * (self.param.alt_var == choice)
 
-        # Create dummy columns for the selected variables
+                    if self.param.nb_crit > 1:
+                        self.param.df_test[col_name] = self.param.df_test[alt_var] * (self.param.test_alt_var == choice)
+
+                asvars_new.append(col_name)
+            # }
+            # Keep the original variable as a generic coefficient for
+            # the alternatives NOT listed in the constraint
+            asvars_new.append(alt_var)
+        # }
+
+        # 2. Process free variables (existing random behaviour)
+        alt_spec_vars = [var for var, bool in zip(free_asvars, rand_array) if bool]
+        generic_vars  = [var for var, bool in zip(free_asvars, rand_array) if not bool]
+
         for alt_var in alt_spec_vars:
         # {
             for choice in self.param.choice_set:
             # {
                 col_name = f"{alt_var}_{choice}"
-                self.param.df[col_name] = self.param.df[alt_var] * (self.param.alt_var == choice)
+                if col_name not in self.param.df.columns:
+                    self.param.df[col_name] = self.param.df[alt_var] * (self.param.alt_var == choice)
 
-                if self.param.nb_crit > 1:
-                    # Must compare against the split TEST alt array, not the
-                    # full training self.param.alt_var (shape mismatch else).
-                    self.param.df_test[col_name] = self.param.df_test[alt_var] * (self.param.test_alt_var == choice)
+                    if self.param.nb_crit > 1:
+                        self.param.df_test[col_name] = self.param.df_test[alt_var] * (self.param.test_alt_var == choice)
 
                 asvars_new.append(col_name)
             # }
         # }
+        asvars_new.extend(generic_vars)
 
-        # Add the remaining variables that were not selected for alternative-specific coefficients
-        asvars_new.extend(var for var, bool in zip(asvars, rand_array) if not bool)
         return asvars_new
 
     # }
@@ -4148,6 +4315,7 @@ class Search():
             avail=avail,
             membership_vars=membership_vars,
             member_params_spec=member_params_spec,
+            class_params_spec=class_params_spec,
         )
         model.fit(em_method="squarem")
         model.get_loglik_null()
@@ -4343,6 +4511,29 @@ class Search():
         class_params_spec = sol.get('class_params_spec', None)
         member_params_spec = sol.get('member_params_spec', None)
         num_classes = getattr(self.param, 'num_classes', 2)
+
+        # Build all_vars as the UNION of all per-class variable specs
+        # (plus membership vars, plus asvars/isvars fallback).
+        if class_params_spec is not None and len(class_params_spec) > 0:
+            all_vars_set = set()
+            for c in range(len(class_params_spec)):
+                if class_params_spec[c] is not None and len(class_params_spec[c]) > 0:
+                    for v in class_params_spec[c]:
+                        all_vars_set.add(str(v))
+            # Also include member params
+            if member_params_spec is not None:
+                if hasattr(member_params_spec, 'flat'):
+                    for v in member_params_spec.flat:
+                        all_vars_set.add(str(v))
+                elif hasattr(member_params_spec, '__iter__'):
+                    for v in member_params_spec:
+                        all_vars_set.add(str(v))
+            # Fallback to asvars+isvars for any vars not captured
+            for v in (as_vars + is_vars):
+                all_vars_set.add(str(v))
+            all_vars = [v for v in self.param.varnames if v in all_vars_set]
+        else:
+            all_vars = [var for var in self.param.varnames if var in (as_vars + is_vars)]
 
         X = self.param.df[all_vars].values
         y = self.param.choices
