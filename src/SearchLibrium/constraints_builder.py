@@ -135,6 +135,79 @@ class ConstraintBuilder:
         self._print(f"Mutually exclusive group: {variables}")
         return self
 
+    # ========================
+    # Alternative-Specific Variable Constraints
+    # ========================
+
+    def asvar_alt_spec(self, variable: str, alts: List[str]) -> 'ConstraintBuilder':
+        """
+        Break alternative-specific variables into subsets so they don't all
+        apply uniformly to the model. For each variable, creates
+        alternative-specific dummy columns only for the given *alts*, while
+        keeping the original variable for the remaining alternatives as a
+        generic coefficient. The search will then select among these
+        alt-specific columns as part of the variable search.
+
+        Parameters
+        ----------
+        variable : str
+            Base variable name (e.g. 'TIME', 'COST').
+        alts : list of str
+            Alternatives for which alt-specific coefficients should be
+            created (e.g. ['Car', 'Train']). Other alternatives share a
+            single generic coefficient.
+
+        Returns
+        -------
+        ConstraintBuilder
+            Self for method chaining
+
+        Example
+        -------
+        >>> constraints.asvar_alt_spec('TIME', ['Car', 'Train'])
+        >>> constraints.asvar_alt_spec('COST', ['Bus', 'Car'])
+
+        This creates ``TIME_Car``, ``TIME_Train``, ``COST_Bus``, ``COST_Car``
+        in the active variable pool while keeping ``TIME`` and ``COST`` as
+        generic columns for the remaining alternatives.
+        """
+        if 'asvar_alt_spec' not in self._constraints:
+            self._constraints['asvar_alt_spec'] = {}
+        self._constraints['asvar_alt_spec'][variable] = list(alts)
+        self._print(f"Alt-specific subset: '{variable}' → {alts}")
+        return self
+
+    def incompatible_specs(self, *alt_var_names: str) -> 'ConstraintBuilder':
+        """
+        Declare that certain alternative-specific variable names (e.g.,
+        ``TIME_Car`` and ``COST_Car``) are incompatible and must not appear
+        together in the same model. Each call creates one exclusion group.
+
+        This is applied **after** the alternative-specific dummies are
+        created, so you can declare constraints on the resulting column
+        names.
+
+        Parameters
+        ----------
+        *alt_var_names : str
+            Alt-specific column names forming a mutually exclusive group.
+
+        Returns
+        -------
+        ConstraintBuilder
+            Self for method chaining
+
+        Example
+        -------
+        >>> constraints.incompatible_specs('TIME_Car', 'COST_Car')
+        >>> constraints.incompatible_specs('FARE_Train', 'TIME_Train')
+        """
+        if 'incompatible_specs' not in self._constraints:
+            self._constraints['incompatible_specs'] = []
+        self._constraints['incompatible_specs'].append(list(alt_var_names))
+        self._print(f"Incompatible alt-specific group: {alt_var_names}")
+        return self
+
     def min_behavioral(self, min_count: int, *variables: str) -> 'ConstraintBuilder':
         """
         Require at least ``min_count`` variables from a behavioural pool
