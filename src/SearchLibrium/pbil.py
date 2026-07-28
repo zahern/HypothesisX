@@ -174,16 +174,15 @@ def update_prob_matrix(matrix, sol, t_current, t_initial,
         # else: ambiguous, left untouched
 
         # -- 2. Randomness --
-        if var not in ps_randvars:
-            indicator = 1.0 if (is_random and var in sig_vars["sd"]) else 0.0
+        # Only update p["random"] when the variable was actually random
+        # this round — absence of randomization is not evidence against it.
+        if is_random and var not in ps_randvars:
+            indicator = 1.0 if var in sig_vars["sd"] else 0.0
             lr = learning_rate("random", t_current, t_initial)
             p["random"] = _clamp((1 - lr) * p["random"] + lr * indicator)
 
-        if not is_random:
-            continue
-
         # -- 3. Distribution --
-        if var not in ps_randvars:
+        if is_random and var not in ps_randvars:
             current_distr = randvars[var]
             indicator = 1.0 if (var in sig_vars["mean"] and var in sig_vars["sd"]) else 0.0
             lr = learning_rate("distribution", t_current, t_initial)
@@ -193,7 +192,7 @@ def update_prob_matrix(matrix, sol, t_current, t_initial,
             p["dist"] = _normalize_dist(p["dist"])
 
         # -- 4. Correlation --
-        if not is_bc and var not in ps_corvars:
+        if is_random and not is_bc and var not in ps_corvars:
             indicator = 1.0 if any(
                 f"chol.{var}.{v2}" in sig_vars["chol"] or f"chol.{v2}.{var}" in sig_vars["chol"]
                 for v2 in corvars if v2 != var
@@ -226,6 +225,11 @@ def update_prob_matrix_lc(matrices, sol, t_current, t_initial, ps_asvars, ps_isv
 
     class_params_spec = sol.get('class_params_spec', None)
     member_params_spec = sol.get('member_params_spec', None)
+    """
+    print("[PBIL DEBUG] coeff_names/pvalues alignment:")
+    print(list(zip(model.coeff_names, model.pvalues)))
+    breakpoint()
+    """
     class_sig, member_sig = classify_significance_lc(sol)
     lr = learning_rate("inclusion", t_current, t_initial)
     num_classes = len(matrices)

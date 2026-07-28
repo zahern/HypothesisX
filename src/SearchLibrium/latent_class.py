@@ -1004,7 +1004,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.aic = 2 * self.num_params - 2 * self.loglik
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
 
-        self.estim_time_sec = time.time() - start_time        
+        self.estim_time_sec = time.time() - start_time
         self.post_process()
 
         return self
@@ -1871,4 +1871,9 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.gamma_ci_lo    = stats["gamma_ci_lo"]
         self.gamma_ci_hi    = stats["gamma_ci_hi"]
         self.gamma_names    = stats["gamma_names"]
-        
+        """
+        breakpoint()
+        print("[PBIL DEBUG] coeff_names/pvalues alignment:")
+        print(list(zip(self.param_names,self.se_params, self.pvalues))) 
+        print(list((zip(self.gamma_names, self.gamma_params, self.gamma_p_values))))
+        """

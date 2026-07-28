@@ -79,7 +79,7 @@ try:
     from addicty import Dict
     from pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, \
         classify_significance,  summarize_prob_matrix_table, \
-        initialize_prob_matrix_lc, update_prob_matrix_lc, summarize_prob_matrix_table_lc
+        initialize_prob_matrix_lc, update_prob_matrix_lc, summarize_prob_matrix_table_lc, P_MIN
 except ImportError:
     from .misc import list_of_zeros, make_list
     from .MixedLogit import MixedLogit
@@ -93,7 +93,7 @@ except ImportError:
     from addicty import Dict
     from .pbil import initialize_prob_matrix, update_prob_matrix, build_significance_map, \
         classify_significance, sample_solution_from_matrix, summarize_prob_matrix_table, \
-        initialize_prob_matrix_lc, update_prob_matrix_lc, summarize_prob_matrix_table_lc
+        initialize_prob_matrix_lc, update_prob_matrix_lc, summarize_prob_matrix_table_lc, P_MIN
     
 ''' ---------------------------------------------------------- '''
 ''' CONSTANTS                                                  '''
@@ -1370,20 +1370,25 @@ class Search():
 
     def _pbil_inclusion(self, sol):
         """Weighted add/remove of an alternative-specific variable. Direction
-        (add vs. remove) is chosen by the average learned inclusion
-        probability of the candidates on each side, and the specific variable
-        within that side is drawn proportional to its own probability —
-        higher-probability variables are more likely to be added, and
-        lower-probability variables are more likely to be removed."""
+        is governed by the combined evidence on both sides — mean inclusion
+        probability of the outside candidates (add_sig) against mean
+        exclusion probability of the variables already in the solution
+        (remove_sig) — not just by how good the outside candidates look on
+        their own. The specific variable within the chosen side is drawn
+        proportional to its own probability — higher-probability variables
+        are more likely to be added, and lower-probability variables are
+        more likely to be removed."""
         in_vars  = [v for v in sol["asvars"] if v not in self._ps_asvars]
         out_vars = [v for v in self.param.avail_asvars
                 if v not in sol["asvars"] and v not in self._ps_asvars]
         if not in_vars and not out_vars:
             return None
 
-        p_add = 0.5
-        if out_vars:
-            p_add = float(np.mean([self._pm(v, "inclusion") for v in out_vars]))
+        add_sig    = float(np.mean([self._pm(v, "inclusion") for v in out_vars])) if out_vars else 0.0
+        remove_sig = float(np.mean([1 - self._pm(v, "inclusion") for v in in_vars])) if in_vars else 0.0
+        if add_sig < (P_MIN + 0.0005) and remove_sig < (P_MIN + 0.0005):
+            return None
+        p_add = add_sig / (add_sig + remove_sig) if out_vars else 0.0
 
         if out_vars and (not in_vars or np.random.rand() < p_add):
             weights = np.array([self._pm(v, "inclusion") for v in out_vars])
@@ -1400,9 +1405,11 @@ class Search():
         return None
 
     def _pbil_random(self, sol):
-        """Weighted toggle of an in-model variable between fixed and random,
-        using the same add/remove-by-probability pattern as inclusion, but
-        scoped to variables already in the solution."""
+        """Weighted toggle of an in-model variable between fixed and random.
+        Direction is governed by the combined evidence on both sides — mean
+        'random' probability of the fixed candidates (add_sig) against mean
+        'stay fixed' probability of the variables already random
+        (remove_sig) — same normalisation pattern as inclusion."""
         candidates = [v for v in sol["asvars"] if v not in self._ps_randvars]
         fixed_vars  = [v for v in candidates if v not in sol["randvars"] and v in self.param.avail_rvars]
         random_vars = [v for v in candidates if v in sol["randvars"]]
@@ -1410,9 +1417,11 @@ class Search():
         if not fixed_vars and not random_vars:
             return None
 
-        p_make_random = 0.5
-        if fixed_vars:
-            p_make_random = float(np.mean([self._pm(v, "random") for v in fixed_vars]))
+        add_sig    = float(np.mean([self._pm(v, "random") for v in fixed_vars])) if fixed_vars else 0.0
+        remove_sig = float(np.mean([1 - self._pm(v, "random") for v in random_vars])) if random_vars else 0.0
+        if add_sig < (P_MIN + 0.0005) and remove_sig < (P_MIN + 0.0005):
+            return None
+        p_make_random = add_sig / (add_sig + remove_sig) if fixed_vars else 0.0
 
         if fixed_vars and (not random_vars or np.random.rand() < p_make_random):
             weights = np.array([self._pm(v, "random") for v in fixed_vars])
@@ -1456,8 +1465,12 @@ class Search():
         return new_sol
 
     def _pbil_correlation(self, sol):
-        """Weighted add/remove of a variable to/from the correlated set,
-        same probability-weighted pattern as inclusion/random."""
+        """Weighted add/remove of a variable to/from the correlated set.
+        Direction is governed by the combined evidence on both sides — mean
+        'correlated' probability of the uncorrelated candidates (add_sig)
+        against mean 'stay uncorrelated' probability of the variables
+        already correlated (remove_sig) — same normalisation pattern as
+        inclusion/random."""
         candidates = [v for v in sol["randvars"] if v not in self._ps_corvars and v not in sol.get("bcvars", [])]
         corr_vars    = [v for v in candidates if v in sol.get("corvars", [])]
         uncorr_vars  = [v for v in candidates if v not in sol.get("corvars", []) and v in self.param.avail_corvars]
@@ -1465,9 +1478,11 @@ class Search():
         if not corr_vars and not uncorr_vars:
             return None
 
-        p_add = 0.5
-        if uncorr_vars:
-            p_add = float(np.mean([self._pm(v, "correlated") for v in uncorr_vars]))
+        add_sig    = float(np.mean([self._pm(v, "correlated") for v in uncorr_vars])) if uncorr_vars else 0.0
+        remove_sig = float(np.mean([1 - self._pm(v, "correlated") for v in corr_vars])) if corr_vars else 0.0
+        if add_sig < (P_MIN + 0.0005) and remove_sig < (P_MIN + 0.0005):
+            return None
+        p_add = add_sig / (add_sig + remove_sig) if uncorr_vars else 0.0
 
         if uncorr_vars and (not corr_vars or np.random.rand() < p_add):
             weights = np.array([self._pm(v, "correlated") for v in uncorr_vars])
@@ -1488,7 +1503,10 @@ class Search():
         """Weighted add/remove of Box-Cox transformation, restricted to
         variables the matrix marked eligible at initialisation (p["boxcox"]
         is not None) and excluding anything currently correlated, since the
-        two are mutually exclusive by design."""
+        two are mutually exclusive by design. Direction is governed by the
+        combined evidence on both sides — mean 'boxcox' probability of the
+        untransformed candidates (add_sig) against mean 'stay untransformed'
+        probability of the variables already transformed (remove_sig)."""
         eligible = [v for v in sol["asvars"]
                     if v not in self._ps_bcvars and v not in sol.get("corvars", [])
                     and v in sol["asvars"]]
@@ -1498,9 +1516,11 @@ class Search():
         if not bc_vars and not non_bc_vars:
             return None
 
-        p_add = 0.5
-        if non_bc_vars:
-            p_add = float(np.mean([self._pm(v, "boxcox") for v in non_bc_vars]))
+        add_sig    = float(np.mean([self._pm(v, "boxcox") for v in non_bc_vars])) if non_bc_vars else 0.0
+        remove_sig = float(np.mean([1 - self._pm(v, "boxcox") for v in bc_vars])) if bc_vars else 0.0
+        if add_sig < (P_MIN + 0.0005) and remove_sig < (P_MIN + 0.0005):
+            return None
+        p_add = add_sig / (add_sig + remove_sig) if non_bc_vars else 0.0
 
         if non_bc_vars and (not bc_vars or np.random.rand() < p_add):
             weights = np.array([self._pm(v, "boxcox") for v in non_bc_vars])
@@ -4804,8 +4824,8 @@ class Search():
 
         mae = float('inf')
 
-        if getattr(self.param, 'verbose', False):
-            model.summarise()
+        #if getattr(self.param, 'verbose', False):
+            #model.summarise()
 
         tuple_ = (aic, bic, loglik, mae, sorted(all_vars_set), [], {}, bc_vars, [], converged, sol)
         return tuple_

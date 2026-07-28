@@ -503,7 +503,7 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
 
 
-    def choose_starting_solution(self, N_trials=20):
+    def choose_starting_solution(self, N_trials=1):
         """
         Generate multiple starting solutions, calculate the starting temperature (tI)
         from converged solutions, and return a valid initial solution.
