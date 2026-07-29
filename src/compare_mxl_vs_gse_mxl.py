@@ -63,7 +63,7 @@ def compute_mnl_individual_gradients(model: MultinomialLogit) -> np.ndarray:
     return g
 
 
-def fit_one_mxl(df, varnames, randvars, label, base_alt, n_draws=500):
+def fit_one_mxl(df, varnames, randvars, label, base_alt, n_draws=500, gradient_scores=None):
     """Fit a single MixedLogit and return timing + results dict."""
     t0 = time.perf_counter()
     m = MixedLogit()
@@ -82,6 +82,7 @@ def fit_one_mxl(df, varnames, randvars, label, base_alt, n_draws=500):
         return_grad=True,
         ftol=1e-4,
         gtol=1e-4,
+        gradient_scores=gradient_scores,
     )
     m.fit()
     elapsed = time.perf_counter() - t0
@@ -226,23 +227,26 @@ def main(seed: int = 42):
           f"time = {res_b['time']:.1f}s")
 
     # =========================================================================
-    #  Model C: GSE-Informed MXL (gradient-selected randvars, neg-ln COST)
+    #  Model C: GSE-Informed MXL (gradient informs distribution, all vars random)
     # =========================================================================
     print("\n" + "=" * 78)
-    print("  MODEL C: GSE-Informed MXL (gradient-selected randvars)")
+    print("  MODEL C: GSE-Informed MXL (gradient-informed, all vars random)")
     print("=" * 78)
 
-    # Build randvars from gradient diagnostics
+    # All variables remain random; gradient informs distribution type
     randvars_gse = {}
-    for v in hetero_vars_mxl:
+    for v in base_varnames:
         if v == "COST_NEG":
-            randvars_gse[v] = "ln"   # negative lognormal
+            randvars_gse[v] = "ln"   # negative lognormal for cost
+        elif v in hetero_vars_mxl:
+            randvars_gse[v] = "n"    # gradient-confirmed heterogeneous -> normal
         else:
-            randvars_gse[v] = "n"    # normal for time-like vars
+            randvars_gse[v] = "n"    # gradient-flagged as fixed but modeled as random normal
 
     print(f"  randvars = {randvars_gse}")
     res_c = fit_one_mxl(df, base_varnames, randvars_gse,
-                        "GSE-Informed MXL", base_alt)
+                        "GSE-Informed MXL", base_alt,
+                        gradient_scores=g_avg)
 
     print(f"  LL = {res_c['loglik']:.4f}  |  AIC = {res_c['aic']:.1f}  |  "
           f"BIC = {res_c['bic']:.1f}  |  params = {res_c['n_params']}  |  "
