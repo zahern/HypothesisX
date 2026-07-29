@@ -134,14 +134,13 @@ class MixedLogit(DiscreteChoiceModel):
     def setup(self, X, y, varnames=None, alts=None, isvars=None, transvars=None,
               transformation="boxcox", ids=None, weights=None, avail=None,
               randvars=None, panels=None, base_alt=None, fit_intercept=False,
-              init_coeff=None, maxiter=2000, correlated_vars=None,
+              init_coeff=None, maxiter=1000, correlated_vars=None,
               n_draws=1000, halton=True, minimise_func=None,
-              batch_size=None, halton_opts=None, ftol=1e-6,
+              batch_size=None, halton_opts=None, ftol=1e-12,
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
-              de_polish=False, l1_penalty=0.1, l2_penalty=0.5,
-              sd_penalty=0.001):
+              de_polish=False, l1_penalty=0.0):
         # {
         self.fit_intercept = fit_intercept
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -187,8 +186,6 @@ class MixedLogit(DiscreteChoiceModel):
         self.total_fun_eval = 0
         self.method = method.lower() if hasattr(method, 'lower') else method
         self.l1_penalty = float(l1_penalty)
-        self.l2_penalty = float(l2_penalty)
-        self.sd_penalty = float(sd_penalty)
         self.jac = self.return_grad  # scipy optimize parameter
         self.n_draws = n_draws
         self.batch_size = min(n_draws, batch_size) if batch_size is not None else n_draws
@@ -387,7 +384,9 @@ class MixedLogit(DiscreteChoiceModel):
         # 2x Kftrans - mean and lambda, 3x Krtrans - mean, s.d., lambda
         # Kchol, Kbw - relate to random variables, non-transformed
         # Kchol - cholesky matrix, Kbw the s.d. for random vars
-        n_coeff = self.Kf + self.Kr + self.Kchol + self.Kbw + 2 * self.Kftrans + 3 * self.Krtrans
+        n_coeff = (self.Kf + self.Kr + self.Kchol + self.Kbw
+                   + 2 * self.Kftrans + 3 * self.Krtrans
+                   + self._n_coeff_extra())
 
         # Initalise coefficients using a multinomial logit model
         if self.mnl_init and self.init_coeff is None:
@@ -411,30 +410,38 @@ class MixedLogit(DiscreteChoiceModel):
                       fit_intercept=False)
             mnl.fit()
 
-            # mnl estimates -> mxl needs to add stdev to random variables
-            self.init_coeff = mnl.coeff_est
+            # Build init_coeff from MNL estimates, mapping each variable
+            # to its correct MXL slot (Bf for fixed, Br_b for random).
+            bf_init = np.zeros(self.Kf)
+            br_b_init = np.zeros(self.Kr)
+            bf_pos = br_pos = 0
+            for ii in range(len(self.varnames)):
+                if not mnl.fxidx[ii]:
+                    continue
+                mnl_idx = int(np.sum(mnl.fxidx[:ii]))
+                mnl_val = mnl.coeff_est[mnl_idx] if mnl_idx < len(mnl.coeff_est) else 0.1
+                if self.fxidx[ii]:
+                    bf_init[bf_pos] = mnl_val
+                    bf_pos += 1
+                elif self.rvidx[ii]:
+                    br_b_init[br_pos] = mnl_val
+                    br_pos += 1
 
-            lower = self.Kf + 2 * self.Kftrans + self.Kr
-            upper = lower + self.Krtrans
+            mnl_Kf = int(np.sum(mnl.fxidx))
+            mnl_Kftrans = int(np.sum(mnl.fxtransidx))
+            bftrans_b = mnl.coeff_est[mnl_Kf:mnl_Kf + mnl_Kftrans] if mnl_Kftrans > 0 else np.array([])
+            bftrans_l = mnl.coeff_est[mnl_Kf + mnl_Kftrans:mnl_Kf + 2 * mnl_Kftrans] if mnl_Kftrans > 0 else np.array([])
 
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            # ERROR HANDLING (FIX) - WHEN LESS COEFFICIENTS THAN "kf + kr"
-            if lower > len(self.init_coeff):
-                # {
-                additional_elements_needed = lower - len(self.init_coeff)
-                extra = np.full(additional_elements_needed, 0.1)
-                self.init_coeff = np.concatenate((self.init_coeff, extra))
-            # }
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-            arr = self.init_coeff[:lower]
-            # Use simple initialization matching searchlogit for better convergence
+            arr = np.concatenate([bf_init, br_b_init] + list(self._init_pad_arrays()) + [bftrans_b, bftrans_l])
             rep = np.repeat(0.1, self.Kchol + self.Kbw)
-            self.init_coeff = np.concatenate((arr, rep, self.init_coeff[lower:upper],))
+            self.init_coeff = np.concatenate([arr, rep])
 
             if self.Krtrans:
-                rep = np.repeat(0.1, self.Krtrans)
-                self.init_coeff = np.concatenate((self.init_coeff, rep, self.init_coeff[-self.Krtrans:]))
+                self.init_coeff = np.concatenate([
+                    self.init_coeff,
+                    np.repeat(0.1, self.Krtrans),
+                    np.repeat(0.1, self.Krtrans),
+                ])
         # }
 
         betas = np.repeat(0.1, n_coeff) if self.init_coeff is None else self.init_coeff
@@ -454,7 +461,8 @@ class MixedLogit(DiscreteChoiceModel):
             "flmbda": (lmda_bound, self.Kftrans),
             "br_trans_b": (any_bound, self.Krtrans),
             "br_trans_w": (any_bound, self.Krtrans),
-            "rlmbda": (lmda_bound, self.Krtrans)
+            "rlmbda": (lmda_bound, self.Krtrans),
+            **self._bound_extra(),
         }
         bnds = [[bound[1][0]] * bound[1][1] for bound in bound_dict.items() if bound[1][1] > 0]
         bnds = list(itertools.chain.from_iterable(bnds))
@@ -553,7 +561,8 @@ class MixedLogit(DiscreteChoiceModel):
             "flmbda": (lmda_bound, self.Kftrans),
             "br_trans_b": (any_bound, self.Krtrans),
             "br_trans_w": (any_bound, self.Krtrans),
-            "rlmbda": (lmda_bound, self.Krtrans)
+            "rlmbda": (lmda_bound, self.Krtrans),
+            **self._bound_extra(),
         }
 
         # This code makes a specific number of copies of each range
@@ -570,10 +579,13 @@ class MixedLogit(DiscreteChoiceModel):
         if getattr(self, '_jax', False):
             jax_result = self.optimize_jax(betas, draws, drawstrans)
             if jax_result is not None:
-                beta_segment_names = ["Bf", "Br_b", "chol", "Br_w", "Bftrans",
-                                    "flmbda", "Brtrans_b", "Brtrans_w", "rlmda"]
-                iterations = [self.Kf, self.Kr, self.Kchol, self.Kbw, self.Kftrans,
-                            self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans]
+                extra_names, extra_counts = self._beta_segment_extra()
+                beta_segment_names = (["Bf", "Br_b"] + list(extra_names)
+                                     + ["chol", "Br_w", "Bftrans",
+                                        "flmbda", "Brtrans_b", "Brtrans_w", "rlmda"])
+                iterations = ([self.Kf, self.Kr] + list(extra_counts)
+                              + [self.Kchol, self.Kbw, self.Kftrans,
+                                 self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans])
                 self.var_list = self.split_betas(jax_result['x'], iterations, beta_segment_names)
                 self.chol_mat = self.construct_chol_mat(
                     self.var_list['chol'], self.var_list['Br_w'], self.var_list['Brtrans_w'])
@@ -603,64 +615,11 @@ class MixedLogit(DiscreteChoiceModel):
         args = (self.X, self.y, self.panel_info, draws, drawstrans, self.weights, self.avail, self.batch_size)
         bounds = bnds if self.method == "L-BFGS-B" else None
         options = {'gtol': self.gtol, 'maxiter': self.maxiter, 'disp': False}
-
-        # ── SD penalty wrapper: regularise SD params away from exactly zero ──
-        # When an SD parameter hits zero, the gradient vanishes and BFGS gets stuck.
-        # A small L2 penalty that activates below a threshold keeps SDs bounded
-        # away from zero without affecting the well-identified estimates.
-        if self.sd_penalty > 0 and self.Kbw > 0:
-            # SD param indices: end of beta vector, before Kftrans and Krtrans
-            sd_start = self.Kf + self.Kr + self.Kchol
-            sd_end   = sd_start + self.Kbw
-            _orig_obj = self.get_loglik_gradient
-
-            def _penalised_obj(betas, *obj_args):
-                f, g = _orig_obj(betas, *obj_args)
-                for i in range(sd_start, sd_end):
-                    if i >= len(betas):
-                        break
-                    sd_val = betas[i]
-                    if sd_val < 0.05:
-                        p = self.sd_penalty * (sd_val - 0.05) ** 2
-                        f += p
-                        if g is not None and len(g) > i:
-                            g[i] += 2.0 * self.sd_penalty * (sd_val - 0.05)
-                return f, g
-
-            obj_fn = _penalised_obj
-        else:
-            obj_fn = self.get_loglik_gradient
-
-        result = minimise_func(obj_fn, betas, jac=self.jac, method=self.method,
+        result = minimise_func(self.get_loglik_gradient, betas, jac=self.jac, method=self.method,
                                args=args, tol=self.ftol, bounds=bounds, options=options)
-        print(f"[MXL] Primary minimization ({self.method}): success={result.get('success', None)}, fun={result.get('fun', float('nan')):.6g}, nit={result.get('nit', '?')}")
+        print(f"[MXL] Minimization completed: success={result.get('success', None)}, fun={result.get('fun', float('nan')):.6g}, nit={result.get('nit', '?')}")
         if 'x' in result:
-            print(f"[MXL] Primary betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
-
-        # ── BFGS polish: after non-BFGS methods (SLSQP, Powell, etc.),
-        # run a quick BFGS to get the inverse Hessian for standard errors.
-        if (self.method not in ('bfgs', 'l-bfgs-b')
-                and 'x' in result
-                and result.get('success', False)):
-            try:
-                polish_opts = {'gtol': self.gtol * 10, 'maxiter': min(self.maxiter // 5, 200), 'disp': False}
-                polish_bnds = bnds  # re-use same bounds
-                # Use original objective (no SD penalty) for clean Hessian
-                polish_result = minimise_func(
-                    self.get_loglik_gradient,
-                    np.asarray(result['x']).copy(),
-                    jac=True, method='L-BFGS-B',
-                    args=args, tol=self.ftol,
-                    bounds=polish_bnds, options=polish_opts,
-                )
-                if polish_result.get('fun', float('inf')) < result.get('fun', float('inf')) + 0.1:
-                    print(f"[MXL] BFGS polish: success={polish_result.get('success')}, "
-                          f"fun={polish_result.get('fun', float('nan')):.6g}")
-                    result = polish_result
-                else:
-                    print(f"[MXL] BFGS polish skipped (worse objective)")
-            except Exception as e:
-                print(f"[MXL] BFGS polish failed: {e}")
+            print(f"[MXL] Minimization final betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         if hasattr(self, 'method') and self.method == "L-BFGS-B":  # {
@@ -720,7 +679,7 @@ class MixedLogit(DiscreteChoiceModel):
     @staticmethod
     def _jax_mxl_negloglik(betas, X_jax, y_jax, panel_info_jax, draws_jax,
                             fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names,
-                            correlationLength):
+                            correlationLength, **kwargs):
         """JAX simulation-based log-likelihood for Mixed Logit (standard case).
 
         Handles fixed and random (normally/lognormally distributed) parameters.
@@ -849,12 +808,14 @@ class MixedLogit(DiscreteChoiceModel):
             _N = X_jax.shape[0]
             _P = X_jax.shape[1] if X_jax.ndim > 1 else 1
             _J = X_jax.shape[2] if X_jax.ndim > 2 else 1
-            _cache_key = (_N, _P, _J, Kf, Kr, Kchol, Kbw)
+            _cache_key = (_N, _P, _J, Kf, Kr, Kchol, Kbw) + self._jax_cache_key_extra()
             _compiled = self._mxl_jit_cache.get(_cache_key)
             if _compiled is None:
+                _extra = self._jax_negloglik_extra_kwargs()
                 _fn = lambda b, _X, _y, _pi, _dr: self._jax_mxl_negloglik(
                     b, _X, _y, _pi, _dr,
-                    fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names, correlationLength)
+                    fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names, correlationLength,
+                    **_extra)
                 _compiled = jax.jit(jax.value_and_grad(_fn))
                 self._mxl_jit_cache[_cache_key] = _compiled
             # ────────────────────────────────────────────────────────
@@ -1669,3 +1630,32 @@ class MixedLogit(DiscreteChoiceModel):
         # }
         self.pch2_res, self.pch2_sd_test = pch2_res, pch2_sd_test
     # }
+
+    # ── Extension hooks for subclasses (e.g. MixedLogitGSE) ────────
+    def _n_coeff_extra(self) -> int:
+        """Extra parameter count beyond base MXL params."""
+        return 0
+
+    def _bound_extra(self) -> dict:
+        """Extra bound dictionary entries for subclasses."""
+        return {}
+
+    def _beta_segment_extra(self):
+        """Returns (extra_names, extra_counts) for split_betas."""
+        return [], []
+
+    def _augment_br(self, Br, var_list):
+        """Modify random coefficients. Subclasses may add gradient terms."""
+        return Br
+
+    def _jax_negloglik_extra_kwargs(self):
+        """Extra keyword arguments forwarded to JAX negloglik fn."""
+        return {}
+
+    def _jax_cache_key_extra(self):
+        """Extra tuple elements for the JAX compilation cache key."""
+        return ()
+
+    def _init_pad_arrays(self):
+        """Extra arrays to insert between Br_b and Bftrans in init_coeff."""
+        return []

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.special import softmax
 
+
 class AdvancedLatentClassGenerator:
     def __init__(
         self,
@@ -15,7 +16,9 @@ class AdvancedLatentClassGenerator:
         n_weak_vars=3,
         n_collinear_vars=3,
         rare_class=False,
-        random_state=42
+        random_state=42,
+        n_membership_vars=3,
+        membership_scale=2.0,
     ):
         self.rng = np.random.default_rng(random_state)
 
@@ -23,6 +26,7 @@ class AdvancedLatentClassGenerator:
         self.J = n_alternatives
         self.N = n_individuals
         self.T = n_choice_tasks
+        self.random_state = random_state
 
         if class_probs is None:
             if rare_class:
@@ -39,9 +43,12 @@ class AdvancedLatentClassGenerator:
         self.n_noise_vars = n_noise_vars
         self.n_weak_vars = n_weak_vars
         self.n_collinear_vars = n_collinear_vars
+        self.n_membership_vars = n_membership_vars
+        self.membership_scale = membership_scale
 
         self._define_variables()
         self._generate_parameters()
+        self._generate_membership_coefficients()
 
     # --------------------------------
     # Variable Names
@@ -63,9 +70,10 @@ class AdvancedLatentClassGenerator:
         self.noise_vars = [f"random_noise_{i}" for i in range(self.n_noise_vars)]
         self.weak_vars = [f"weak_signal_{i}" for i in range(self.n_weak_vars)]
         self.collinear_vars = [f"collinear_var_{i}" for i in range(self.n_collinear_vars)]
+        self.membership_var_names = [f"mem_var_{i}" for i in range(self.n_membership_vars)]
 
     # --------------------------------
-    # Generate True Parameters
+    # Utility Parameters (betas)
     # --------------------------------
     def _generate_parameters(self):
 
@@ -74,32 +82,45 @@ class AdvancedLatentClassGenerator:
         for k in range(self.K):
             params = {}
 
-            # Shared variables
             for var in self.shared_vars:
                 params[var] = self.rng.normal(
                     loc=k * self.scale_separation,
                     scale=1.0
                 )
 
-            # Class-specific variables
             for var in self.class_specific_vars.get(k, []):
                 params[var] = self.rng.normal(
                     loc=(k + 1) * self.scale_separation,
                     scale=1.0
                 )
 
-            # Weak effect variables
             for var in self.weak_vars:
                 params[var] = self.rng.normal(
                     loc=0,
                     scale=0.05
                 )
 
-            # Noise variables → TRUE beta = 0
             for var in self.noise_vars:
                 params[var] = 0.0
 
             self.parameters[k] = params
+
+    # --------------------------------
+    # Membership Coefficients (gammas)
+    # --------------------------------
+    def _generate_membership_coefficients(self):
+        if self.n_membership_vars == 0:
+            self.gammas = None
+            return
+
+        self.gammas = np.zeros((self.K - 1, self.n_membership_vars))
+
+        for c in range(self.K - 1):
+            for m in range(self.n_membership_vars):
+                self.gammas[c, m] = self.rng.normal(
+                    loc=(c - (self.K - 2) / 2.0) * self.membership_scale,
+                    scale=1.0
+                )
 
     # --------------------------------
     # Feature Generation
@@ -119,7 +140,6 @@ class AdvancedLatentClassGenerator:
         for var in all_vars:
             X[var] = self.rng.normal(size=(self.N, self.T, self.J))
 
-        # Create collinearity
         for i, var in enumerate(self.collinear_vars):
             X[var] = 0.8 * X["price"] + 0.2 * self.rng.normal(
                 size=(self.N, self.T, self.J)
@@ -127,16 +147,54 @@ class AdvancedLatentClassGenerator:
 
         return X
 
+    def _generate_membership_features(self):
+        if self.n_membership_vars == 0:
+            return None
+
+        Z = {}
+        for i, name in enumerate(self.membership_var_names):
+            Z[name] = self.rng.normal(size=self.N)
+
+        return Z
+
+    # --------------------------------
+    # Class Assignment
+    # --------------------------------
+    def _assign_classes(self):
+        if self.gammas is None:
+            return self.rng.choice(
+                self.K,
+                size=self.N,
+                p=self.class_probs
+            )
+
+        Z = self._Z_matrix
+        logits = np.zeros((self.N, self.K))
+
+        for c in range(self.K - 1):
+            logits[:, c] = Z @ self.gammas[c]
+
+        probs = softmax(logits, axis=1)
+
+        classes = np.zeros(self.N, dtype=int)
+        for n in range(self.N):
+            classes[n] = self.rng.choice(self.K, p=probs[n])
+
+        return classes
+
     # --------------------------------
     # Data Generation
     # --------------------------------
     def generate(self):
 
-        classes = self.rng.choice(
-            self.K,
-            size=self.N,
-            p=self.class_probs
-        )
+        Z = self._generate_membership_features()
+        if Z is not None:
+            Z_names = list(Z.keys())
+            self._Z_matrix = np.column_stack([Z[name] for name in Z_names])
+        else:
+            self._Z_matrix = None
+
+        classes = self._assign_classes()
 
         X = self._generate_features()
         rows = []
@@ -168,7 +226,12 @@ class AdvancedLatentClassGenerator:
                     for var in X:
                         row[var] = X[var][n, t, j]
 
+                    if Z is not None:
+                        for name in Z_names:
+                            row[name] = Z[name][n]
+
                     rows.append(row)
 
         df = pd.DataFrame(rows)
-        return df
+        df["choice_id"] = df["individual"] * self.T + df["choice_task"]
+        return df, classes
