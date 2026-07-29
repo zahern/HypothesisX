@@ -212,27 +212,23 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             else:
                 member_vars = list(membership_vars)
 
-            self.membership_vars = member_vars
+            covariate_vars = [v for v in member_vars if v != '_inter']
+            self.membership_vars = ['_inter'] + covariate_vars
             self.member_params_spec = member_params_spec
 
             membership_indices = []
-            for v in member_vars:
+            for v in covariate_vars:
                 if v in varnames:
                     membership_indices.append(varnames.index(v))
-                elif v != '_inter':
+                else:
                     raise ValueError(f"Membership variable '{v}' not found in varnames.")
 
-            self.K_membership = len(membership_indices)
-            if self.K_membership > 0:
-                mem_data = X[:, membership_indices]
-                self.X_membership = np.zeros((self.N, self.K_membership))
+            self.K_membership = len(membership_indices) + 1
+            mem_data = X[:, membership_indices] if membership_indices else None
+            self.X_membership = np.ones((self.N, self.K_membership))
+            if mem_data is not None:
                 for n in range(self.N):
-                    self.X_membership[n] = mem_data[n * self.J]
-        else:
-            self.membership_vars = None
-            self.member_params_spec = None
-            self.K_membership = 0
-            self.X_membership = None
+                    self.X_membership[n, 1:] = mem_data[n * self.J]
 
         self._prepare_backend_arrays()
         self._prepare_membership_backend()

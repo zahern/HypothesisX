@@ -1304,6 +1304,7 @@ class DiscreteChoiceModel(ABC):
                 if not is_base and has_gamma:
                     p("")
                     p("  Membership Parameters")
+                    p(LINE2)
                     g0 = c * Km
                     for k in range(Km):
                         gi = g0 + k

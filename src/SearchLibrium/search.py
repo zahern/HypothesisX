@@ -2713,6 +2713,33 @@ class Search():
         # Example constraints already handled above (force_random, never_random)
         pass
 
+    def repair_solution_lc(self, solution, min_length=1):
+
+        """Repair a latent-class solution: ensure every class in
+        class_params_spec has at least min_length variables. Operates on
+        class_params_spec/member_params_spec directly — never rebuilds the
+        solution from asvars/isvars, since those are not the source of
+        truth for latent class models."""
+        
+        num_classes = getattr(self.param, 'num_classes', 2)
+        class_params_spec = solution.get('class_params_spec', None)
+        if class_params_spec is None or len(class_params_spec) != num_classes:
+            class_params_spec = np.empty(num_classes, dtype=object)
+            for c in range(num_classes):
+                class_params_spec[c] = np.array([], dtype=object)
+
+        pool = list(self.param.asvarnames)
+        for c in range(num_classes):
+            while len(class_params_spec[c]) < min_length:
+                candidates = [v for v in pool if v not in class_params_spec[c]]
+                if not candidates:
+                    break
+                new_var = self.random_state.choice(candidates)
+                class_params_spec[c] = np.append(class_params_spec[c], new_var)
+
+        solution['class_params_spec'] = class_params_spec
+        return solution
+
     def repair_solution(self, solution, min_length=1):
         """
         Repair a solution by ensuring the combined length of asvars and isvars
@@ -2725,6 +2752,10 @@ class Search():
         Returns:
             Solution: The repaired solution.
         """
+
+        if getattr(self.param, 'latent_class', False):
+            return self.repair_solution_lc(solution, min_length=min_length)
+
         asvars = solution.data['asvars']
         isvars = solution.data['isvars']
 
@@ -4305,6 +4336,7 @@ class Search():
         sig = self.setup_signature(sol)
         if sig in self._banlist:
             sol['converged'] = False
+            print(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) is in banlist; skipping evaluation.")
             return (sol, False)
 
         # _all_vars_in_solution already handles both cases correctly:
@@ -4316,6 +4348,7 @@ class Search():
         if not all_vars:
             sol['converged'] = False
             self._banlist.add(sig)
+            print(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) has no variables; skipping evaluation.")
             return (sol, False)
 
         try:
@@ -4329,6 +4362,7 @@ class Search():
                 sol['bcvars'] = bcvars
                 sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
         except Exception:
+            import traceback; traceback.print_exc()
             sol['converged'] = False
             self._banlist.add(sig)
             if hasattr(self, 'best_solution') and self.best_solution is not None:
@@ -4339,6 +4373,7 @@ class Search():
                     for v in new_vars:
                         self._var_failures[v] = self._var_failures.get(v, 0) + 1
                     self._cull_attrited_vars()
+            print(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) failed to converge; skipping evaluation.")
             return (sol, False)
 
         _gtol = getattr(sol.get('model'), 'gtol_res', float('inf'))
@@ -4377,32 +4412,36 @@ class Search():
             # ── Convergence diagnostic: explain why the model did not converge
             self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
         # }
-        print(f"[EVAL] sol#{sol.get('sol_num','?')}")
-        print(f"  model     : {sol.get('model_n')}")
-        print(f"  converged : {sol.get('converged')}")
-        print(f"  asvars    : {sorted(str(v) for v in sol.get('asvars', []))}")
-        print(f"  isvars    : {sorted(str(v) for v in sol.get('isvars', []))}")
-        print(f"  randvars  : {dict(sorted((str(k), str(v)) for k, v in sol.get('randvars', {}).items()))}")
-        print(f"  corvars   : {sorted(str(v) for v in sol.get('corvars', []))}")
-        print(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")
-        print(f"  bic       : {sol.get('bic')}")
-        print(f"  converged    : {sol.get('converged')}")
+        _lf = getattr(self, 'sol_log_file', None)
+        def _out(msg):
+            print(msg)
+            print(msg, file=_lf)
 
+        _out(f"[EVAL] sol#{sol.get('sol_num','?')}")
+        _out(f"  model     : {sol.get('model_n')}")
+        _out(f"  converged : {sol.get('converged')}")
+        _out(f"  asvars    : {sorted(str(v) for v in sol.get('asvars', []))}")
+        _out(f"  isvars    : {sorted(str(v) for v in sol.get('isvars', []))}")
+        _out(f"  randvars  : {dict(sorted((str(k), str(v)) for k, v in sol.get('randvars', {}).items()))}")
+        _out(f"  corvars   : {sorted(str(v) for v in sol.get('corvars', []))}")
+        _out(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")
+        _out(f"  bic       : {sol.get('bic')}")
+        _out(f"  converged    : {sol.get('converged')}")
         _cps = sol.get('class_params_spec', None)
         if _cps is not None:
-            print("  class_params_spec :")
+            _out("  class_params_spec :")
             for c, arr in enumerate(_cps):
-                print(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
+                _out(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
         else:
-            print("  class_params_spec  : None")
+            _out("  class_params_spec  : None")
 
         _mps = sol.get('member_params_spec', None)
         if _mps is not None:
-            print("  member_params_spec:")
+            _out("  member_params_spec:")
             for c, arr in enumerate(_mps):
-                print(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
+                _out(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
         else:
-            print("  member_params_spec : None")
+            _out("  member_params_spec : None")
 
         if self.param.verbose:
             print("** verbose: TRUE (param.verbose...) ** turn off if dont want to print")
@@ -4574,6 +4613,10 @@ class Search():
         """
         nests   = tuple(self.param.nests)   if self.param.nests   else ()
         lambdas = tuple(self.param.lambdas) if self.param.lambdas else ()
+        cps = sol.get('class_params_spec', None)
+        mps = sol.get('member_params_spec', None)
+        class_params_sig = sorted(sorted(str(v) for v in arr) for arr in cps) if cps is not None else None
+        member_params_sig = sorted(sorted(str(v) for v in arr) for arr in mps) if mps is not None else None
 
         # randvars: sorted dict items so order doesn’t matter
         randvars_tuple = tuple(sorted(sol.get('randvars', {}).items()))
@@ -4590,6 +4633,8 @@ class Search():
             "asc_ind":   bool(sol.get('asc_ind', False)),
             "nests":     list(nests),
             "lambdas":   list(lambdas),
+            "class_params_spec":  class_params_sig,
+            "member_params_spec": member_params_sig,
         }
 
         sig_json = json.dumps(sig_dict, sort_keys=True)
@@ -4929,6 +4974,16 @@ class Search():
                     [v for v in member_params_spec[c] if v in all_vars_check or v == '_inter'], dtype=object
                 )
             sol['member_params_spec'] = member_params_spec
+            
+        # asvars/isvars are derived, not authoritative: asvars = union across
+        # classes (a var can be in class 1 only, class 2 only, or both),
+        # isvars = union of membership vars. Recomputed here so the log/print
+        # always reflects the actual class_params_spec/member_params_spec,
+        # regardless of how they got mutated (perturbation, opposite, repair).
+        sol['asvars'] = sorted({str(v) for arr in class_params_spec for v in arr
+                                if str(v) != '_inter'}) if class_params_spec is not None else []
+        sol['isvars'] = sorted({str(v) for arr in member_params_spec for v in arr
+                                if str(v) != '_inter'}) if member_params_spec is not None else []
 
         # Build all_vars as the UNION of all per-class variable specs
         # (plus membership vars, plus asvars/isvars fallback).
@@ -4940,18 +4995,16 @@ class Search():
                         all_vars_set.add(str(v))
             # Also include member params
             if member_params_spec is not None:
-                if hasattr(member_params_spec, 'flat'):
-                    for v in member_params_spec.flat:
-                        all_vars_set.add(str(v))
-                elif hasattr(member_params_spec, '__iter__'):
-                    for v in member_params_spec:
-                        all_vars_set.add(str(v))
+                for arr in member_params_spec:
+                    if arr is not None:
+                        for v in arr:
+                            all_vars_set.add(str(v))
             # Fallback to asvars+isvars for any vars not captured
-            for v in (as_vars + is_vars):
-                all_vars_set.add(str(v))
+            #for v in (as_vars + is_vars):
+                #all_vars_set.add(str(v))
             all_vars = [v for v in self.param.varnames if v in all_vars_set]
         else:
-            all_vars = [var for var in self.param.varnames if var in (as_vars + is_vars)]
+            all_vars = [var for var in self.param.varnames if var in (sol.get('asvars', []) + sol.get('isvars', []))]
 
         X = self.param.df[all_vars].values
         y = self.param.choices

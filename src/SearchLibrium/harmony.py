@@ -157,6 +157,7 @@ class HarmonySearch(Search):
         suffix = f'[{idnum}]' if idnum is not None else ''
         self.results_file  = open(f"hs_results{suffix}.txt",  "w")
         self.progress_file = open(f"hs_progress{suffix}.txt", "w")
+        self.sol_log_file  = open(f"hs_sol_log{suffix}.txt",  "w")
     # }
 
     ''' ---------------------------------------------------------------- '''
@@ -311,7 +312,7 @@ class HarmonySearch(Search):
                 new_asvars = list(self.param.generator.choice(chosen_sol['asvars'], size=size, replace=False))
 
             n_asvars = sorted(list(set().union(new_asvars, self.param.ps_asvars)))
-            new_asvars = self.remove_redundant_asvars(n_asvars, self.param.trans_asvars, self.param.asvarnames)
+            new_asvars = self.remove_redundant_asvars(n_asvars, self.param.all_bcvars, self.param.asvarnames)
             new_sol['asvars'] = new_asvars
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -452,7 +453,10 @@ class HarmonySearch(Search):
                 if candidate is not None:
                     adjusted_solution = candidate
         else:
-            perturbations = [self.perturb_asfeature, self.perturb_isfeature, self.perturb_model_t]
+            if self.param.latent_class:
+                perturbations = [self.perturb_class_paramfeature, self.perturb_member_paramfeature]
+            else:
+                perturbations = [self.perturb_asfeature, self.perturb_isfeature, self.perturb_model_t]
 
         if self.param.allow_random:
             perturbations.append(self.perturb_randfeature)
