@@ -106,6 +106,7 @@ try:
     from .latent_class import LatentClassMixedLogit
     from .mdcev import MDCEVFitResult, MDCEVModel
     from .multinomial_probit import MultinomialProbit
+    from .MixedLogitGSE import MixedLogitGSE
     from .RandomP import RandomParameters
     from .constraints_builder import ConstraintBuilder, create_constraints
     from .search import Parameters
@@ -129,6 +130,7 @@ except ImportError as e:
     from latent_class import LatentClassMixedLogit
     from mdcev import MDCEVFitResult, MDCEVModel
     from multinomial_probit import MultinomialProbit
+    from MixedLogitGSE import MixedLogitGSE
     from RandomP import RandomParameters
     from constraints_builder import ConstraintBuilder, create_constraints
     from search import Parameters    

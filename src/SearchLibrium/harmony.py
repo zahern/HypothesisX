@@ -977,10 +977,11 @@ class HarmonySearch(Search):
         """Identify groups of variables that measure similar constructs
         and can be substituted for one another."""
         groups = []
-        # Group 1: destination size measures
+        # Group 1: destination size measures (now includes per-type ACDC)
         size_measures = [v for v in asvars
                          if v in {'ln_dest_trips', 'osm_destination_pull',
-                                  'acdc_aggl', 'osm_poi_intensity'}]
+                                  'acdc_aggl', 'osm_poi_intensity'}
+                         or v.startswith('acdc_aggl_')]
         for i in range(len(size_measures)):
             for j in range(i + 1, len(size_measures)):
                 groups.append((size_measures[i], size_measures[j]))
@@ -999,6 +1000,25 @@ class HarmonySearch(Search):
         for i in range(len(osm_measures)):
             for j in range(i + 1, len(osm_measures)):
                 groups.append((osm_measures[i], osm_measures[j]))
+
+        # Group 4: Per-type ACDC agglomeration terms (substitutable by OSM type)
+        per_type_aggl = [v for v in asvars if v.startswith('acdc_aggl_')]
+        for i in range(len(per_type_aggl)):
+            for j in range(i + 1, len(per_type_aggl)):
+                groups.append((per_type_aggl[i], per_type_aggl[j]))
+
+        # Group 5: Per-type ACDC competition terms (substitutable by OSM type)
+        per_type_comp = [v for v in asvars if v.startswith('acdc_comp_')]
+        for i in range(len(per_type_comp)):
+            for j in range(i + 1, len(per_type_comp)):
+                groups.append((per_type_comp[i], per_type_comp[j]))
+
+        # Group 6: Cross-substitution — agglomeration <-> competition for same type
+        for t in ['retail', 'food', 'leisure', 'parks', 'transit', 'cycleway', 'culture']:
+            aggl_var = f'acdc_aggl_{t}'
+            comp_var = f'acdc_comp_{t}'
+            if aggl_var in asvars and comp_var in asvars:
+                groups.append((aggl_var, comp_var))
 
         return groups
 

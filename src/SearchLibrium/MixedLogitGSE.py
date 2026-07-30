@@ -11,6 +11,16 @@ Usage:
   mxl = MixedLogitGSE()
   mxl.setup(..., gradient_scores=g_avg, random_gamma=False)
   mxl.fit()
+
+Larch equivalence (kept in sync with test_runs_tours stage-5 mode model):
+  The model β_nk = μ_k + γ_k·g_nk + σ_k·η_nk decomposes term-by-term into a
+  plain Larch mixed logit, since β_nk multiplies x_k in the utility:
+      μ_k·x_k          → ordinary fixed utility term         P('c_k')  * X('x_k')
+      γ_k·(g_nk·x_k)   → systematic gradient interaction     P('g_k')  * X('x_k * g')
+      σ_k·(η_nk·x_k)   → Normal random coefficient           mixtures.append(Normal('c_k','s_k'))
+  random_gamma=True adds τ_k·z_nk·g_nk, i.e. promoting the γ_k loadings to
+  random coefficients too (Normal mixtures on the g_k params in the Larch build).
+  See stage5_destination_choice._estimate_mixed_logit for the mirrored build.
 """
 
 import numpy as np
@@ -37,13 +47,24 @@ class MixedLogitGSE(MixedLogit):
     def setup(self, *args, gradient_scores=None, random_gamma=False, **kwargs):
         self.random_gamma = bool(random_gamma)
         if gradient_scores is not None:
-            # Standardise to O(1) to prevent numerical overflow
+            # Standardise each gradient column to mean 0 / std 1 (O(1)) so the
+            # γ loadings are on a common scale and can't numerically overflow.
+            # Centering matters: an uncentred score folds a spurious γ·mean/std
+            # shift into μ; centring keeps μ interpretable as the population mean.
+            # A constant (zero-variance) column would divide by ~0 and blow up to
+            # ~1e8 — guard it by leaving such columns at 0 (they carry no gradient
+            # information anyway).
             g = np.asarray(gradient_scores, dtype=float)
-            self.gradient_scores = g / (g.std(axis=0, keepdims=True) + 1e-8)
-            gstd = g.std(axis=0)
+            gmu = g.mean(axis=0, keepdims=True)
+            gsd = g.std(axis=0, keepdims=True)
+            gsd_safe = np.where(gsd < 1e-8, 1.0, gsd)
+            self.gradient_scores = (g - gmu) / gsd_safe
+            n_const = int(np.sum(gsd < 1e-8))
             print(f"[MixedLogitGSE] Gradient loadings enabled (Kgrad={len(kwargs.get('randvars', {}))}, "
                   f"random_gamma={self.random_gamma}, "
-                  f"gradient std range=[{gstd.min():.2f}, {gstd.max():.2f}] -> standardised)")
+                  f"raw std range=[{float(gsd.min()):.2f}, {float(gsd.max()):.2f}] -> "
+                  f"centred+standardised"
+                  + (f", {n_const} constant column(s) zeroed" if n_const else "") + ")")
         else:
             self.gradient_scores = None
         super().setup(*args, **kwargs)
@@ -87,7 +108,14 @@ class MixedLogitGSE(MixedLogit):
             self.Kgrad = self.Kr
             self.Kgrad_w = self.Kr if self.random_gamma else 0
             if self.Kgrad_w > 0:
-                self.gamma_draws = np.random.randn(self.N, self.Kgrad)
+                # Seed the random-γ (τ·z) draws so a fit is reproducible across
+                # runs — unseeded np.random.randn made every fit non-deterministic
+                # (and non-comparable in a search). Reuse the model's own seed
+                # when set, mixing in Kgrad so it differs from the η draws' seed.
+                _seed = getattr(self, "seed", None)
+                rng = np.random.default_rng(None if _seed is None
+                                            else int(_seed) + 10007 * self.Kgrad)
+                self.gamma_draws = rng.standard_normal((self.N, self.Kgrad))
         # Force JAX-only (scipy fallback doesn't handle gradient loadings)
         self._jax = True
         super().fit()
