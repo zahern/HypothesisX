@@ -1131,9 +1131,13 @@ class Solution(UserDict):
         cor = sol.get('cor', False)
         randvars = tuple(sorted(sol.get('randvars', {}).items()))  # Sort dict items to ensure consistent order
         model_n = sol.get('model_n', '')
+        cps = sol.get('class_params_spec', None)
+        mps = sol.get('member_params_spec', None)
+        class_params = (tuple(sorted(tuple(sorted(str(v) for v in arr)) for arr in cps)) if cps is not None else None)
+        member_params = (tuple(sorted(tuple(sorted(str(v) for v in arr)) for arr in mps)) if mps is not None else None)
 
         # Combine into a tuple
-        sol_tuple = (asvars, isvars, bcvars, corvars, bctrans, cor, randvars, model_n)
+        sol_tuple = (asvars, isvars, bcvars, corvars, bctrans, cor, randvars, model_n, class_params, member_params)
         sol['hash'] = hash(sol_tuple)
         # Return a hash of the tuple
         return sol
@@ -2734,7 +2738,7 @@ class Search():
                 candidates = [v for v in pool if v not in class_params_spec[c]]
                 if not candidates:
                     break
-                new_var = self.random_state.choice(candidates)
+                new_var = self.random_choice(candidates)
                 class_params_spec[c] = np.append(class_params_spec[c], new_var)
 
         solution['class_params_spec'] = class_params_spec
@@ -2862,17 +2866,17 @@ class Search():
         cor = sol.get('cor', False)
         randvars = tuple(sorted(sol.get('randvars', {}).items()))  # Sort dict items to ensure consistent order
         model_n = tuple(sol.get('model_n', ''))
+        cps = sol.get('class_params_spec', None)
+        mps = sol.get('member_params_spec', None)
+        class_params = (tuple(sorted(tuple(sorted(str(v) for v in arr)) for arr in cps)) if cps is not None else None)
+        member_params = (tuple(sorted(tuple(sorted(str(v) for v in arr)) for arr in mps)) if mps is not None else None)
 
 
         # Combine into a tuple
-        sol_tuple = (asvars, isvars, bcvars, corvars, bctrans, cor, randvars, model_n)
+        sol_tuple = (asvars, isvars, bcvars, corvars, bctrans, cor, randvars, model_n, class_params, member_params)
 
-        a_hashable = tuple(
-            tuple(item) if isinstance(item, list) else item
-            for item in sol_tuple
-        )
-
-
+        a_hashable = tuple(tuple(item) if isinstance(item, list) else item for item in sol_tuple)
+                           
         # Return a hash of the tuple
         return hash(a_hashable)
 
@@ -3396,55 +3400,42 @@ class Search():
     # }
 
     def add_member_paramfeature(self, new_param, solution):
-        """Add a variable to the membership equation parameters."""
-        member_params_spec = solution['member_params_spec']
+        """Add a variable to the membership equation. Applied uniformly to
+        every entry: the model shares one covariate set (Z) across all
+        C-1 equations, only the coefficients differ by class."""
+        num_classes = getattr(self.param, 'num_classes', 2)
+        n_member = max(1, num_classes - 1)
 
-        if member_params_spec is None or len(member_params_spec) == 0:
-            member_params_spec = np.array([[new_param]], dtype=object)
+        member_params_spec = solution.get('member_params_spec', None)
+        if member_params_spec is None or len(member_params_spec) != n_member:
+            member_params_spec = np.empty(n_member, dtype=object)
+            for c in range(n_member):
+                member_params_spec[c] = np.array([], dtype=object)
+
+        if all(new_param in arr for arr in member_params_spec):
             solution['member_params_spec'] = member_params_spec
             return
 
-        available_arrays = [
-            i for i, arr in enumerate(member_params_spec)
-            if new_param not in arr
-        ]
-        if len(available_arrays) == 0:
-            # new_param is already present in every class — nothing to add
-            solution['member_params_spec'] = member_params_spec
-            return
+        for c in range(n_member):
+            if new_param not in member_params_spec[c]:
+                member_params_spec[c] = np.sort(np.append(member_params_spec[c], new_param))
 
-        choose_add = np.random.choice(available_arrays)
-        member_params_spec[choose_add] = np.sort(
-            np.append(member_params_spec[choose_add], new_param)
-        )
         solution['member_params_spec'] = member_params_spec
 
     def perturb_add_member_paramfeature(self, solution):
-        """Randomly add a variable to the membership equation."""
+        """Randomly add a variable to the shared membership equation."""
         member_params_spec = solution.get('member_params_spec', None)
+        all_vars = list(self.param.isvarnames)
 
         if member_params_spec is None or len(member_params_spec) == 0:
-            all_vars = getattr(self.param, 'mem_vars', None)
-            if all_vars is None:
-                all_vars = list(self.param.isvarnames)
-            candidate = np.random.choice(all_vars)
-            self.add_member_paramfeature(candidate, solution)
-            return solution
+            candidates = all_vars
+        else:
+            existing = set(member_params_spec[0])
+            candidates = [v for v in all_vars if v not in existing]
 
-        if len(member_params_spec) > 1:
-            for _ in range(4):
-                pick = np.random.choice(range(len(member_params_spec)))
-                all_vars = getattr(self.param, 'mem_vars', None)
-                if all_vars is None:
-                    all_vars = list(self.param.isvarnames)
-                candidates = [
-                    var for var in all_vars
-                    if var not in member_params_spec[pick]
-                ]
-                if len(candidates) > 0:
-                    member_param = np.random.choice(candidates)
-                    self.add_member_paramfeature(member_param, solution)
-                    break
+        if candidates:
+            candidate = np.random.choice(candidates)
+            self.add_member_paramfeature(candidate, solution)
         return solution
 
     def remove_member_paramfeature(self, rem_param, solution):
@@ -3574,8 +3565,8 @@ class Search():
         if not all_vars:
             return solution
 
-        counts = {v: sum(1 for arr in class_params_spec if v in arr) for v in all_vars}
-        removable = [v for v, c in counts.items() if c < len(class_params_spec) and v not in forced]
+        
+        removable = [v for v in all_vars if v not in forced and any(v in arr and len(arr) > 1 for arr in class_params_spec)]
         if not removable:
             return solution
 
@@ -3593,8 +3584,8 @@ class Search():
         for arr in class_params_spec:
             all_vars.extend(list(arr))
         all_vars = list(set(all_vars))
-        counts = {v: sum(1 for arr in class_params_spec if v in arr) for v in all_vars}
-        removable = [v for v, c in counts.items() if c < len(class_params_spec) and v not in forced]
+        
+        removable = [v for v in all_vars if v not in forced and any(v in arr and len(arr) > 1 for arr in class_params_spec)]
 
         if not removable or np.random.rand() <= 0.5:
             return self.perturb_add_class_paramfeature(solution)
@@ -4332,11 +4323,17 @@ class Search():
         # evaluate_nested_logit/evaluate_mixed_nested — plain multinomial/mixed
         # logit (the model types the README's own Quick Start demonstrates)
         # never got force_include/mutually_exclusive/etc. enforced. Fixed here.
+
+        _lf = getattr(self, 'sol_log_file', None) # Log Solutions in .txt
+        def _out(msg):
+            print(msg)
+            print(msg, file=_lf)
+
         sol = self.apply_constraints(sol)
         sig = self.setup_signature(sol)
         if sig in self._banlist:
             sol['converged'] = False
-            print(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) is in banlist; skipping evaluation.")
+            _out(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) is in banlist; skipping evaluation.")
             return (sol, False)
 
         # _all_vars_in_solution already handles both cases correctly:
@@ -4348,7 +4345,7 @@ class Search():
         if not all_vars:
             sol['converged'] = False
             self._banlist.add(sig)
-            print(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) has no variables; skipping evaluation.")
+            _out(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) has no variables; skipping evaluation.")
             return (sol, False)
 
         try:
@@ -4373,7 +4370,7 @@ class Search():
                     for v in new_vars:
                         self._var_failures[v] = self._var_failures.get(v, 0) + 1
                     self._cull_attrited_vars()
-            print(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) failed to converge; skipping evaluation.")
+            _out(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) failed to converge; skipping evaluation.")
             return (sol, False)
 
         _gtol = getattr(sol.get('model'), 'gtol_res', float('inf'))
@@ -4411,12 +4408,8 @@ class Search():
                     self._cull_attrited_vars()
             # ── Convergence diagnostic: explain why the model did not converge
             self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
-        # }
-        _lf = getattr(self, 'sol_log_file', None)
-        def _out(msg):
-            print(msg)
-            print(msg, file=_lf)
-
+        # }        
+        # Log Solutions in .txt
         _out(f"[EVAL] sol#{sol.get('sol_num','?')}")
         _out(f"  model     : {sol.get('model_n')}")
         _out(f"  converged : {sol.get('converged')}")
@@ -4427,6 +4420,7 @@ class Search():
         _out(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")
         _out(f"  bic       : {sol.get('bic')}")
         _out(f"  converged    : {sol.get('converged')}")
+        _out(f"  loglik    : {sol.get('loglik')}")        
         _cps = sol.get('class_params_spec', None)
         if _cps is not None:
             _out("  class_params_spec :")
