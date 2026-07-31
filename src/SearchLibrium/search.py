@@ -4298,12 +4298,15 @@ class Search():
             known_scores = self.evaluated_solutions[sig]
             for i, score in enumerate(known_scores):
                 sol.update_objective(i, score)
+                self._log_csv_row(sol, 'cache_hit')
             return sol, True
 
         sol, converged = self._evaluate_solution(sol, track_best=track_best)
 
         if converged:
             self.evaluated_solutions[sig] = [sol.obj(i) for i in range(self.nb_crit)]
+            result = 'converged' if converged else sol.get('fail_reason', 'no_converged')
+            self._log_csv_row(sol, result)
 
         return sol, converged
 
@@ -4333,7 +4336,7 @@ class Search():
         sig = self.setup_signature(sol)
         if sig in self._banlist:
             sol['converged'] = False
-            _out(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) is in banlist; skipping evaluation.")
+            sol.data['fail_reason'] = 'banlist'
             return (sol, False)
 
         # _all_vars_in_solution already handles both cases correctly:
@@ -4344,8 +4347,8 @@ class Search():
         # Estimate model if input variables are present in specification
         if not all_vars:
             sol['converged'] = False
-            self._banlist.add(sig)
-            _out(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) has no variables; skipping evaluation.")
+            sol.data['fail_reason'] = 'no_vars'
+            self._banlist.add(sig)           
             return (sol, False)
 
         try:
@@ -4361,8 +4364,11 @@ class Search():
         except Exception:
             import traceback; traceback.print_exc()
             sol['converged'] = False
+            sol.data['fail_reason'] = 'no_converged'
             self._banlist.add(sig)
+
             if hasattr(self, 'best_solution') and self.best_solution is not None:
+
                 fail_vars = set(all_vars)
                 base_vars = self._all_vars_in_solution(self.best_solution)
                 new_vars = fail_vars - base_vars
@@ -4370,7 +4376,7 @@ class Search():
                     for v in new_vars:
                         self._var_failures[v] = self._var_failures.get(v, 0) + 1
                     self._cull_attrited_vars()
-            _out(f"[EVAL] sol#{sol.get('sol_num','?')} (model={sol.get('model_n')}) failed to converge; skipping evaluation.")
+       
             return (sol, False)
 
         _gtol = getattr(sol.get('model'), 'gtol_res', float('inf'))
@@ -4595,8 +4601,168 @@ class Search():
             except Exception:
                 logging.debug("report_exploration_summary: unable to write to results_file")
 
+    def perturb_round(self, sol, choices, latent=False, max_attempts=20):
 
+        """Tabu-tracked perturbation round: draws N (1-9) target moves, applies
+        a randomly chosen function from `choices` per attempt, discards any
+        attempt whose tabu-key was already touched this round."""
 
+        n_perturb = self.param.generator.randint(1, 10) # Number of random perturbations
+        new_sol = self.copy_solution(sol)
+        touched, moves_detail = set(), [] # Track which variables have been perturbed this round to avoid duplicates
+        attempts, real = 0, 0 # Track how many attempts were made and how many were actually applied
+
+        while real < n_perturb and attempts < max_attempts:
+            attempts += 1
+            prev_sol = self.copy_solution(new_sol)
+            func = self.param.generator.choice(choices)
+            candidate = func(new_sol)
+            if candidate is None:
+                continue
+            new_sol = candidate
+
+            keys, moves = self._diff_solution(prev_sol, new_sol, latent=latent)
+            if not keys or keys & touched:
+                new_sol = prev_sol
+                continue
+
+            touched |= keys
+            moves_detail.extend(moves)
+            real += 1
+
+        return new_sol, n_perturb, attempts, real, moves_detail
+
+    def _diff_solution(self, prev_sol, new_sol, latent=False):
+
+        """Compare prev_sol/new_sol, return (tabu_keys, moves_detail) for one attempt."""
+
+        moves = []
+
+        for var in set(new_sol['asvars']) - set(prev_sol['asvars']):
+            moves.append((var, 'asvars', 'add'))
+        for var in set(prev_sol['asvars']) - set(new_sol['asvars']):
+            moves.append((var, 'asvars', 'remove'))
+
+        for var in set(new_sol['isvars']) - set(prev_sol['isvars']):
+            moves.append((var, 'isvars', 'add'))
+        for var in set(prev_sol['isvars']) - set(new_sol['isvars']):
+            moves.append((var, 'isvars', 'remove'))
+
+        for var in set(new_sol['randvars']) - set(prev_sol['randvars']):
+            moves.append((var, 'randvars', 'add'))
+        for var in set(prev_sol['randvars']) - set(new_sol['randvars']):
+            moves.append((var, 'randvars', 'remove'))
+        for var in set(new_sol['randvars']) & set(prev_sol['randvars']):
+            if new_sol['randvars'][var] != prev_sol['randvars'][var]:
+                moves.append((var, 'dist', new_sol['randvars'][var]))
+
+        for var in set(new_sol['bcvars']) - set(prev_sol['bcvars']):
+            moves.append((var, 'bcvars', 'add'))
+        for var in set(prev_sol['bcvars']) - set(new_sol['bcvars']):
+            moves.append((var, 'bcvars', 'remove'))
+
+        for var in set(new_sol.get('corvars', [])) - set(prev_sol.get('corvars', [])):
+            moves.append((var, 'corvars', 'add'))
+        for var in set(prev_sol.get('corvars', [])) - set(new_sol.get('corvars', [])):
+            moves.append((var, 'corvars', 'remove'))
+
+        if new_sol.get('model_n') != prev_sol.get('model_n'):
+            moves.append(('model', new_sol.get('model_n')))
+
+        if new_sol.get('asc_ind') != prev_sol.get('asc_ind'):
+            moves.append(('intercept', 'add' if new_sol.get('asc_ind') else 'remove'))
+
+        if latent:
+            moves += self._diff_class_arrays(prev_sol.get('class_params_spec'), new_sol.get('class_params_spec'), 'class_params')
+            moves += self._diff_class_arrays(prev_sol.get('member_params_spec'), new_sol.get('member_params_spec'), 'member_params')
+
+        keys = {mv[0] if len(mv) <= 2 else mv[:-2] for mv in moves}
+
+        return keys, moves
+
+    def _diff_class_arrays(self, prev_spec, new_spec, label):
+
+        """Per-class diff for class_params_spec / member_params_spec."""
+
+        moves = []
+        if prev_spec is None or new_spec is None:
+            return moves
+        for c, (prev_arr, new_arr) in enumerate(zip(prev_spec, new_spec)):
+            for var in set(new_arr) - set(prev_arr):
+                moves.append((c, var, label, 'add'))
+            for var in set(prev_arr) - set(new_arr):
+                moves.append((c, var, label, 'remove'))
+
+        return moves   
+
+    def _significance_report(self, sol):
+
+        """Per-class '[x1,x2],[x4]' bracket strings for significant/not-significant
+        vars, from model.pvalues (utility) and model.gamma_p_values (membership)."""
+
+        model = sol.get('model')
+        p_val = self.param.p_val
+        if model is None:
+            return '', ''
+
+        if sol.get('model_n') == 'latent_class':
+            num_classes = getattr(self.param, 'num_classes', 2)
+            sig_c = [[] for _ in range(num_classes)]
+            insig_c = [[] for _ in range(num_classes)]
+
+            coeff_names = getattr(model, 'coeff_names', []) or []
+            pvalues = getattr(model, 'pvalues', None)
+            if pvalues is not None:
+                for name, pv in zip(coeff_names, pvalues):
+                    if name.startswith('class_'):
+                        c_str, var = name[len('class_'):].split('_', 1)
+                        c = int(c_str) - 1
+                        if 0 <= c < num_classes:
+                            (sig_c[c] if pv < p_val else insig_c[c]).append(var)
+
+            gamma_names = getattr(model, 'gamma_names', []) or []
+            gamma_p = getattr(model, 'gamma_p_values', None)
+            if gamma_p is not None:
+                for name, pv in zip(gamma_names, gamma_p):
+                    if name.startswith('gamma_class_'):
+                        c_str, var = name[len('gamma_class_'):].split('_', 1)
+                        c = int(c_str) - 1
+                        if 0 <= c < num_classes:
+                            (sig_c[c] if pv < p_val else insig_c[c]).append(var)
+
+            sig_str = ','.join(f"[{','.join(sorted(vs))}]" for vs in sig_c)
+            insig_str = ','.join(f"[{','.join(sorted(vs))}]" for vs in insig_c)
+            return sig_str, insig_str
+
+        coeff_names = getattr(model, 'coeff_names', []) or []
+        pvalues = getattr(model, 'pvalues', None)
+        if pvalues is None:
+            return '', ''
+        sig = sorted(n for n, pv in zip(coeff_names, pvalues) if pv < p_val)
+        insig = sorted(n for n, pv in zip(coeff_names, pvalues) if pv >= p_val)
+
+        return f"[{','.join(sig)}]", f"[{','.join(insig)}]"
+
+    def _log_csv_row(self, sol, resultado):
+
+        """Write one row to the algorithm's CSV tracker, if it has one open."""
+
+        writer = getattr(self, 'hs_csv_writer', None)
+        if writer is None:
+            return
+        ctx = getattr(self, '_csv_context', {})
+        sig, not_sig = self._significance_report(sol)
+        writer.writerow([
+            sol.get('sol_num', ''), ctx.get('iter', ''), getattr(self.param, 'num_classes', ''),
+            ctx.get('harm_rate', ''), ctx.get('pitch', ''), ctx.get('origen', 'other'),
+            ctx.get('chosen_sol_num', ''), ctx.get('n_perturb', ''), ctx.get('attempts', ''),
+            ctx.get('real_perturbations', ''), ctx.get('moves_detail', []), resultado,
+            sol.get('converged', False), sol.get('bic', ''), sol.get('loglik', ''), sol.get('aic', ''),
+            sol.get('asvars', []), sol.get('isvars', []), sol.get('randvars', {}), sol.get('bcvars', []),
+            sol.get('corvars', []), sol.get('class_params_spec', ''), sol.get('member_params_spec', ''),
+            self.param.p_val, sig, not_sig,
+        ])
+        self.hs_csv_file.flush()
 
     def setup_signature(self, sol):
         """Return a hash covering every component that defines the model specification.

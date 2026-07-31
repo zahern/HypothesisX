@@ -38,6 +38,8 @@ import matplotlib.pyplot as plt
 import datetime
 import math
 import pandas as pd
+import csv
+
 try:
     from .search import*
 except ImportError:
@@ -158,7 +160,37 @@ class HarmonySearch(Search):
         self.results_file  = open(f"hs_results{suffix}.txt",  "w")
         self.progress_file = open(f"hs_progress{suffix}.txt", "w")
         self.sol_log_file  = open(f"hs_sol_log{suffix}.txt",  "w")
+        self.log_memory = True   # toggle: solver.log_memory = True
+        self.hs_csv_file   = open(f"hs_track{suffix}.csv", "w", newline='')
+        self.hs_csv_writer = csv.writer(self.hs_csv_file)
+        self.hs_csv_writer.writerow([
+            'sol_num','iter','num_classes','harm_rate','pitch','origen','chosen_sol_num',
+            'n_perturb','perturbaciones_intentadas','perturbaciones_reales','moves_detail',
+            'result','converged','bic','loglik','aic','asvars','isvars','randvars','bcvars',
+            'corvars','class_vars','member_vars','p_val_threshold','significant','not_significant',
+        ])
     # }
+
+    def _memory_ids(self):
+        """Snapshot de qué soluciones (por sol_num) componen la memoria actual."""
+        return frozenset(sol['sol_num'] for sol in self.memory)
+
+    def print_memory(self, label=""):
+        print(f"\n--- Harmony memory changed ({label}) ---")
+        for sol in self.memory:
+            print(f"  sol_num={sol['sol_num']:>4}  obj={sol['obj']}")
+
+    def insert_solution(self, solution):
+    # {
+        before_ids = self._memory_ids() if self.log_memory else None
+
+        self.memory.append(copy.deepcopy(solution))
+        self.remove_non_unique_solutions()
+        self.memory = self.sort_memory(self.memory)
+
+        if self.log_memory and self._memory_ids() != before_ids:
+            self.print_memory(label=f"iter {getattr(self, '_improv_iter', '?')}")
+# }
 
     ''' ---------------------------------------------------------------- '''
     ''' Function                                                         '''
@@ -279,6 +311,8 @@ class HarmonySearch(Search):
         # }'''
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.param.generator.rand() > prop:
+                origin = 'new'
+                chosen_sol_num = None
                 if self.pbil_enabled:
                     specs = sample_solution_from_matrix(
                         self.prob_matrix, self.param.all_bcvars,
@@ -290,8 +324,10 @@ class HarmonySearch(Search):
                     new_sol = self.generate_solution()  # Generate a new solution
         else:
         # {
+            origin = 'memory'
             choice = self.param.generator.choice(len(memory)) # Choose one of the member solutions
             chosen_sol = memory[choice] # Define reference to the chosen member solution
+            chosen_sol_num = chosen_sol['sol_num']
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # OPTIONAL CODE.
@@ -369,7 +405,7 @@ class HarmonySearch(Search):
                 # }
             # }
 
-        return new_sol
+        return new_sol, origin, chosen_sol_num
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -377,7 +413,7 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
 
 
-    def remove_non_unique_solutions(self):
+    def remove_non_unique_solutions_2(self):
         """
         Remove non-unique solutions from the harmony memory.
         """
@@ -469,12 +505,8 @@ class HarmonySearch(Search):
         if self.param.allow_corvars and adjusted_solution['randvars']:
             perturbations.append(self.perturb_corfeature)
 
-        perturbation_count = 1 + int(self.param.generator.rand() < max(0.0, min(1.0, pitch)))
-        perturbation_count = min(perturbation_count, len(perturbations))
-        selected_perturbations = self.param.generator.choice(perturbations, size=perturbation_count, replace=False)
-
-        for perturbation in np.atleast_1d(selected_perturbations):
-            adjusted_solution = perturbation(adjusted_solution)
+        adjusted_solution, n_perturb, attempts, real_perturbations, moves_detail = self.perturb_round( adjusted_solution, choices=perturbations, latent=self.param.latent_class, max_attempts=20)
+        self._csv_context.update({'n_perturb': n_perturb, 'attempts': attempts, 'real_perturbations': real_perturbations, 'moves_detail': moves_detail})
 
         adjusted_solution['randvars'] = self.normalize_randvars(
             adjusted_solution['asvars'],
@@ -977,11 +1009,10 @@ class HarmonySearch(Search):
         """Identify groups of variables that measure similar constructs
         and can be substituted for one another."""
         groups = []
-        # Group 1: destination size measures (now includes per-type ACDC)
+        # Group 1: destination size measures
         size_measures = [v for v in asvars
                          if v in {'ln_dest_trips', 'osm_destination_pull',
-                                  'acdc_aggl', 'osm_poi_intensity'}
-                         or v.startswith('acdc_aggl_')]
+                                  'acdc_aggl', 'osm_poi_intensity'}]
         for i in range(len(size_measures)):
             for j in range(i + 1, len(size_measures)):
                 groups.append((size_measures[i], size_measures[j]))
@@ -1000,25 +1031,6 @@ class HarmonySearch(Search):
         for i in range(len(osm_measures)):
             for j in range(i + 1, len(osm_measures)):
                 groups.append((osm_measures[i], osm_measures[j]))
-
-        # Group 4: Per-type ACDC agglomeration terms (substitutable by OSM type)
-        per_type_aggl = [v for v in asvars if v.startswith('acdc_aggl_')]
-        for i in range(len(per_type_aggl)):
-            for j in range(i + 1, len(per_type_aggl)):
-                groups.append((per_type_aggl[i], per_type_aggl[j]))
-
-        # Group 5: Per-type ACDC competition terms (substitutable by OSM type)
-        per_type_comp = [v for v in asvars if v.startswith('acdc_comp_')]
-        for i in range(len(per_type_comp)):
-            for j in range(i + 1, len(per_type_comp)):
-                groups.append((per_type_comp[i], per_type_comp[j]))
-
-        # Group 6: Cross-substitution — agglomeration <-> competition for same type
-        for t in ['retail', 'food', 'leisure', 'parks', 'transit', 'cycleway', 'culture']:
-            aggl_var = f'acdc_aggl_{t}'
-            comp_var = f'acdc_comp_{t}'
-            if aggl_var in asvars and comp_var in asvars:
-                groups.append((aggl_var, comp_var))
 
         return groups
 
@@ -1145,8 +1157,15 @@ class HarmonySearch(Search):
             self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * sine_iter
             self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * sine_iter
 
-            new_sol = self.build_solution(self.memory, self.harm_rate) # Create a single new solution and perform an adjustment
-            curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)   # Perform additional perturbations
+            new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate) # Create a single new solution and perform an adjustment
+            self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch, 'origen': origin, 'chosen_sol_num': chosen_sol_num}
+
+            if origin == 'memory': # If the new solution is derived from the memory, perform pitch adjustment
+                curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)   # Perform additional perturbations
+            else: #If the new solution is generated randomly, evaluate it directly
+                new_sol = self.repair_solution(new_sol)
+                curr_sol, converged = self.evaluate_solution(new_sol)
+
             if converged:
             # {
                 self.insert_solution(curr_sol)
@@ -1769,6 +1788,10 @@ class HarmonySearch(Search):
             pass
         try:
             self.progress_file.close()
+        except Exception:
+            pass
+        try:
+            self.hs_csv_file.close()
         except Exception:
             pass
     # }
