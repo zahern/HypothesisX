@@ -3495,7 +3495,11 @@ class Search():
         """Add a variable to a class's specification."""
         class_params_spec = solution.get('class_params_spec', None)
         if class_params_spec is None:
-            class_params_spec = np.array([[new_param]], dtype=object)
+            num_classes = getattr(self.param, 'num_classes', 2)
+            class_params_spec = np.empty(num_classes, dtype=object)
+            for c in range(num_classes):
+                class_params_spec[c] = np.array([], dtype=object)
+            class_params_spec[0] = np.array([new_param], dtype=object)
             solution['class_params_spec'] = class_params_spec
             return
 
@@ -4616,12 +4620,17 @@ class Search():
             attempts += 1
             prev_sol = self.copy_solution(new_sol)
             func = self.param.generator.choice(choices)
+            _before = prev_sol.get('class_params_spec')
+            print(f"[DEBUG PRE] attempt={attempts} func={func.__name__} class_params_spec_before={[list(a) for a in _before] if _before is not None else None}")
             candidate = func(new_sol)
             if candidate is None:
                 continue
             new_sol = candidate
 
             keys, moves = self._diff_solution(prev_sol, new_sol, latent=latent)
+            _after = new_sol.get('class_params_spec')
+            print(f"[DEBUG POST] attempt={attempts} class_params_spec_after ={[list(a) for a in _after] if _after is not None else None}")
+            print(f"[DEBUG PERTURB] attempt={attempts} func={func.__name__} moves={moves} keys={keys}")
             if not keys or keys & touched:
                 new_sol = prev_sol
                 continue
@@ -4636,7 +4645,7 @@ class Search():
 
         """Compare prev_sol/new_sol, return (tabu_keys, moves_detail) for one attempt."""
 
-        moves = []
+        moves = []        
 
         for var in set(new_sol['asvars']) - set(prev_sol['asvars']):
             moves.append((var, 'asvars', 'add'))
@@ -4676,7 +4685,7 @@ class Search():
             moves += self._diff_class_arrays(prev_sol.get('class_params_spec'), new_sol.get('class_params_spec'), 'class_params')
             moves += self._diff_class_arrays(prev_sol.get('member_params_spec'), new_sol.get('member_params_spec'), 'member_params')
 
-        keys = {mv[0] if len(mv) <= 2 else mv[:-2] for mv in moves}
+        keys = {mv[0] if len(mv) in (2, 3) else mv[:2] for mv in moves}
 
         return keys, moves
 
@@ -4685,15 +4694,37 @@ class Search():
         """Per-class diff for class_params_spec / member_params_spec."""
 
         moves = []
-        if prev_spec is None or new_spec is None:
+        if prev_spec is None and new_spec is None:
             return moves
-        for c, (prev_arr, new_arr) in enumerate(zip(prev_spec, new_spec)):
+        n = len(new_spec) if new_spec is not None else len(prev_spec)
+        for c in range(n):
+            prev_arr = prev_spec[c] if prev_spec is not None and c < len(prev_spec) else []
+            new_arr = new_spec[c] if new_spec is not None and c < len(new_spec) else []
             for var in set(new_arr) - set(prev_arr):
                 moves.append((c, var, label, 'add'))
             for var in set(prev_arr) - set(new_arr):
                 moves.append((c, var, label, 'remove'))
 
-        return moves   
+        return moves
+    
+    def _format_class_list(self, spec, num_classes, prefix=None):
+
+        """Format a per-class array (class_params_spec / member_params_spec)
+        as 'Class1: [x1,x2,x3]' lines, one per class, newline-separated.
+        Classes beyond len(spec) print empty (e.g. the base/reference class,
+        since member_params_spec only has num_classes-1 entries)."""
+
+        lines = []
+        for c in range(num_classes):
+            if spec is not None and c < len(spec):
+                vars_c = [str(v) for v in spec[c]]
+                if prefix and prefix not in vars_c:
+                    vars_c = [prefix] + vars_c
+            else:
+                vars_c = []
+            lines.append(f"Class{c + 1}: [{','.join(vars_c)}]")
+
+        return '\n'.join(lines)
 
     def _significance_report(self, sol):
 
@@ -4712,6 +4743,11 @@ class Search():
 
             coeff_names = getattr(model, 'coeff_names', []) or []
             pvalues = getattr(model, 'pvalues', None)
+
+            if pvalues is not None:
+                n_phi = num_classes - 1
+                pvalues = pvalues[n_phi:n_phi + len(coeff_names)]            
+
             if pvalues is not None:
                 for name, pv in zip(coeff_names, pvalues):
                     if name.startswith('class_'):
@@ -4721,7 +4757,8 @@ class Search():
                             (sig_c[c] if pv < p_val else insig_c[c]).append(var)
 
             gamma_names = getattr(model, 'gamma_names', []) or []
-            gamma_p = getattr(model, 'gamma_p_values', None)
+            gamma_p = getattr(model, 'gamma_p_values', None)          
+
             if gamma_p is not None:
                 for name, pv in zip(gamma_names, gamma_p):
                     if name.startswith('gamma_class_'):
@@ -4730,8 +4767,8 @@ class Search():
                         if 0 <= c < num_classes:
                             (sig_c[c] if pv < p_val else insig_c[c]).append(var)
 
-            sig_str = ','.join(f"[{','.join(sorted(vs))}]" for vs in sig_c)
-            insig_str = ','.join(f"[{','.join(sorted(vs))}]" for vs in insig_c)
+            sig_str = '\n'.join(f"Class{c + 1}: [{','.join(sorted(vs))}]" for c, vs in enumerate(sig_c))
+            insig_str = '\n'.join(f"Class{c + 1}: [{','.join(sorted(vs))}]" for c, vs in enumerate(insig_c))
             return sig_str, insig_str
 
         coeff_names = getattr(model, 'coeff_names', []) or []
@@ -4752,6 +4789,9 @@ class Search():
             return
         ctx = getattr(self, '_csv_context', {})
         sig, not_sig = self._significance_report(sol)
+        num_classes = getattr(self.param, 'num_classes', 1)
+        class_vars_str = self._format_class_list(sol.get('class_params_spec'), num_classes)
+        member_vars_str = self._format_class_list(sol.get('member_params_spec'), num_classes, prefix='_inter')
         writer.writerow([
             sol.get('sol_num', ''), ctx.get('iter', ''), getattr(self.param, 'num_classes', ''),
             ctx.get('harm_rate', ''), ctx.get('pitch', ''), ctx.get('origen', 'other'),
@@ -4759,7 +4799,7 @@ class Search():
             ctx.get('real_perturbations', ''), ctx.get('moves_detail', []), resultado,
             sol.get('converged', False), sol.get('bic', ''), sol.get('loglik', ''), sol.get('aic', ''),
             sol.get('asvars', []), sol.get('isvars', []), sol.get('randvars', {}), sol.get('bcvars', []),
-            sol.get('corvars', []), sol.get('class_params_spec', ''), sol.get('member_params_spec', ''),
+            sol.get('corvars', []),  class_vars_str, member_vars_str,
             self.param.p_val, sig, not_sig,
         ])
         self.hs_csv_file.flush()
@@ -4888,7 +4928,7 @@ class Search():
             optimise_membership=optimise_membership,
             membership_maxiter=100,
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), _jax=False  # Need to remove this last one MARIO
         )
 
         membership_vars = None

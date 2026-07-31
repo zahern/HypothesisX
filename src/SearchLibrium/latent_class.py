@@ -1468,7 +1468,9 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             n_gamma = 0
 
         # ── JAX autograd Hessian → covariance (numerical fallback) ──
-        H_a = self._autograd_hessian(params)
+        #H_a = self._autograd_hessian(params)
+        H_a = None  # forced numerical Hessian (JAX autograd disabled for debugging)
+        
         if H_a is not None and np.isfinite(H_a).all():
             info = H_a   # hessian(-negloglik) = -hessian(loglik) = observed info
             se_method = "autograd-hessian"
