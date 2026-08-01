@@ -2327,15 +2327,23 @@ class Search():
         member_params_spec = None
         if getattr(self.param, 'latent_class', False):
             num_classes = getattr(self.param, 'num_classes', 2)
-            if asvars:
+            if self.param.avail_asvars:
                 class_params_spec = np.empty(num_classes, dtype=object)
                 for c in range(num_classes):
-                    class_params_spec[c] = list(asvars)
-            if isvars:
+                    chosen = [v for v in self.param.avail_asvars if self.param.generator.rand() < 0.6]
+                    if not chosen:
+                        chosen = [self.random_choice(self.param.avail_asvars)]
+                    class_params_spec[c] = sorted(chosen)
+                asvars = sorted({v for arr in class_params_spec for v in arr})
+            if self.param.avail_isvars:
                 n_member = max(1, num_classes - 1)
                 member_params_spec = np.empty(n_member, dtype=object)
                 for c in range(n_member):
-                    member_params_spec[c] = list(isvars)
+                    chosen = [v for v in self.param.avail_isvars if self.param.generator.rand() < 0.6]
+                    if not chosen:
+                        chosen = [self.random_choice(self.param.avail_isvars)]
+                    member_params_spec[c] = sorted(chosen)
+                isvars = sorted({v for arr in member_params_spec for v in arr})
        
         solution = Solution(self.nb_crit, asvars=asvars, isvars=isvars, bcvars=bcvars, corvars=corvars,
             bctrans=bctrans, cor=cor, randvars=randvars, model_n = model_n, state = state,
@@ -3473,7 +3481,7 @@ class Search():
         self.remove_member_paramfeature(remove_member, solution)
         return solution
 
-    def perturb_member_paramfeature(self, solution):
+    def perturb_member_paramfeature_Zeke(self, solution):
         """Add or remove a membership equation variable with equal probability."""
         member_params_spec = solution.get('member_params_spec', None)
         if member_params_spec is None:
@@ -3488,6 +3496,11 @@ class Search():
             return self.perturb_add_member_paramfeature(solution)
         else:
             return self.perturb_remove_member_paramfeature(solution)
+        
+    def perturb_member_paramfeature(self, solution):
+        """PAR is add-only for the membership equation: HMCR already owns
+        removal for this round (see perturb_round's pre_touched tabu)."""
+        return self.perturb_add_member_paramfeature(solution)
 
     # ── Class-parameter perturbation (which vars belong to which class) ──
 
@@ -3576,8 +3589,13 @@ class Search():
 
         self.remove_class_paramfeature(np.random.choice(removable), solution)
         return solution
-
+    
     def perturb_class_paramfeature(self, solution):
+        """PAR is add-only for class specs: HMCR already owns removal for
+        this round (see perturb_round's pre_touched tabu)."""
+        return self.perturb_add_class_paramfeature(solution)
+
+    def perturb_class_paramfeature_Zeke(self, solution):
         """Add or remove a class specification variable with equal probability."""
         class_params_spec = solution.get('class_params_spec', None)
         if class_params_spec is None:
@@ -4605,7 +4623,7 @@ class Search():
             except Exception:
                 logging.debug("report_exploration_summary: unable to write to results_file")
 
-    def perturb_round(self, sol, choices, latent=False, max_attempts=20):
+    def perturb_round(self, sol, choices, latent=False, max_attempts=20, pre_touched=None):
 
         """Tabu-tracked perturbation round: draws N (1-9) target moves, applies
         a randomly chosen function from `choices` per attempt, discards any
@@ -4613,7 +4631,7 @@ class Search():
 
         n_perturb = self.param.generator.randint(1, 10) # Number of random perturbations
         new_sol = self.copy_solution(sol)
-        touched, moves_detail = set(), [] # Track which variables have been perturbed this round to avoid duplicates
+        touched, moves_detail = set(pre_touched or ()), [] # Seed with upstream (HMCR) keys, then track this round's own
         attempts, real = 0, 0 # Track how many attempts were made and how many were actually applied
 
         while real < n_perturb and attempts < max_attempts:
@@ -4621,7 +4639,7 @@ class Search():
             prev_sol = self.copy_solution(new_sol)
             func = self.param.generator.choice(choices)
             _before = prev_sol.get('class_params_spec')
-            print(f"[DEBUG PRE] attempt={attempts} func={func.__name__} class_params_spec_before={[list(a) for a in _before] if _before is not None else None}")
+            #print(f"[DEBUG PRE] attempt={attempts} func={func.__name__} class_params_spec_before={[list(a) for a in _before] if _before is not None else None}")
             candidate = func(new_sol)
             if candidate is None:
                 continue
@@ -4629,8 +4647,8 @@ class Search():
 
             keys, moves = self._diff_solution(prev_sol, new_sol, latent=latent)
             _after = new_sol.get('class_params_spec')
-            print(f"[DEBUG POST] attempt={attempts} class_params_spec_after ={[list(a) for a in _after] if _after is not None else None}")
-            print(f"[DEBUG PERTURB] attempt={attempts} func={func.__name__} moves={moves} keys={keys}")
+            #print(f"[DEBUG POST] attempt={attempts} class_params_spec_after ={[list(a) for a in _after] if _after is not None else None}")
+            #print(f"[DEBUG PERTURB] attempt={attempts} func={func.__name__} moves={moves} keys={keys}")
             if not keys or keys & touched:
                 new_sol = prev_sol
                 continue
@@ -4780,6 +4798,31 @@ class Search():
 
         return f"[{','.join(sig)}]", f"[{','.join(insig)}]"
 
+    def _format_moves_report(self, moves, num_classes):
+
+        """Latent class: group class_params/member_params moves into aligned
+        Class/Member rows (1-indexed), one pair of rows per class. Moves with
+        no class index (asvars/isvars/randvars/etc., non-latent models) are
+        reported as-is — no per-class grouping applies to them."""
+
+        class_moves = [mv for mv in moves if len(mv) == 4 and mv[2] == 'class_params']
+        member_moves = [mv for mv in moves if len(mv) == 4 and mv[2] == 'member_params']
+        if not class_moves and not member_moves:
+            return str(moves)
+
+        n_member = max((mv[0] for mv in member_moves), default=-1) + 1
+        n_member = max(n_member, num_classes - 1)
+
+        lines = []
+        for c in range(num_classes):
+            entries = ','.join(f"[{var},{action}]" for (cc, var, _, action) in class_moves if cc == c)
+            lines.append(f"Class{c + 1}({entries})")
+            if c < n_member:
+                entries = ','.join(f"[{var},{action}]" for (cc, var, _, action) in member_moves if cc == c)
+                lines.append(f"Member{c + 1}({entries})")
+
+        return '\n'.join(lines)
+
     def _log_csv_row(self, sol, resultado):
 
         """Write one row to the algorithm's CSV tracker, if it has one open."""
@@ -4792,15 +4835,18 @@ class Search():
         num_classes = getattr(self.param, 'num_classes', 1)
         class_vars_str = self._format_class_list(sol.get('class_params_spec'), num_classes)
         member_vars_str = self._format_class_list(sol.get('member_params_spec'), num_classes, prefix='_inter')
+        memory_str = str([m.get('sol_num', '') for m in getattr(self, 'memory', [])])
+        hmcr_moves_str = self._format_moves_report(ctx.get('hmcr_moves', []), num_classes)
+        moves_str = self._format_moves_report(ctx.get('moves_detail', []), num_classes)
         writer.writerow([
             sol.get('sol_num', ''), ctx.get('iter', ''), getattr(self.param, 'num_classes', ''),
-            ctx.get('harm_rate', ''), ctx.get('pitch', ''), ctx.get('origen', 'other'),
-            ctx.get('chosen_sol_num', ''), ctx.get('n_perturb', ''), ctx.get('attempts', ''),
-            ctx.get('real_perturbations', ''), ctx.get('moves_detail', []), resultado,
+            ctx.get('harm_rate', ''), ctx.get('pitch', ''), ctx.get('origen', 'other'), memory_str,
+            ctx.get('chosen_sol_num', ''), hmcr_moves_str, ctx.get('n_perturb', ''), ctx.get('attempts', ''),
+            ctx.get('real_perturbations', ''), moves_str, resultado,
             sol.get('converged', False), sol.get('bic', ''), sol.get('loglik', ''), sol.get('aic', ''),
             sol.get('asvars', []), sol.get('isvars', []), sol.get('randvars', {}), sol.get('bcvars', []),
             sol.get('corvars', []),  class_vars_str, member_vars_str,
-            self.param.p_val, sig, not_sig,
+            self.param.p_val, sig, not_sig, 
         ])
         self.hs_csv_file.flush()
 

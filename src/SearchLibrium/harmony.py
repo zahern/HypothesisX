@@ -148,6 +148,7 @@ class HarmonySearch(Search):
             self.set_control_parameters()   # default values
 
         self.pitch        = self.max_pitch
+        self._hmcr_moves  = []              # HMCR-phase track (reset each build_solution call)
         self.memory       = []              # harmony memory
         self.all_solutions = []             # de-duplication list
         self.best_sol     = None            # best solution found
@@ -164,8 +165,8 @@ class HarmonySearch(Search):
         self.hs_csv_file   = open(f"hs_track{suffix}.csv", "w", newline='')
         self.hs_csv_writer = csv.writer(self.hs_csv_file)
         self.hs_csv_writer.writerow([
-            'sol_num','iter','num_classes','harm_rate','pitch','origen','chosen_sol_num',
-            'n_perturb','perturbaciones_intentadas','perturbaciones_reales','moves_detail',
+            'sol_num','iter','num_classes','harm_rate','pitch','origen', 'memory', 'chosen_sol_num','hmcr_moves',
+            'n_perturb','attempt_perturbations','real_perturbations','moves_detail',
             'result','converged','bic','loglik','aic','asvars','isvars','randvars','bcvars',
             'corvars','class_vars','member_vars','p_val_threshold','significant','not_significant',
         ])
@@ -179,18 +180,6 @@ class HarmonySearch(Search):
         print(f"\n--- Harmony memory changed ({label}) ---")
         for sol in self.memory:
             print(f"  sol_num={sol['sol_num']:>4}  obj={sol['obj']}")
-
-    def insert_solution(self, solution):
-    # {
-        before_ids = self._memory_ids() if self.log_memory else None
-
-        self.memory.append(copy.deepcopy(solution))
-        self.remove_non_unique_solutions()
-        self.memory = self.sort_memory(self.memory)
-
-        if self.log_memory and self._memory_ids() != before_ids:
-            self.print_memory(label=f"iter {getattr(self, '_improv_iter', '?')}")
-# }
 
     ''' ---------------------------------------------------------------- '''
     ''' Function                                                         '''
@@ -296,10 +285,11 @@ class HarmonySearch(Search):
         it selects a proportion of the features from a randomly chosen existing solution to build the new solution.
         Otherwise, it generates a completely new solution """
 
+        self._hmcr_moves = []  # reset HMCR-phase track for this call
 
         bin = [0,1] # Binary values
         prob = [1-prop, prop]  # Range
-        new_sol = Solution(nb_crit=self.nb_crit)    # Create a new solution object
+        
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # IS THIS NECESSARY?
@@ -311,6 +301,7 @@ class HarmonySearch(Search):
         # }'''
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.param.generator.rand() > prop:
+                
                 origin = 'new'
                 chosen_sol_num = None
                 if self.pbil_enabled:
@@ -324,6 +315,7 @@ class HarmonySearch(Search):
                     new_sol = self.generate_solution()  # Generate a new solution
         else:
         # {
+            new_sol = Solution(nb_crit=self.nb_crit)    # Create a new solution object
             origin = 'memory'
             choice = self.param.generator.choice(len(memory)) # Choose one of the member solutions
             chosen_sol = memory[choice] # Define reference to the chosen member solution
@@ -379,7 +371,7 @@ class HarmonySearch(Search):
             new_sol['asc_ind'] = chosen_sol['asc_ind']
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            if self.param.allow_latent_corvars:
+            if getattr(self.param, 'latent_class', False):
                 if chosen_sol['class_params_spec'] is not None:
                 # {
                     class_params_spec = copy.deepcopy(chosen_sol['class_params_spec'])
@@ -389,6 +381,7 @@ class HarmonySearch(Search):
                         class_params_spec[ii] = np.array([i for (i, v) in zip(class_params, class_params_index) if v],
                                                          dtype=class_params.dtype)
                     # }
+                    self._hmcr_moves += self._diff_class_arrays(chosen_sol['class_params_spec'], class_params_spec, 'class_params')
                     new_sol['class_params_spec'] = class_params_spec
                 # }
                 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -401,9 +394,23 @@ class HarmonySearch(Search):
                         member_params_spec[ii] = np.array([i for (i, v) in zip(member_params, member_params_index) if v],
                                                           dtype=member_params.dtype)
                     # }
+                    self._hmcr_moves += self._diff_class_arrays(chosen_sol['member_params_spec'], member_params_spec, 'member_params')
                     new_sol['member_params_spec'] = member_params_spec
                 # }
             # }
+            
+            # HMCR owns removal for latent class: record every (class, var)
+            # move it made — full list for reporting, key-only set for the
+            # PAR tabu (perturb_round's pre_touched).
+            hmcr_moves = []
+            if chosen_sol.get('class_params_spec') is not None:
+                hmcr_moves += self._diff_class_arrays(
+                    chosen_sol['class_params_spec'], new_sol['class_params_spec'], 'class_params')
+            if chosen_sol.get('member_params_spec') is not None:
+                hmcr_moves += self._diff_class_arrays(
+                    chosen_sol['member_params_spec'], new_sol['member_params_spec'], 'member_params')
+            new_sol['hmcr_moves'] = hmcr_moves
+            new_sol['hmcr_touched'] = {(mv[0], mv[1]) for mv in hmcr_moves}
 
         return new_sol, origin, chosen_sol_num
     # }
@@ -466,9 +473,14 @@ class HarmonySearch(Search):
     ''' ------------------------------------------------------------ '''
     def insert_solution(self, solution):
     # {
+        before_ids = self._memory_ids() if self.log_memory else None
+
         self.memory.append(copy.deepcopy(solution))
         self.remove_non_unique_solutions()
-        self.memory = self.sort_memory(self.memory)
+        self.memory = self.sort_memory(self.memory)[:self.max_mem]
+
+        if self.log_memory and self._memory_ids() != before_ids:
+            self.print_memory(label=f"iter {getattr(self, '_improv_iter', '?')}")
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -505,7 +517,10 @@ class HarmonySearch(Search):
         if self.param.allow_corvars and adjusted_solution['randvars']:
             perturbations.append(self.perturb_corfeature)
 
-        adjusted_solution, n_perturb, attempts, real_perturbations, moves_detail = self.perturb_round( adjusted_solution, choices=perturbations, latent=self.param.latent_class, max_attempts=20)
+        hmcr_touched = adjusted_solution.get('hmcr_touched', set())
+
+        adjusted_solution, n_perturb, attempts, real_perturbations, moves_detail = self.perturb_round( adjusted_solution, choices=perturbations, latent=self.param.latent_class, max_attempts=20, pre_touched=hmcr_touched)
+
         self._csv_context.update({'n_perturb': n_perturb, 'attempts': attempts, 'real_perturbations': real_perturbations, 'moves_detail': moves_detail})
 
         adjusted_solution['randvars'] = self.normalize_randvars(
@@ -1083,6 +1098,8 @@ class HarmonySearch(Search):
 
     def local_search(self):
     # {
+        if getattr(self.param, 'latent_class', False): # For now its gonna be desactivated for latent class models, since the local search moves are not designed for them
+            return
         # ── Phase-aware local search ─────────────────────────────────
         # Uses the current improvisation progress to switch between
         # exploration (early), refinement (mid), and convergence (late).
@@ -1158,8 +1175,9 @@ class HarmonySearch(Search):
             self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * sine_iter
 
             new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate) # Create a single new solution and perform an adjustment
-            self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch, 'origen': origin, 'chosen_sol_num': chosen_sol_num}
-
+            self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
+                'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
+            
             if origin == 'memory': # If the new solution is derived from the memory, perform pitch adjustment
                 curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)   # Perform additional perturbations
             else: #If the new solution is generated randomly, evaluate it directly
