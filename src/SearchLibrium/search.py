@@ -599,7 +599,7 @@ class Parameters:
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
-        sd_penalty=0.001,
+        sd_penalty=0.001, base_class=None,
         intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
 
         
@@ -701,6 +701,7 @@ class Parameters:
 
         self.intercept_opts = intercept_opts
         self.base_alt = base_alt
+        self.base_class = base_class
         self.val_share = val_share
         self.obs_freq = None
         self.nb_crit, self.criterions = process_criterions(criterions)
@@ -2336,13 +2337,13 @@ class Search():
                     class_params_spec[c] = sorted(chosen)
                 asvars = sorted({v for arr in class_params_spec for v in arr})
             if self.param.avail_isvars:
-                n_member = max(1, num_classes - 1)
-                member_params_spec = np.empty(n_member, dtype=object)
-                for c in range(n_member):
+                member_params_spec = np.empty(num_classes, dtype=object)
+                for c in range(num_classes):
                     chosen = [v for v in self.param.avail_isvars if self.param.generator.rand() < 0.6]
                     if not chosen:
                         chosen = [self.random_choice(self.param.avail_isvars)]
                     member_params_spec[c] = sorted(chosen)
+                member_params_spec = self._enforce_membership_identifiability(member_params_spec)
                 isvars = sorted({v for arr in member_params_spec for v in arr})
        
         solution = Solution(self.nb_crit, asvars=asvars, isvars=isvars, bcvars=bcvars, corvars=corvars,
@@ -3408,42 +3409,47 @@ class Search():
     # }
 
     def add_member_paramfeature(self, new_param, solution):
-        """Add a variable to the membership equation. Applied uniformly to
-        every entry: the model shares one covariate set (Z) across all
-        C-1 equations, only the coefficients differ by class."""
+
+        """Add a variable to one class's membership equation (chosen at
+        random among classes that don't already have it), then enforce
+        identifiability: no variable may end up present in every class."""
+
         num_classes = getattr(self.param, 'num_classes', 2)
-        n_member = max(1, num_classes - 1)
 
         member_params_spec = solution.get('member_params_spec', None)
-        if member_params_spec is None or len(member_params_spec) != n_member:
-            member_params_spec = np.empty(n_member, dtype=object)
-            for c in range(n_member):
+        if member_params_spec is None or len(member_params_spec) != num_classes:
+            member_params_spec = np.empty(num_classes, dtype=object)
+            for c in range(num_classes):
                 member_params_spec[c] = np.array([], dtype=object)
 
-        if all(new_param in arr for arr in member_params_spec):
+        available = [c for c, arr in enumerate(member_params_spec) if new_param not in arr]
+        if not available:
             solution['member_params_spec'] = member_params_spec
             return
 
-        for c in range(n_member):
-            if new_param not in member_params_spec[c]:
-                member_params_spec[c] = np.sort(np.append(member_params_spec[c], new_param))
+        choose = np.random.choice(available)
+        member_params_spec[choose] = np.sort(np.append(member_params_spec[choose], new_param))
 
+        member_params_spec = self._enforce_membership_identifiability(member_params_spec)
         solution['member_params_spec'] = member_params_spec
 
     def perturb_add_member_paramfeature(self, solution):
-        """Randomly add a variable to the shared membership equation."""
+
+        """Randomly add a variable to some class's membership equation."""
+        
         member_params_spec = solution.get('member_params_spec', None)
         all_vars = list(self.param.isvarnames)
 
         if member_params_spec is None or len(member_params_spec) == 0:
             candidates = all_vars
         else:
-            existing = set(member_params_spec[0])
-            candidates = [v for v in all_vars if v not in existing]
+            candidates = [v for v in all_vars
+                          if any(v not in arr for arr in member_params_spec)]
 
         if candidates:
             candidate = np.random.choice(candidates)
             self.add_member_paramfeature(candidate, solution)
+
         return solution
 
     def remove_member_paramfeature(self, rem_param, solution):
@@ -4850,6 +4856,35 @@ class Search():
         ])
         self.hs_csv_file.flush()
 
+    def _enforce_membership_identifiability(self, member_params_spec):
+        """No membership covariate may end up present in every class at once.
+        When a variable reaches presence in all-but-one class and the missing
+        one isn't the configured base, force it there: add to the class that
+        was actually missing it, remove from the base. base_class defaults to
+        the last class if not set (self.param.base_class)."""
+        num_classes = len(member_params_spec)
+        base = getattr(self.param, 'base_class', None)
+        if base is None:
+            base = num_classes - 1
+
+        all_vars = set()
+        for arr in member_params_spec:
+            all_vars.update(v for v in arr if v != '_inter')
+
+        for var in all_vars:
+            present = [c for c in range(num_classes) if var in member_params_spec[c]]
+            missing = [c for c in range(num_classes) if c not in present]
+            if len(missing) == 1 and missing[0] != base:
+                member_params_spec[missing[0]] = np.sort(np.append(member_params_spec[missing[0]], var))
+                member_params_spec[base] = np.array(
+                    [v for v in member_params_spec[base] if v != var], dtype=object
+                )
+            elif len(missing) == 0:
+                member_params_spec[base] = np.array(
+                    [v for v in member_params_spec[base] if v != var], dtype=object
+                )
+        return member_params_spec
+
     def setup_signature(self, sol):
         """Return a hash covering every component that defines the model specification.
 
@@ -4999,6 +5034,7 @@ class Search():
             avail=avail,
             membership_vars=membership_vars,
             member_params_spec=member_params_spec,
+            base_class=getattr(self.param, 'base_class', None),
             class_params_spec=class_params_spec,
         )
         model.fit(em_method="squarem")

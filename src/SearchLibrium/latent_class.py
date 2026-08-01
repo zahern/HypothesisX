@@ -103,7 +103,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 self._jax = False
 
     def setup(self, X, y, varnames, ids, alts, avail=None, fit_intercept=False,
-              membership_vars=None, member_params_spec=None,
+              membership_vars=None, member_params_spec=None, base_class=None,
               class_params_spec=None, l1_penalty=None, l2_penalty=None):
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
@@ -194,27 +194,26 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 self._class_specs = [np.arange(self.K, dtype=int)] * self.n_classes
                 self.K_tot = self.n_classes * self.K
 
-        # ── Membership data ────────────────────────────────────────────────
+        # ── Membership data — dense (C, Km) gamma + mask; base_class fixed,
+        # configurable. Intercept kept separate (free for C-1 non-base
+        # classes only); covariates free per (class, var) via the mask. ─────
         self._has_membership = False
         self.X_membership = None
         self.K_membership = 0
+        self._member_mask = None          # (C, Km) 0/1
         self.membership_vars = None
         self.member_params_spec = None
 
-        if membership_vars is not None or member_params_spec is not None:
+        self.base_class = base_class if base_class is not None else self.n_classes - 1
+        self._intercept_free_classes = [c for c in range(self.n_classes) if c != self.base_class]
+
+        if member_params_spec is not None:
             self._has_membership = True
-
-            if member_params_spec is not None:
-                flat_members = []
-                for arr in member_params_spec:
-                    flat_members.extend(list(arr))
-                member_vars = list(np.unique(flat_members)) if flat_members else []
-            else:
-                member_vars = list(membership_vars)
-
-            covariate_vars = [v for v in member_vars if v != '_inter']
-            self.membership_vars = ['_inter'] + covariate_vars
             self.member_params_spec = member_params_spec
+
+            covariate_vars = sorted({v for arr in member_params_spec for v in arr if v != '_inter'})
+            self.membership_vars = covariate_vars
+            self.K_membership = len(covariate_vars)
 
             membership_indices = []
             for v in covariate_vars:
@@ -223,12 +222,19 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 else:
                     raise ValueError(f"Membership variable '{v}' not found in varnames.")
 
-            self.K_membership = len(membership_indices) + 1
             mem_data = X[:, membership_indices] if membership_indices else None
-            self.X_membership = np.ones((self.N, self.K_membership))
+            self.X_membership = np.zeros((self.N, self.K_membership))
             if mem_data is not None:
                 for n in range(self.N):
-                    self.X_membership[n, 1:] = mem_data[n * self.J]
+                    self.X_membership[n, :] = mem_data[n * self.J]
+
+            var_to_col = {v: i for i, v in enumerate(covariate_vars)}
+            self._member_mask = np.zeros((self.n_classes, self.K_membership))
+            for c in range(self.n_classes):
+                spec = member_params_spec[c] if c < len(member_params_spec) else []
+                for v in spec:
+                    if v != '_inter' and v in var_to_col:
+                        self._member_mask[c, var_to_col[v]] = 1.0
 
         self._prepare_backend_arrays()
         self._prepare_membership_backend()
@@ -281,117 +287,143 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         class_probs = np.clip(np.asarray(class_probs, dtype=float), 1e-12, None)
         return class_probs / class_probs.sum()
 
-    def _compute_membership_priors(self, gammas):
-        """Compute individual-level class priors from membership equation.
+    def _compute_membership_priors(self, class_intercepts, gamma_covariates):
+
+        """Compute individual-level class priors from the membership equation.
 
         Parameters
         ----------
-        gammas : ndarray, shape (C-1, K_membership)
-            Membership coefficients.  The last class is the reference
-            (implicitly zero).
+        class_intercepts : ndarray, shape (n_classes - 1,)
+            Free intercept per non-base class, in `self._intercept_free_classes`
+            order. `self.base_class` has an implicit intercept of 0 (fixed).
+        gamma_covariates : ndarray, shape (n_classes, K_membership) or flat
+            Per-class covariate coefficients; masked by `self._member_mask`
+            before use, so entries outside a class's spec never contribute.
 
         Returns
         -------
         priors : ndarray, shape (N, C)
-            Class membership probabilities for each individual.
         """
         C = self.n_classes
         if not self._has_membership or self.X_membership is None:
             return np.tile(np.full(C, 1.0 / C), (self.N, 1))
 
-        gammas = np.asarray(gammas, dtype=float)
-        if gammas.ndim == 1:
-            gammas = gammas.reshape(C - 1, self.K_membership)
+        gamma_covariates = np.asarray(gamma_covariates, dtype=float)
+        if gamma_covariates.ndim == 1:
+            gamma_covariates = gamma_covariates.reshape(C, self.K_membership)
+        gamma_masked = gamma_covariates * self._member_mask
 
         logits = np.zeros((self.N, C))
-        for c in range(C - 1):
-            logits[:, c] = self.X_membership @ gammas[c]
+        for i, c in enumerate(self._intercept_free_classes):
+            logits[:, c] = class_intercepts[i]
+        logits += self.X_membership @ gamma_masked.T
+
         logits -= logits.max(axis=1, keepdims=True)
         exp_logits = np.exp(logits)
         priors = exp_logits / np.clip(exp_logits.sum(axis=1, keepdims=True), 1e-300, None)
+
         return priors
 
-    def _membership_loglik_and_grad(self, gammas, weights):
+    def _membership_loglik_and_grad(self, params, weights):
+
         """Negative log-likelihood and gradient for the membership M-step.
 
         Parameters
         ----------
-        gammas : ndarray, shape (n_gamma_params,)
-            Flattened membership coefficients (C-1 blocks of K_membership).
+        params : ndarray, shape (n_inter + n_classes*K_membership,)
+            Flattened [class_intercepts (C-1,) | gamma_covariates (C*Km,)].
         weights : ndarray, shape (N, C)
             Posterior probabilities from the E-step.
 
         Returns
         -------
         neg_ll : float
-        grad : ndarray, shape (n_gamma_params,)
+        grad : ndarray, same shape as `params`
         """
         C = self.n_classes
         Km = self.K_membership
-        gammas_arr = gammas.reshape(C - 1, Km)
-        priors = self._compute_membership_priors(gammas_arr)
+        n_inter = len(self._intercept_free_classes)
+        class_intercepts = params[:n_inter]
+        gamma_covariates = params[n_inter:].reshape(C, Km)
+
+        priors = self._compute_membership_priors(class_intercepts, gamma_covariates)
         log_priors = np.log(np.clip(priors, 1e-300, None))
         ll = np.sum(weights * log_priors)
 
         residuals = weights - priors
-        grad = np.zeros((C - 1, Km))
-        for c in range(C - 1):
-            res_c = residuals[:, c]
-            grad[c] = self.X_membership.T @ res_c
+        grad_intercepts = np.array([residuals[:, c].sum() for c in self._intercept_free_classes])
+        gamma_masked = gamma_covariates * self._member_mask
+        grad_gamma = (self.X_membership.T @ residuals).T * self._member_mask
 
         l2 = self.l2_penalty
         l1 = self.l1_penalty
         if l2 > 0:
-            ll -= l2 * np.sum(np.square(gammas_arr))
+            ll -= l2 * (np.sum(np.square(class_intercepts)) + np.sum(np.square(gamma_masked)))
         if l1 > 0:
-            ll -= l1 * np.sum(np.abs(gammas_arr))
+            ll -= l1 * (np.sum(np.abs(class_intercepts)) + np.sum(np.abs(gamma_masked)))
 
-        neg_obj = -ll
-        neg_grad = -grad
+        neg_grad_intercepts = -grad_intercepts
+        neg_grad_gamma = -grad_gamma
         if l2 > 0:
-            neg_grad += 2.0 * l2 * gammas_arr
+            neg_grad_intercepts += 2.0 * l2 * class_intercepts
+            neg_grad_gamma += 2.0 * l2 * gamma_masked
         if l1 > 0:
-            neg_grad += l1 * np.sign(gammas_arr)
+            neg_grad_intercepts += l1 * np.sign(class_intercepts)
+            neg_grad_gamma += l1 * np.sign(gamma_masked)
 
-        return neg_obj, neg_grad.flatten()
+        neg_grad = np.concatenate([neg_grad_intercepts, neg_grad_gamma.flatten()])
 
-    def _membership_m_step(self, gamma0, weights):
-        """M-step for membership (gamma) parameters.
+        return -ll, neg_grad
+
+    def _membership_m_step(self, params0, weights):
+
+        """M-step for membership (intercepts + gamma) parameters.
 
         Minimises negative weighted log-likelihood of the membership
         equation using L-BFGS-B.
         """
         C = self.n_classes
         Km = self.K_membership
+        params0 = np.asarray(params0, dtype=float).ravel()
         if C <= 1 or Km == 0:
-            return gamma0
-
-        gamma0 = np.asarray(gamma0, dtype=float)
-        if gamma0.ndim > 1:
-            gamma0 = gamma0.ravel()
+            return params0
 
         result = minimize(
-            lambda g: self._membership_loglik_and_grad(g, weights),
-            gamma0,
+            lambda p: self._membership_loglik_and_grad(p, weights),
+            params0,
             method="L-BFGS-B",
             jac=True,
             options={"maxiter": self.membership_maxiter},
         )
-        return result.x.reshape(C - 1, Km)
+        return result.x
 
-    def _make_initial_gammas(self, rng, gammas0=None):
-        """Initialise membership coefficients."""
+    def _make_initial_membership_params(self, rng, params0=None):
+
+        """Initialise membership parameters: [class_intercepts | gamma_covariates] flat."""
+
         C = self.n_classes
         Km = self.K_membership
-        if C <= 1 or Km == 0:
-            return np.empty((0, 0))
-        if gammas0 is not None:
-            gammas0 = np.asarray(gammas0, dtype=float)
-            if gammas0.shape == (C - 1, Km):
-                return gammas0.copy()
-            if gammas0.size == (C - 1) * Km:
-                return gammas0.reshape(C - 1, Km)
-        return rng.normal(scale=0.01, size=(C - 1, Km))
+        n_inter = len(self._intercept_free_classes)
+        n_total = n_inter + C * Km
+        if not self._has_membership or n_total == 0:
+            return np.empty(0)
+        if params0 is not None:
+            params0 = np.asarray(params0, dtype=float).ravel()
+            if params0.size == n_total:
+                return params0.copy()
+        intercepts0 = rng.normal(scale=0.01, size=n_inter)
+        gamma0 = rng.normal(scale=0.01, size=C * Km)
+
+        return np.concatenate([intercepts0, gamma0])
+
+    def _split_membership_params(self, params):
+
+        """Split flat membership params into (class_intercepts, gamma_covariates)."""
+        
+        n_inter = len(self._intercept_free_classes)
+        class_intercepts = params[:n_inter]
+        gamma_covariates = params[n_inter:].reshape(self.n_classes, self.K_membership)
+        return class_intercepts, gamma_covariates
 
     def _choice_probs_np(self, beta):
         utilities = np.einsum("njk,k->nj", self.X, beta)
@@ -716,12 +748,15 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             raise ValueError("class_probs0 must have length n_classes.")
         return self._normalize_class_probs(class_probs0)
 
-    def _em_step(self, betas, class_probs, gammas=None):
-        """Single E+M step. Returns (new_betas, new_class_probs, new_gammas, loglik, posterior)."""
+    def _em_step(self, betas, class_probs, membership_params=None):
+
+        """Single E+M step. Returns (new_betas, new_class_probs, new_membership_params, loglik, posterior)."""
+
         log_choice, _ = self._log_choice_probs_np(betas)
 
-        if self._has_membership and self.optimise_membership and gammas is not None:
-            priors = self._compute_membership_priors(gammas)
+        if self._has_membership and self.optimise_membership and membership_params is not None:
+            ci, gc = self._split_membership_params(membership_params)
+            priors = self._compute_membership_priors(ci, gc)
         else:
             priors = np.broadcast_to(class_probs[None, :], (self.N, self.n_classes))
 
@@ -731,8 +766,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         loglik = float(log_denom.sum())
         loglik -= self._regularize_l2_betas(betas)
         loglik -= self._regularize_l1_betas(betas)
-        loglik -= self._regularize_l2_gammas(gammas)
-        loglik -= self._regularize_l1_gammas(gammas)
+        loglik -= self._regularize_l2_gammas(membership_params)
+        loglik -= self._regularize_l1_gammas(membership_params)
 
         new_class_probs = self._normalize_class_probs(posterior.mean(axis=0))
 
@@ -741,18 +776,21 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             new_betas[c] = self._weighted_m_step(betas[c] if isinstance(betas, list) else betas[c],
                                                   posterior[:, c], class_idx=c)
 
-        new_gammas = gammas
-        if self._has_membership and self.optimise_membership and gammas is not None and self.K_membership > 0:
-            new_gammas = self._membership_m_step(gammas, posterior)
+        new_membership_params = membership_params
+        if self._has_membership and self.optimise_membership and membership_params is not None and self.K_membership > 0:
+            new_membership_params = self._membership_m_step(membership_params, posterior)
 
-        return new_betas, new_class_probs, new_gammas, loglik, posterior
+        return new_betas, new_class_probs, new_membership_params, loglik, posterior
 
-    def _squarem_loglik(self, betas, class_probs, gammas=None):
-        """Log-likelihood at (betas, class_probs, gammas) without running the M-step."""
+    def _squarem_loglik(self, betas, class_probs, membership_params=None):
+
+        """Log-likelihood at (betas, class_probs, membership_params) without running the M-step."""
+
         log_choice, _ = self._log_choice_probs_np(betas)
 
-        if self._has_membership and self.optimise_membership and gammas is not None:
-            priors = self._compute_membership_priors(gammas)
+        if self._has_membership and self.optimise_membership and membership_params is not None:
+            ci, gc = self._split_membership_params(membership_params)
+            priors = self._compute_membership_priors(ci, gc)
         else:
             priors = np.broadcast_to(class_probs[None, :], (self.N, self.n_classes))
 
@@ -760,14 +798,15 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         ll = float(logsumexp(log_joint, axis=1).sum())
         ll -= self._regularize_l2_betas(betas)
         ll -= self._regularize_l1_betas(betas)
-        ll -= self._regularize_l2_gammas(gammas)
-        ll -= self._regularize_l1_gammas(gammas)
+        ll -= self._regularize_l2_gammas(membership_params)
+        ll -= self._regularize_l1_gammas(membership_params)
+
         return ll
 
     def _fit_em_once(self, rng, betas0=None, class_probs0=None, gammas0=None):
         betas = self._make_initial_betas(rng, betas0=betas0)
         class_probs = self._make_initial_class_probs(class_probs0=class_probs0)
-        gammas = self._make_initial_gammas(rng, gammas0=gammas0) if self._has_membership else None
+        membership_params = self._make_initial_membership_params(rng, params0=gammas0) if self._has_membership else None
         prev_loglik = -np.inf
         posterior = np.full((self.N, self.n_classes), 1.0 / self.n_classes)
         converged = False
@@ -775,8 +814,9 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         for iteration in range(1, self.maxiter + 1):
             log_choice, _ = self._log_choice_probs_np(betas)
 
-            if self._has_membership and self.optimise_membership and gammas is not None:
-                priors = self._compute_membership_priors(gammas)
+            if self._has_membership and self.optimise_membership and membership_params is not None:
+                ci, gc = self._split_membership_params(membership_params)
+                priors = self._compute_membership_priors(ci, gc)
             else:
                 priors = np.broadcast_to(class_probs[None, :], (self.N, self.n_classes))
 
@@ -786,16 +826,16 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             loglik = float(log_denom.sum())
             loglik -= self._regularize_l2_betas(betas)
             loglik -= self._regularize_l1_betas(betas)
-            loglik -= self._regularize_l2_gammas(gammas)
-            loglik -= self._regularize_l1_gammas(gammas)
+            loglik -= self._regularize_l2_gammas(membership_params)
+            loglik -= self._regularize_l1_gammas(membership_params)
 
             class_probs = self._normalize_class_probs(posterior.mean(axis=0))
             for c in range(self.n_classes):
                 bc = betas[c] if isinstance(betas, list) else betas[c]
                 betas[c] = self._weighted_m_step(bc, posterior[:, c], class_idx=c)
 
-            if self._has_membership and self.optimise_membership and gammas is not None and self.K_membership > 0:
-                gammas = self._membership_m_step(gammas, posterior)
+            if self._has_membership and self.optimise_membership and membership_params is not None and self.K_membership > 0:
+                membership_params = self._membership_m_step(membership_params, posterior)
 
             if abs(loglik - prev_loglik) < self.tol:
                 converged = True
@@ -805,7 +845,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         return {
             "betas": betas,
             "class_probs": class_probs,
-            "gammas": gammas,
+            "gammas": membership_params,
             "posterior": posterior,
             "loglik": loglik,
             "converged": converged,
@@ -813,16 +853,19 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         }
 
     def _fit_squarem_once(self, rng, betas0=None, class_probs0=None, gammas0=None):
+
         """Fit via SQUAREM-accelerated EM (Varadhan & Roland 2008)."""
+
         betas = self._make_initial_betas(rng, betas0=betas0)
         class_probs = self._make_initial_class_probs(class_probs0=class_probs0)
-        gammas = self._make_initial_gammas(rng, gammas0=gammas0) if self._has_membership else None
+        membership_params = self._make_initial_membership_params(rng, params0=gammas0) if self._has_membership else None
 
         n_beta = sum(self._Ks)
-        n_gamma = (self.n_classes - 1) * self.K_membership if self._has_membership else 0
+        n_inter = len(self._intercept_free_classes) if self._has_membership else 0
+        n_gamma = (n_inter + self.n_classes * self.K_membership) if self._has_membership else 0
 
         _do_membership = bool(self._has_membership and self.optimise_membership
-                              and gammas is not None and self.K_membership > 0)
+                              and membership_params is not None and self.K_membership > 0)
 
         def _pack(b, cp, gm):
             if isinstance(b, list):
@@ -843,12 +886,12 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             cp = self._normalize_class_probs(theta[offset:offset + self.n_classes])
             offset += self.n_classes
             if _do_membership:
-                gm = theta[offset:].reshape(self.n_classes - 1, self.K_membership)
+                gm = theta[offset:]
             else:
                 gm = None
             return b, cp, gm
 
-        theta = _pack(betas, class_probs, gammas)
+        theta = _pack(betas, class_probs, membership_params)
         prev_loglik = -np.inf
         converged = False
         posterior = np.full((self.N, self.n_classes), 1.0 / self.n_classes)
@@ -892,7 +935,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                     theta = _pack(b_p, cp_p, gm_p)
                     loglik = ll_p
                     if _do_membership and gm_p is not None:
-                        priors = self._compute_membership_priors(gm_p)
+                        ci_p, gc_p = self._split_membership_params(gm_p)
+                        priors = self._compute_membership_priors(ci_p, gc_p)
                     else:
                         priors = np.broadcast_to(cp_p[None, :], (self.N, self.n_classes))
                     log_choice, _ = self._log_choice_probs_np(b_p)
@@ -995,7 +1039,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
 
         n_gamma_params = 0
         if self.class_gammas is not None and self._has_membership and self.optimise_membership:
-            n_gamma_params = self.class_gammas.size
+            n_inter = len(self._intercept_free_classes)
+            n_gamma_params = n_inter + int(self._member_mask.sum())
         self.num_params = self.coeff_est.size + max(0, self.n_classes - 1) + n_gamma_params
         self.aic = 2 * self.num_params - 2 * self.loglik
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
@@ -1295,9 +1340,16 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         has_gamma = (self._has_membership and self.optimise_membership
                      and self.class_gammas is not None and self.K_membership > 0)
         if has_gamma:
-            n_gamma = (C - 1) * self.K_membership
-            gammas = params[offset:offset + n_gamma].reshape(C - 1, self.K_membership)
-            priors = self._compute_membership_priors(gammas)
+            Km = self.K_membership
+            n_inter = len(self._intercept_free_classes)
+            class_intercepts = params[offset:offset + n_inter]
+            offset += n_inter
+            active_cv = [(c, v) for c in range(C) for v in range(Km) if self._member_mask[c, v] > 0]
+            gamma_covariates = np.zeros((C, Km))
+            for j, (c, v) in enumerate(active_cv):
+                gamma_covariates[c, v] = params[offset + j]
+            offset += len(active_cv)
+            priors = self._compute_membership_priors(class_intercepts, gamma_covariates)
         else:
             priors = np.broadcast_to(pi[None, :], (self.N, self.n_classes))
 
@@ -1456,13 +1508,23 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         else:
             beta_flat = self.class_betas.ravel()
 
+        # Active membership params only (mask==1): masked-out positions never
+        # receive gradient (multiplied by zero everywhere), so including them
+        # here would make the Hessian singular.
         has_gamma = (self._has_membership and self.optimise_membership
                      and self.class_gammas is not None and Km > 0)
         if has_gamma:
-            gamma_flat = self.class_gammas.ravel()
+            n_inter = len(self._intercept_free_classes)
+            class_intercepts = self.class_gammas[:n_inter]
+            gamma_covariates = self.class_gammas[n_inter:].reshape(C, Km)
+            active_cv = [(c, v) for c in range(C) for v in range(Km) if self._member_mask[c, v] > 0]
+            gamma_active = np.array([gamma_covariates[c, v] for c, v in active_cv])
+            gamma_flat = np.concatenate([class_intercepts, gamma_active])
             params = np.concatenate([phi_vals, beta_flat, gamma_flat])
             n_gamma = gamma_flat.size
         else:
+            class_intercepts = np.empty(0)
+            active_cv = []
             gamma_flat = np.empty(0)
             params = np.concatenate([phi_vals, beta_flat])
             n_gamma = 0
@@ -1470,7 +1532,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         # ── JAX autograd Hessian → covariance (numerical fallback) ──
         #H_a = self._autograd_hessian(params)
         H_a = None  # forced numerical Hessian (JAX autograd disabled for debugging)
-        
+
         if H_a is not None and np.isfinite(H_a).all():
             info = H_a   # hessian(-negloglik) = -hessian(loglik) = observed info
             se_method = "autograd-hessian"
@@ -1518,10 +1580,12 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 1e-300, None,
             )
         )
+
         if has_gamma:
-            priors = self._compute_membership_priors(self.class_gammas)
+            priors = self._compute_membership_priors(class_intercepts, gamma_covariates)
         else:
             priors = np.broadcast_to(pi[None, :], (self.N, C))
+
         log_joint = log_chosen + np.log(np.clip(priors, 1e-300, None))
         log_marg  = logsumexp(log_joint, axis=1, keepdims=True)
         posterior = np.exp(log_joint - log_marg)
@@ -1554,11 +1618,11 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         if has_gamma:
             score_gamma = np.zeros((self.N, n_gamma))
             resid_m = posterior - priors
-            offset = 0
-            for c in range(C - 1):
-                res_c = resid_m[:, c]
-                score_gamma[:, offset:offset + Km] = self.X_membership * res_c[:, None]
-                offset += Km
+            n_inter = len(self._intercept_free_classes)
+            for i, c in enumerate(self._intercept_free_classes):
+                score_gamma[:, i] = resid_m[:, c]
+            for j, (c, v) in enumerate(active_cv):
+                score_gamma[:, n_inter + j] = self.X_membership[:, v] * resid_m[:, c]
             score = np.hstack([score_phi, score_beta, score_gamma])
         else:
             score = np.hstack([score_phi, score_beta]) if C > 1 else score_beta
@@ -1610,9 +1674,10 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             gamma_ci_lo = ci_lo[gamma_start:]
             gamma_ci_hi = ci_hi[gamma_start:]
             mem_vars = list(self.membership_vars) if self.membership_vars else [f"mem_{k}" for k in range(Km)]
-            for c in range(C - 1):
-                for v in mem_vars:
-                    gamma_names.append(f"gamma_class_{c + 1}_{v}")
+            for c in self._intercept_free_classes:
+                gamma_names.append(f"gamma_intercept_class_{c + 1}")
+            for c, v in active_cv:
+                gamma_names.append(f"gamma_class_{c + 1}_{mem_vars[v]}")
             param_names += gamma_names
 
         # ── Standard attributes aligned with coeff_est / coeff_names ──────

@@ -1269,6 +1269,21 @@ class DiscreteChoiceModel(ABC):
                         for k in range(gammas_arr.shape[1]):
                             label = f"gamma_{c + 1}_{self.membership_vars[k]}"
                             p(f"    {label}: {gammas_arr[c, k]:.6f}")
+                            p(f"    class_{c_idx}_{name}: {value:.6f}")
+
+                if self.class_gammas is not None and self._has_membership and self.optimise_membership:
+                    Km = self.K_membership
+                    n_inter = len(self._intercept_free_classes)
+                    class_intercepts = self.class_gammas[:n_inter]
+                    gamma_covariates = self.class_gammas[n_inter:].reshape(self.n_classes, Km)
+                    p("  Membership Parameters:")
+                    for i, c in enumerate(self._intercept_free_classes):
+                        p(f"    gamma_intercept_class_{c + 1}: {class_intercepts[i]:.6f}")
+                    for c in range(self.n_classes):
+                        for k in range(Km):
+                            if self._member_mask[c, k] > 0:
+                                label = f"gamma_class_{c + 1}_{self.membership_vars[k]}"
+                                p(f"    {label}: {gamma_covariates[c, k]:.6f}")
                 return
 
             params   = self.se_params
@@ -1301,18 +1316,19 @@ class DiscreteChoiceModel(ABC):
                     p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])))
                 offset_cum += K_c
             
-                if not is_base and has_gamma:
+                if has_gamma:
                     p("")
                     p("  Membership Parameters")
                     p(LINE2)
-                    g0 = c * Km
-                    for k in range(Km):
-                        gi = g0 + k
-                        # gamma_names are stored as "gamma_class_{c}_{var}" — the
-                        # class is already shown by the section header above, so
-                        # only the variable name needs to be displayed here.
-                        gname = self.gamma_names[gi]
-                        var_name = gname.split(f"gamma_class_{c + 1}_", 1)[-1]
+                    inter_tag = f"gamma_intercept_class_{c + 1}"
+                    var_tag = f"gamma_class_{c + 1}_"
+                    for gi, gname in enumerate(self.gamma_names):
+                        if gname == inter_tag:
+                            var_name = "_inter"
+                        elif gname.startswith(var_tag):
+                            var_name = gname[len(var_tag):]
+                        else:
+                            continue
                         p(fmt.format(var_name[:16], "", self.gamma_params[gi], self.gamma_se[gi],
                                     self.gamma_t_stats[gi], self.gamma_p_values[gi],
                                     sig(self.gamma_p_values[gi])))
