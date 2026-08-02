@@ -39,8 +39,9 @@ class MixedLogit(DiscreteChoiceModel):
         self.descr = "MXL"
         self.halton_opts = halton_opts
         self.draws_generator = Draws(k=len(distributions), halton_opts=halton_opts, rvdist=distributions)
-        self.random_parameters = RandomParameters(distributions or [])  # Initialize RandomParameters
+        self.random_parameters = RandomParameters(distributions or [])
         self.softmax_r = True
+        self.reg_penalty = 0.001  # tiny L2 ridge — prevents singular Hessians
 
     def generate_draws(self, sample_size, n_draws, halton=True, chol_mat=None):
         """Generate random or Halton draws via fn_generate_draws, apply distributions, return tuple."""
@@ -785,7 +786,14 @@ class MixedLogit(DiscreteChoiceModel):
 
         sim_p = jnp.mean(pch, axis=1)                        # (N,)
         sim_p = jnp.clip(sim_p, 1e-300, None)
-        return -jnp.sum(jnp.log(sim_p))
+        ll = -jnp.sum(jnp.log(sim_p))
+        # Tiny L2 penalty — makes the Hessian diagonally dominant so it
+        # never becomes singular, even with near-constant variables or
+        # simulation noise in the mixed-logit probability integration.
+        reg = kwargs.get('reg_penalty', 0.0)
+        if reg > 0:
+            ll = ll + reg * jnp.sum(jnp.square(betas))
+        return ll
 
     # ------------------------------------------------------------------
     # Per-shape JIT cache: avoids recompilation when the same (N, P, J,
@@ -1692,7 +1700,7 @@ class MixedLogit(DiscreteChoiceModel):
 
     def _jax_negloglik_extra_kwargs(self):
         """Extra keyword arguments forwarded to JAX negloglik fn."""
-        return {}
+        return {'reg_penalty': getattr(self, 'reg_penalty', 0.0)}
 
     def _jax_cache_key_extra(self):
         """Extra tuple elements for the JAX compilation cache key."""
