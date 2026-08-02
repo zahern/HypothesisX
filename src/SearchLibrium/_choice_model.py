@@ -148,7 +148,7 @@ class DiscreteChoiceModel(ABC):
         self.fit_intercept = False
         self.reg_penalty = 0.00  # L2 penalty strength (ridge)
         self.l1_penalty  = 0.1   # L1 penalty strength (lasso)
-        self.pval_penalty = 5
+        self.pval_penalty = 2
         logging.info(f'pval penalty set to {self.pval_penalty}')
         # NOTE: The reg_penalty value is tricky to define. If too high, convergence is restricted.
         #  Set to zero to turn off. A value of 1 seems too high.
@@ -434,6 +434,27 @@ class DiscreteChoiceModel(ABC):
 
         self.aic = 2 * num_params - 2 * self.loglik
         self.bic = np.log(sample_size) * num_params - 2 * self.loglik
+
+        # ── Singularity penalty ──────────────────────────────────────────
+        # When the Hessian is near-singular (near-constant or collinear
+        # variables), standard errors collapse to ~zero.  Penalise
+        # proportionally to BIC so the search can still rank these models
+        # against each other rather than rejecting them outright.
+        if not std_err_estimated or np.all(np.abs(self.stderr) < 1e-8):
+            sv_penalty = max(200.0, min(0.05 * abs(self.bic), 2000.0))
+            self.aic += sv_penalty
+            self.bic += sv_penalty
+            self._singularity_penalised = True
+            zero_se_vars = [
+                n for n, s in zip(self.coeff_names, self.stderr)
+                if abs(s) < 1e-8
+            ]
+            if zero_se_vars:
+                logging.warning(
+                    "[singularity] design matrix ill-conditioned — "
+                    "SE≈0 for: %s — BIC penalised by %.0f",
+                    ', '.join(zero_se_vars[:12]), sv_penalty,
+                )
 
 
     # }

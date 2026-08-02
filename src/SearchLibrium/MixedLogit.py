@@ -624,7 +624,10 @@ class MixedLogit(DiscreteChoiceModel):
 
         if hasattr(self, 'method') and self.method == "L-BFGS-B":  # {
             H = self.get_hessian(result['x'], self._get_loglik_gradient)
-            result['hess_inv'] = np.linalg.inv(H)
+            try:
+                result['hess_inv'] = np.linalg.inv(H)
+            except np.linalg.LinAlgError:
+                result['hess_inv'] = np.linalg.pinv(H)
         # }
         else:
             # ── Non-L-BFGS-B path (e.g. JAX): compute Hessian numerically
@@ -633,7 +636,10 @@ class MixedLogit(DiscreteChoiceModel):
                 H = self.get_hessian(result['x'], self._get_loglik_gradient, eps=1e-6)
                 result['hess_inv'] = np.linalg.inv(H)
             except Exception:
-                pass
+                try:
+                    result['hess_inv'] = np.linalg.pinv(H)
+                except Exception:
+                    pass
 
         if self.save_fitted_params:
             self.compute_fitted_params(self.y, self.p, self.panel_info, self.Br)
@@ -848,7 +854,10 @@ class MixedLogit(DiscreteChoiceModel):
                 b_opt = jnp.array(result['x'], dtype=jnp.float64)
                 H = _compiled_hess(b_opt, X_jax, y_jax, pi_jax, draws_jax)
                 H_np = np.asarray(H, dtype=float)
-                result['hess_inv'] = np.linalg.inv(H_np)
+                try:
+                    result['hess_inv'] = np.linalg.inv(H_np)
+                except np.linalg.LinAlgError:
+                    result['hess_inv'] = np.linalg.pinv(H_np)
             except Exception:
                 pass
 
