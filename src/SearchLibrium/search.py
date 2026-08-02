@@ -96,7 +96,7 @@ boxc_l = ['L1', 'L2']
 infinity = float("inf")
 valid_criterions = {'aic', 'bic', 'loglik', 'mae', 'cust_bic'}
 sign_criterions = {'aic':-1, 'bic':-1, 'loglik':1, 'mae':-1}
-default_distributions = ['n', 'ln', 'tn', 'u', 't']
+default_distributions = ['n', 'ln', 'nln', 'tn', 'u', 't']
 BOUND = 1E6
 
 ''' ---------------------------------------------------------- '''

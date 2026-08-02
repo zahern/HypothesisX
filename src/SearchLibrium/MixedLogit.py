@@ -717,6 +717,8 @@ class MixedLogit(DiscreteChoiceModel):
         for k, dist in enumerate(rvdist_names):
             if dist == 'ln':
                 Br = Br.at[:, k, :].set(jnp.exp(Br[:, k, :]))
+            elif dist == 'nln':
+                Br = Br.at[:, k, :].set(-jnp.exp(Br[:, k, :]))
             elif dist == 'tn':
                 Br = Br.at[:, k, :].set(jnp.abs(Br[:, k, :]))
             elif dist == 'u':
