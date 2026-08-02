@@ -575,10 +575,41 @@ class MixedLogit(DiscreteChoiceModel):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # SOLVE OPTIMISATION PROBLEM - COMPUTATIONALLY TIME CONSUMING!
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # ---- JAX fast path ----
+            # ---- JAX fast path ----
         if getattr(self, '_jax', False):
             jax_result = self.optimize_jax(betas, draws, drawstrans)
             if jax_result is not None:
+                # ── L-BFGS-B polish for stable Hessian ──────────────────
+                # JAX Hessian through 500 simulation draws is often near-
+                # singular; scipy's L-BFGS-B quasi-Newton Hessian is much
+                # more robust because it's built from gradient history over
+                # multiple iterations, not a single-point autodiff through
+                # noisy simulation draws.
+                if ('hess_inv' not in jax_result
+                        or np.all(np.abs(np.diag(np.array(
+                            jax_result.get('hess_inv',
+                                           np.eye(1))))) < 1e-12)):
+                    try:
+                        _polish_fn = self.get_loglik_gradient
+                        _polish_args = (self.X, self.y, self.panel_info,
+                                        draws, drawstrans, self.weights,
+                                        self.avail, self.batch_size)
+                        polish = minimize(
+                            _polish_fn,
+                            np.asarray(jax_result['x']).copy(),
+                            jac=True, method='L-BFGS-B',
+                            args=_polish_args,
+                            options={'gtol': self.gtol * 100,
+                                     'maxiter': 100, 'disp': False},
+                        )
+                        if (polish.get('fun', float('inf'))
+                                < jax_result.get('fun', float('inf')) + 0.1):
+                            jax_result.update(polish)
+                            jax_result['hess_inv'] = getattr(polish, 'hess_inv', None)
+                    except Exception:
+                        pass
+                # ─────────────────────────────────────────────────────────
+
                 extra_names, extra_counts = self._beta_segment_extra()
                 beta_segment_names = (["Bf", "Br_b"] + list(extra_names)
                                      + ["chol", "Br_w", "Bftrans",
