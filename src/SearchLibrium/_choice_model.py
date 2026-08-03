@@ -3,6 +3,8 @@ IMPLEMENTATION: BASE CLASS FOR LOGIT MODELS
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 import logging
 
+_SINGULARITY_WARNED = False
+
 """
 BACKGROUND - Choice Modelling
 
@@ -450,11 +452,14 @@ class DiscreteChoiceModel(ABC):
                 if abs(s) < 1e-8
             ]
             if zero_se_vars:
-                logging.warning(
-                    "[singularity] design matrix ill-conditioned — "
-                    "SE≈0 for: %s — BIC penalised by %.0f",
-                    ', '.join(zero_se_vars[:12]), sv_penalty,
-                )
+                global _SINGULARITY_WARNED
+                if not _SINGULARITY_WARNED:
+                    _SINGULARITY_WARNED = True
+                    logging.warning(
+                        "[singularity] design matrix ill-conditioned — "
+                        "SE≈0 for: %s — BIC penalised by %.0f",
+                        ', '.join(zero_se_vars[:12]), sv_penalty,
+                    )
 
 
     # }

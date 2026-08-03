@@ -773,6 +773,7 @@ class Parameters:
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         logging.info('adding in alterantive pre_spec')
         self.pres_spec_constr = pre_spec_constraints
+        self._dynamic_mutual_exclusion = set()  # learned collinear pairs
         self.setup_prerequisites(**kwargs)
         self.define_precified_features()
         self.get_available_features()  # Extract: avail_asvars, avail_isvars, ..., avail_corvars
@@ -2041,6 +2042,7 @@ class Search():
             bctrans=bctrans, cor=cor, randvars=randvars, model_n = model_n, state = state,
              asc_ind=asc_ind)
         solution = self.align_model_with_solution(solution)
+        self._enforce_mutual_exclusion(solution)
         self._enforce_min_behavioral(solution)
 
         return solution
@@ -2180,34 +2182,53 @@ class Search():
         return protected
 
     def _apply_mutual_exclusion_filter(self, varlist):
-        """Given a list of variables, keep at most one per mutual-exclusion group.
-
-        For each group the first variable encountered is kept; subsequent
-        members are dropped.
+        """Given a list of variables, keep at most one per mutual-exclusion
+        group.  For each group the first variable encountered is kept;
+        subsequent members are dropped.  A forced variable, when present,
+        is always the one kept.
         """
         groups = self._get_mutual_exclusion_groups()
         if not groups:
             return varlist
+        forced = set(self._get_forced_vars())
+        keep = set()
         blocked = set()
         for group in groups:
-            seen_first = False
-            for v in varlist:
-                if v in group:
-                    if seen_first:
-                        blocked.add(v)
-                    else:
-                        seen_first = True
+            members_in = [v for v in varlist if v in group]
+            if not members_in:
+                continue
+            keeper = None
+            for v in members_in:
+                if v in forced:
+                    keeper = v
+                    break
+            if keeper is None:
+                keeper = members_in[0]
+            keep.add(keeper)
+            for v in members_in:
+                if v != keeper:
+                    blocked.add(v)
         return [v for v in varlist if v not in blocked]
 
     def _get_mutual_exclusion_groups(self):
         """Return the list of mutually-exclusive variable groups, or [].
 
         Each group is a list[str]; at most one member of each group may
-        appear in a solution.
+        appear in a solution.  Static groups come from pres_spec_constr;
+        dynamic groups are collinear pairs learned at fit time and stored
+        in self._dynamic_mutual_exclusion.  Forced variables are placed
+        first in a group so exclusion always keeps them in the model.
         """
-        if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
-            return []
-        return self.param.pres_spec_constr.get('mutually_exclusive', [])
+        groups = []
+        if hasattr(self.param, 'pres_spec_constr') and self.param.pres_spec_constr is not None:
+            groups = list(self.param.pres_spec_constr.get('mutually_exclusive', []))
+        forced = set(self._get_forced_vars())
+        for pair in getattr(self, '_dynamic_mutual_exclusion', set()):
+            lst = list(pair)
+            if len(lst) == 2 and lst[1] in forced:
+                lst.reverse()
+            groups.append(lst)
+        return groups
 
     def _get_incompatible_specs_groups(self):
         """Return the list of incompatible alt-specific variable groups, or [].
@@ -2267,17 +2288,20 @@ class Search():
 
         If more than one is found, keep the first (arbitrary) and
         remove the rest from asvars, isvars, and class/member specs.
+        Forced variables are always kept.
         """
         groups = self._get_mutual_exclusion_groups()
         if not groups:
             return
         all_v = self._all_vars_in_solution(solution)
+        forced = set(self._get_forced_vars())
         for group in groups:
             present = [v for v in group if v in all_v]
             if len(present) <= 1:
                 continue
-            keep = set(present[:1])
-            remove = set(present[1:])
+            protected = [v for v in present if v in forced]
+            keep = set(protected[:1]) if protected else set(present[:1])
+            remove = set(present) - keep
             for v in remove:
                 if 'asvars' in solution and v in solution['asvars']:
                     solution['asvars'] = [x for x in solution['asvars'] if x != v]
@@ -3777,6 +3801,64 @@ class Search():
 
 
     ''' ------------------------------------------------------------------ '''
+    ''' Function. Learn collinear variable pairs from singularity-          '''
+    ''' penalised fits and ban them via mutual exclusion so the search      '''
+    ''' stops proposing those combinations.                                 '''
+    ''' ------------------------------------------------------------------ '''
+    def _register_singularity_pairs(self, sol):
+    # {
+        model = sol.get('model')
+        if model is None or not getattr(model, '_singularity_penalised', False):
+            return
+        coeff_names = list(model.coeff_names) if getattr(model, 'coeff_names', None) else []
+        stderr = getattr(model, 'stderr', None)
+        if not coeff_names or stderr is None:
+            return
+        stderr = np.asarray(stderr)
+        if len(stderr) != len(coeff_names):
+            return
+
+        def base_var(name):
+            name = str(name)
+            for prefix in ('sd.', 'lambda.', 'chol.'):
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+                    break
+            if '.' in name:
+                name = name.split('.')[0]
+            return name
+
+        zero_se = {base_var(n) for n, s in zip(coeff_names, stderr) if abs(s) < 1e-8}
+        if len(zero_se) < 2:
+            return
+        df = getattr(self.param, 'df', None)
+        if df is None:
+            return
+        cols = [v for v in getattr(self.param, 'varnames', []) if v in zero_se and v in df.columns]
+        if len(cols) < 2:
+            return
+        X = df[cols].values.astype(float)
+        C = np.corrcoef(X.T)
+        np.fill_diagonal(C, 0)
+        pairs = np.argwhere(np.abs(C) >= 0.95)
+        learned = 0
+        for i, j in pairs:
+            if i >= j:
+                continue
+            pair = frozenset((cols[i], cols[j]))
+            if pair in self._dynamic_mutual_exclusion:
+                continue
+            self._dynamic_mutual_exclusion.add(pair)
+            logging.info(
+                "[CollinearityConstraint] learned mutually-exclusive pair: (%s, %s) |r|=%.4f",
+                cols[i], cols[j], abs(C[i, j]),
+            )
+            learned += 1
+            if learned >= 15:
+                break
+    # }
+
+    ''' ------------------------------------------------------------------ '''
     ''' Function. Backward elimination: iteratively remove insignificant   '''
     ''' variables (p-value > threshold) and refit until all are significant'''
     ''' or no variables remain to remove. Returns updated sol and converged'''
@@ -3795,6 +3877,8 @@ class Search():
             # Fit the current specification
             result = self.evaluate_model(sol)
             aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol = result
+
+            self._register_singularity_pairs(sol)
 
             if not converged:
                 return sol, False
@@ -3959,6 +4043,7 @@ class Search():
                 aic, bic, loglik, mae, asvars, isvars, randvars, bcvars, corvars, converged, sol = result
                 sol['bcvars'] = bcvars
                 sol['aic'], sol['bic'], sol['loglik'], sol['mae'] = aic, bic, loglik, mae
+            self._register_singularity_pairs(sol)
         except Exception:
             sol['converged'] = False
             self._banlist.add(sig)
