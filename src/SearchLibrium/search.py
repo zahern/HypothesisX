@@ -2447,7 +2447,7 @@ class Search():
         model_n = self.select_model_for_randvars(randvars)
 
         if model_n == 'nested_logit':
-            state = Dict('test')
+            state = Dict({})
         else: state = None
 
         # Create a repaired solution object
