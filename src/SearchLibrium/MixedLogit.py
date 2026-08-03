@@ -141,9 +141,14 @@ class MixedLogit(DiscreteChoiceModel):
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
-              de_polish=False, l1_penalty=0.0):
+              de_polish=False, l1_penalty=0.0, reg_penalty=0.001):
         # {
         self.fit_intercept = fit_intercept
+        # L2 ridge regularisation strength (default ON). Keeps the Hessian
+        # diagonally dominant / non-singular under near-constant covariates and
+        # simulation noise. Applied in both the JAX objective and the NumPy
+        # get_loglik_gradient path. Set reg_penalty=0.0 to disable.
+        self.reg_penalty = float(reg_penalty)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # RECAST AS NUMPY NDARRAY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -411,22 +416,22 @@ class MixedLogit(DiscreteChoiceModel):
                       fit_intercept=False)
             mnl.fit()
 
-            # Build init_coeff from MNL estimates, mapping each variable
-            # to its correct MXL slot (Bf for fixed, Br_b for random).
-            bf_init = np.zeros(self.Kf)
-            br_b_init = np.zeros(self.Kr)
-            bf_pos = br_pos = 0
-            for ii in range(len(self.varnames)):
-                if not mnl.fxidx[ii]:
-                    continue
-                mnl_idx = int(np.sum(mnl.fxidx[:ii]))
-                mnl_val = mnl.coeff_est[mnl_idx] if mnl_idx < len(mnl.coeff_est) else 0.1
-                if self.fxidx[ii]:
-                    bf_init[bf_pos] = mnl_val
-                    bf_pos += 1
-                elif self.rvidx[ii]:
-                    br_b_init[br_pos] = mnl_val
-                    br_pos += 1
+            # Build init_coeff from MNL estimates, mapping each MXL coefficient to
+            # its MNL counterpart BY NAME. Name-based mapping is robust to the
+            # per-alternative column expansion used for individual-specific
+            # variables / ASCs (e.g. "male.bicycling"), for which the previous
+            # index-based mapping (which iterated the compact varnames but indexed
+            # the expanded fxidx/rvidx masks) mis-seeded the optimiser. The MNL and
+            # MXL share the same expanded design-column names.
+            mnl_map = {str(n): v for n, v in zip(mnl.coeff_names, mnl.coeff_est)}
+            fixed_names = [str(n) for n in self.Xnames[:self.Kf]]
+            rand_mean_names = [str(n) for n in self.Xnames[self.Kf:self.Kf + self.Kr]]
+            bf_init = np.array([mnl_map.get(nm, 0.1) for nm in fixed_names], dtype=float)
+            br_b_init = np.array([mnl_map.get(nm, 0.1) for nm in rand_mean_names], dtype=float)
+            if self.Kf == 0:
+                bf_init = np.zeros(0)
+            if self.Kr == 0:
+                br_b_init = np.zeros(0)
 
             mnl_Kf = int(np.sum(mnl.fxidx))
             mnl_Kftrans = int(np.sum(mnl.fxtransidx))
@@ -781,6 +786,14 @@ class MixedLogit(DiscreteChoiceModel):
         p   = eU / jnp.sum(eU, axis=2, keepdims=True)        # (N, P, J, R)
 
         pch = jnp.sum(y_jax[:, :, :, None] * p, axis=2)     # (N, P, R)
+        # Mask padded (panel_info == 0) choice situations so they contribute a
+        # factor of 1 to the per-individual product rather than 0. Without this,
+        # UNBALANCED panels (individuals with different numbers of choice
+        # situations) collapse the joint probability to ~0, and the
+        # log-likelihood explodes. Mirrors prob_product_across_panels in the
+        # NumPy gradient path.
+        pi = panel_info_jax[:, :, None]                      # (N, P, 1)
+        pch = jnp.where(pi > 0, pch, 1.0)
         pch = jnp.prod(pch, axis=1)                          # (N, R)
         pch = jnp.clip(pch, 1e-300, None)
 
@@ -1203,7 +1216,17 @@ class MixedLogit(DiscreteChoiceModel):
         if randvars is None:
             raise ValueError("The randvars parameter is required for Mixed "
                              "Logit estimation")
-        if not set(randvars.keys()).issubset(Xnames):
+        # A random variable name is valid if it appears directly in the design
+        # column names (alternative-specific attributes) OR it is an
+        # individual-specific variable / intercept whose (J-1) alternative-specific
+        # columns appear as "<name>.<alt>" (and, for the sd terms, "sd.<name>.<alt>").
+        xnames_set = set(str(x) for x in Xnames)
+        valid_isvars = set(str(v) for v in getattr(self, "isvars", []))
+        for key in randvars.keys():
+            if key in xnames_set or key in valid_isvars:
+                continue
+            if any(str(x) == key or str(x).startswith(key + ".") for x in Xnames):
+                continue
             print(f'randvars:{randvars}')
             print(f'XNames:{Xnames}')
             raise ValueError("Some variable names in randvars were not found "

@@ -834,13 +834,23 @@ class DiscreteChoiceModel(ABC):
 
 
             self.restate_idx(ispos, isvars, asvars)
-            self.fxidx =np.insert(np.array(self.fxidx, dtype="bool_"), where_h, np.repeat(True, len(self.isvars)*(J-1)))
+            # Each individual-specific variable expands into (J-1) alternative-specific
+            # columns. Decide, per expanded column, whether it is a FIXED or a RANDOM
+            # coefficient based on whether the isvar was requested in randvars. The
+            # column order matches the isvar design block below: for isvar in isvars,
+            # for each non-base alternative. This enables random coefficients on
+            # individual-specific variables and on the ASCs (intercept).
+            isvar_rand_block = np.array(
+                [iv in self.randvars for iv in isvars for _ in range(J - 1)],
+                dtype="bool_")
+            isvar_fix_block = ~isvar_rand_block
+            self.fxidx =np.insert(np.array(self.fxidx, dtype="bool_"), where_h, isvar_fix_block)
             self.fxtransidx = np.insert(np.array(self.fxtransidx, dtype="bool_"), where_h, np.repeat(False, len(self.isvars)*(J - 1)))
             #self.fxtransidx = np.insert(np.array(self.fxtransidx, dtype="bool_"),
                                       #  0, np.repeat(False, len(self.isvars)*(J - 1)))
             if hasattr(self, 'rvidx'):
                 self.rvidx = np.insert(np.array(self.rvidx, dtype="bool_"), where_h,
-                                       np.repeat(False, len(self.isvars)*(J -1)))
+                                       isvar_rand_block)
             if hasattr(self, 'rvtransidx'):
                 self.rvtransidx = np.insert(np.array(self.rvtransidx, dtype="bool_"),
                                             0, np.repeat(False, len(self.isvars)*(J - 1)))
@@ -898,7 +908,11 @@ class DiscreteChoiceModel(ABC):
         # }
 
         self.Kf = sum(self.fxidx)  # set number of fixed coeffs from idx
-        self.Kr = len(randpos)  # Number of random coefficients
+        # Number of random coefficients. Count directly from the (expanded) rvidx
+        # mask so that random coefficients on individual-specific variables / ASCs,
+        # which expand into (J-1) alternative-specific columns each, are counted
+        # once per column rather than once per compact variable name.
+        self.Kr = int(np.sum(self.rvidx)) if hasattr(self, 'rvidx') else len(randpos)  # was: len(randpos)
         self.Kftrans = len(fixedtranspos)  # Number of fixed coefficients of bc transformed vars
         self.Krtrans = len(randtranspos)  # Number of random coefficients of bc transformed vars
         self.Kchol = 0  # Number of random beta cholesky factors
@@ -1028,11 +1042,36 @@ class DiscreteChoiceModel(ABC):
 
 
             
-        else:        
+        else:
             self.ordered_varnames = self.varnames
         #np.insert(np.array(self.varnames, dtype="<U64"), 0, '_inter')
 
-       
+        # ------------------------------------------------------------------
+        # Random coefficients on individual-specific variables / ASCs.
+        # When any isvar is random, its (J-1) alternative-specific columns move
+        # from the fixed block (Bf) to the random-mean block (Br_b), so the
+        # coefficient-name vector must follow the beta layout
+        # [fixed | random-mean | sd] in expanded design-column order rather than
+        # the compact isvar-name order used by the legacy path below. This branch
+        # covers the uncorrelated, untransformed case; correlated/Box-Cox models
+        # keep the original construction.
+        has_rand_isvar = any(iv in self.randvars for iv in isvars)
+        simple_case = (has_rand_isvar and not self.correlated_vars
+                       and len(fixedtransvars) == 0 and len(randtransvars) == 0)
+        if simple_case:
+            isvar_block_names = ["{}.{}".format(isvar, j)
+                                 for isvar in isvars for j in self.alts
+                                 if j != self.base_alt]
+            asvar_col_names = list(asvars_construct_matrix)
+            col_names = list(isvar_block_names) + asvar_col_names  # length K, design order
+            fxidx = np.asarray(self.fxidx, dtype=bool)
+            rvidx = np.asarray(self.rvidx, dtype=bool)
+            fixed_names = [col_names[i] for i in range(len(col_names)) if fxidx[i]]
+            rand_mean_names = [col_names[i] for i in range(len(col_names)) if rvidx[i]]
+            sd_names = ["sd." + col_names[i] for i in range(len(col_names)) if rvidx[i]]
+            names = np.array(fixed_names + rand_mean_names + sd_names, dtype="<U64")
+            return X, names
+
         names = np.concatenate((intercept_names, names, asvars_names, randvars,
                                 chol, br_w_names, fixedtransvars,
                                 lambda_names_fixed, randtransvars,
@@ -1367,6 +1406,24 @@ class DiscreteChoiceModel(ABC):
         transvars_set     = to_set('transvars')
         randtransvars_set = to_set('randtransvars')
         randvars_set      = set(randvars_dict.keys())
+
+        # Recognise per-alternative expansions of random individual-specific
+        # variables / ASCs (e.g. "male.bicycling") as random parameters, so their
+        # means and matching sd.* terms are reported under RANDOM PARAMETERS
+        # rather than misclassified as fixed.
+        if randvars_dict and getattr(self, 'coeff_names', None) is not None:
+            base_dists = dict(randvars_dict)
+            expanded = {}
+            for nm in self.coeff_names:
+                s = str(nm)
+                if s in base_dists or s.startswith(('sd.', 'chol.', 'lambda.')):
+                    continue
+                base = s.rsplit('.', 1)[0] if '.' in s else s
+                if base in base_dists:
+                    expanded[s] = base_dists[base]
+            if expanded:
+                randvars_dict = {**randvars_dict, **expanded}
+                randvars_set = set(randvars_dict.keys())
 
         # Build ordered output: group coefficients by type
         # Each group is a list of (display_name, coeff_idx)
