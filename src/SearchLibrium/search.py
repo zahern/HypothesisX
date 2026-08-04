@@ -3380,7 +3380,8 @@ class Search():
         set_bcvars = set(solution['bcvars'])
         set_bcvars.add(new_bcvar)
         solution['bcvars'] = sorted(list(set_bcvars))
-        self.v_print('bcvar add')
+        if hasattr(self, 'v_print'):
+            self.v_print('bcvar add')   # debug helper only exists on some solvers
         # if solution['class_params_spec'] is not None:
         # {
         #    class_params = list(np.concatenate(solution['class_params_spec']))

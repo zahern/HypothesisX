@@ -623,20 +623,25 @@ class SA(Search):
         Class 1: cannot Have Price and Price_2
         #TODO placeholder
         '''
-        debug_counter = 0
         if solution.data['model_n'] == 'mixed_logit':
-            while len(solution.data['randvars']) == 0:
-                debug_counter+=1
-                if debug_counter >= 10:
-                    print('add rand feature bug not changing')
+            # Try to give the mixed logit at least one random coefficient. If no
+            # eligible candidate can be made random (e.g. every variable in the
+            # spec is already random, or the pool is empty), DO NOT spin forever
+            # printing debug text (this previously produced multi-GB logs and
+            # exhausted the walltime) — cap the attempts and fall back to a plain
+            # multinomial logit, which is always a valid specification.
+            for _ in range(25):
+                if len(solution.data['randvars']) > 0:
+                    break
                 self.perturb_add_randfeature(solution)
-
-
+            if len(solution.data['randvars']) == 0:
+                solution.data['model_n'] = 'multinomial'
 
         #make sure i is consistent with the asvars and isvars
         if solution.data['model_n'] == 'nested_logit':
-            while len(solution.data['isvars']) +len(solution.data['asvars']) == 0:
-                print('perturbation too, heuristic fixing')
+            for _ in range(25):
+                if len(solution.data['isvars']) + len(solution.data['asvars']) > 0:
+                    break
                 if random.random() > .5:
                     self.perturb_add_asfeature(solution)
                 else:
