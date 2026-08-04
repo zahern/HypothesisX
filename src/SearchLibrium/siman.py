@@ -545,8 +545,9 @@ class SA(Search):
                 choices.extend([self.perturb_asfeature] * l_a)
             if self.param.isvarnames is not None:
                 choices.extend([self.perturb_isfeature] * l_b)
-            if self.param.allow_random and self.param.asvarnames is not None:
-                choices.extend([self.perturb_randfeature] * l_a)
+            _rand_isvars = getattr(self.param, "allow_random_isvars", False)
+            if self.param.allow_random and (l_a > 0 or (_rand_isvars and l_b > 0)):
+                choices.extend([self.perturb_randfeature] * max(1, l_a + (l_b if _rand_isvars else 0)))
             if solution['randvars'] and self.param.allow_random:
                 choices.extend([self.perturb_distribution] * max(1, l_a))
             if self.param.avail_models is not None and len(self.param.avail_models) > 1:

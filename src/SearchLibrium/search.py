@@ -591,7 +591,7 @@ class Parameters:
         ind_id=None, test_ind_id=None, isvarnames=None, asvarnames=None, trans_asvars=None,
         ftol=1e-6, gtol=1e-6, gtol_membership_func=1e-5, pre_spec_constraints = None,
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
-        test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
+        test_weight_var=None, allow_random=False, allow_random_isvars=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
         sd_penalty=0.001,
         intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
@@ -669,6 +669,10 @@ class Parameters:
         self.chosen_alts_test = chosen_alts_test
         self.test_weight_var = test_weight_var
         self.allow_random = allow_random
+        # When True, individual-specific variables (isvars) are also eligible for
+        # random coefficients in the search (not just alternative-specific asvars).
+        # Default False keeps the classic asvar-only behaviour unchanged.
+        self.allow_random_isvars = allow_random_isvars
         self.allow_bcvars, self.allow_corvars = allow_bcvars, allow_corvars
 
         # When False (default), non-convergence only prints a brief one-liner.
@@ -889,8 +893,12 @@ class Parameters:
         # Available individual-specific variables for selection
         self.avail_isvars = [var for var in self.isvarnames if var not in self.ps_isvars]
 
-        # Available variables for coeff distribution selection
-        self.avail_rvars = [var for var in self.asvarnames if var not in self.ps_randvars]
+        # Available variables for coeff distribution selection. With
+        # allow_random_isvars, individual-specific variables are eligible too.
+        _rand_pool = list(self.asvarnames)
+        if getattr(self, "allow_random_isvars", False):
+            _rand_pool = _rand_pool + [v for v in self.isvarnames if v not in _rand_pool]
+        self.avail_rvars = [var for var in _rand_pool if var not in self.ps_randvars]
 
         # Available alternative-specific variables for transformation
         self.avail_bcvars = [var for var in self.asvarnames if var not in self.ps_bcvars]
@@ -1912,20 +1920,26 @@ class Search():
             solution['model_n'] = self.random_choice(compatible_models)
         return solution
 
-    def normalize_randvars(self, asvars, randvars):
+    def normalize_randvars(self, asvars, randvars, isvars=None):
+        use_is = getattr(self.param, "allow_random_isvars", False)
+        pool = set(asvars) | (set(isvars) if (use_is and isvars) else set())
         normalized_randvars = {
             variable_name: distribution_name
             for variable_name, distribution_name in self.param.ps_randvars.items()
-            if variable_name in asvars and distribution_name != "f"
+            if variable_name in pool and distribution_name != "f"
         }
 
         for variable_name, distribution_name in (randvars or {}).items():
-            if variable_name in asvars and distribution_name != "f":
+            if variable_name in pool and distribution_name != "f":
                 normalized_randvars[variable_name] = distribution_name
 
+        # Preserve a deterministic order: asvars first, then (if enabled) isvars.
+        order = list(self.param.asvarnames)
+        if use_is:
+            order += [v for v in self.param.isvarnames if v not in order]
         return {
             variable_name: normalized_randvars[variable_name]
-            for variable_name in self.param.asvarnames
+            for variable_name in order
             if variable_name in normalized_randvars
         }
 
@@ -1935,7 +1949,7 @@ class Search():
     ''' Function. Determine random coefficient distributions       '''
     ''' for selected variables                                     '''
     ''' ---------------------------------------------------------- '''
-    def select_randvars(self, asvars):
+    def select_randvars(self, asvars, isvars=None):
     # {
         if not self.param.allow_random:
             return {}
@@ -1943,17 +1957,22 @@ class Search():
         available_distributions = [distribution_name for distribution_name in self.param.distr if distribution_name != "f"]
         selected_randvars = {}
 
-        for variable_name in asvars:
+        # Candidate pool: selected asvars, plus selected isvars when enabled.
+        pool = list(asvars)
+        if getattr(self.param, "allow_random_isvars", False) and isvars:
+            pool += [v for v in isvars if v not in pool]
+
+        for variable_name in pool:
             if variable_name in self.param.ps_randvars:
                 selected_randvars[variable_name] = self.param.ps_randvars[variable_name]
             elif variable_name in self.param.avail_rvars and self.random_coin_flip():
                 selected_randvars[variable_name] = self.random_choice(available_distributions)
 
         for variable_name in self.param.ps_corvars:
-            if variable_name in asvars and variable_name not in selected_randvars and available_distributions:
+            if variable_name in pool and variable_name not in selected_randvars and available_distributions:
                 selected_randvars[variable_name] = self.random_choice(available_distributions)
 
-        return self.normalize_randvars(asvars, selected_randvars)
+        return self.normalize_randvars(asvars, selected_randvars, isvars)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -2012,10 +2031,18 @@ class Search():
             isvars = self.select_isvars()
             asvars = self.remove_collinear_vars(asvars)
 
-        randvars = self.select_randvars(asvars)
+        randvars = self.select_randvars(asvars, isvars)
         bcvars, bctrans = self.select_bcvars(asvars)
         cor, corvars = self.select_corvars(randvars, bcvars)
-        randvars = self.normalize_randvars(asvars, randvars)
+        randvars = self.normalize_randvars(asvars, randvars, isvars)
+        # Ensure every random variable is present in its proper spec list so the
+        # estimator receives isvar-randoms as isvars (not asvars).
+        if getattr(self.param, "allow_random_isvars", False):
+            for _v in list(randvars):
+                if _v in self.param.isvarnames and _v not in isvars:
+                    isvars = list(isvars) + [_v]
+                elif _v in self.param.asvarnames and _v not in asvars:
+                    asvars = list(asvars) + [_v]
         model_n = self.select_model_for_randvars(randvars)
         if model_n == 'nested_logit':
             all_vars = list(set(asvars+isvars))
@@ -2441,9 +2468,15 @@ class Search():
             isvars = list(set(isvars + new_isvars))
 
         # Re-select other features (optional: use existing values as defaults)
-        randvars = self.normalize_randvars(asvars, solution.data.get('randvars', {}))
+        randvars = self.normalize_randvars(asvars, solution.data.get('randvars', {}), isvars)
         if not randvars:
-            randvars = self.select_randvars(asvars)
+            randvars = self.select_randvars(asvars, isvars)
+        if getattr(self.param, "allow_random_isvars", False):
+            for _v in list(randvars):
+                if _v in self.param.isvarnames and _v not in isvars:
+                    isvars = list(isvars) + [_v]
+                elif _v in self.param.asvarnames and _v not in asvars:
+                    asvars = list(asvars) + [_v]
         bcvars, bctrans = self.select_bcvars(asvars)
         cor, corvars = self.select_corvars(randvars, bcvars)
         model_n = self.select_model_for_randvars(randvars)
@@ -3255,7 +3288,14 @@ class Search():
         available_distributions = [distribution_name for distribution_name in self.param.distr if distribution_name != "f"]
         distr = self.random_choice(available_distributions)  # Choose a distribution
         solution['randvars'][new_randvar] = distr
-        solution['randvars'] = self.normalize_randvars(solution['asvars'], solution['randvars'])
+        # Keep an isvar-random in the isvars list (asvar-random in asvars).
+        if getattr(self.param, "allow_random_isvars", False):
+            if new_randvar in self.param.isvarnames and new_randvar not in solution.get('isvars', []):
+                solution['isvars'] = list(solution.get('isvars', [])) + [new_randvar]
+            elif new_randvar in self.param.asvarnames and new_randvar not in solution.get('asvars', []):
+                solution['asvars'] = list(solution.get('asvars', [])) + [new_randvar]
+        solution['randvars'] = self.normalize_randvars(
+            solution['asvars'], solution['randvars'], solution.get('isvars', []))
         self.align_model_with_solution(solution)
 
         #ADDED: ensure that we have a spot for our randvars in the class_params
@@ -3270,8 +3310,13 @@ class Search():
     # {
         #ROB I believe we only want yo add a randvar is its in asvar
         candidates = [var for var in self.param.asvarnames if var not in solution['randvars'] and var in solution['asvars']]
+        # With allow_random_isvars, individual-specific vars in the model are also
+        # candidates for a random coefficient.
+        if getattr(self.param, "allow_random_isvars", False):
+            candidates += [var for var in self.param.isvarnames
+                           if var not in solution['randvars'] and var in solution.get('isvars', [])]
         #NOT THIS (I THINK)
-        #candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]                                                                                                                 
+        #candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]
         if len(candidates) > 0:
             new_randvar = self.random_choice(candidates)
             self.add_randvar(new_randvar, solution)
@@ -4319,8 +4364,15 @@ class Search():
                 if i not in varnames:
                     varnames.append(i)
 
-            # Remove variables in isvars that are already in randvars.keys()
-            isvars = [i for i in isvars if i not in randvars.keys()]
+            # Remove random variables from isvars because random coefficients are
+            # normally alternative-specific. EXCEPTION: when allow_random_isvars is
+            # enabled, an individual-specific variable can itself be random and must
+            # STAY in isvars (otherwise the estimator treats it as an asvar).
+            _is_names = set(getattr(self.param, "isvarnames", []) or [])
+            if getattr(self.param, "allow_random_isvars", False):
+                isvars = [i for i in isvars if (i not in randvars.keys()) or (i in _is_names)]
+            else:
+                isvars = [i for i in isvars if i not in randvars.keys()]
 
         return isvars, varnames, fit_intercept
 
@@ -4510,8 +4562,7 @@ class Search():
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
         rand_vars, cor_vars = sol['randvars'], sol['corvars']
 
-        as_vars =  list(set(as_vars) | set(rand_vars) | set(cor_vars) )
-        as_vars = [var for var in self.param.varnames if var in as_vars]
+        # (var routing happens after rand/cor names are resolved, below)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # ERROR HANDLING
         if isinstance(rand_vars, dict):
@@ -4528,6 +4579,17 @@ class Search():
         else:
             cor_var_names = []
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+        # Route random/correlated variables to the correct spec list: individual-
+        # specific ones stay as isvars, alternative-specific ones as asvars. This
+        # prevents an isvar-random from being double-listed as an asvar (which
+        # produced a non-convergent BIC=inf model).
+        _extra = set(rand_var_names) | set(cor_var_names)
+        _is_names = set(getattr(self.param, "isvarnames", []) or [])
+        as_extra = {v for v in _extra if v not in _is_names}
+        is_extra = {v for v in _extra if v in _is_names}
+        as_vars = [var for var in self.param.varnames if var in (set(as_vars) | as_extra)]
+        is_vars = [var for var in self.param.varnames if var in (set(is_vars) | is_extra)]
 
         bc_vars = [i for i in self.define_bc_vars(sol) if i not in self.param.isvarnames]
         all_vars = list(set(as_vars + is_vars + rand_var_names + cor_var_names))  # Make sure all the names are in vars

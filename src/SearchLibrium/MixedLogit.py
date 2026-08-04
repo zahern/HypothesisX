@@ -141,7 +141,7 @@ class MixedLogit(DiscreteChoiceModel):
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
-              de_polish=False, l1_penalty=0.0, reg_penalty=0.001):
+              de_polish=False, l1_penalty=0.0, reg_penalty=0.001, sd_penalty=0.0):
         # {
         self.fit_intercept = fit_intercept
         # L2 ridge regularisation strength (default ON). Keeps the Hessian
@@ -149,6 +149,9 @@ class MixedLogit(DiscreteChoiceModel):
         # simulation noise. Applied in both the JAX objective and the NumPy
         # get_loglik_gradient path. Set reg_penalty=0.0 to disable.
         self.reg_penalty = float(reg_penalty)
+        # Extra L2 penalty applied specifically to the random-coefficient standard
+        # deviations (Br_w). Shrinks weakly-identified / runaway SDs toward zero.
+        self.sd_penalty = float(sd_penalty)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # RECAST AS NUMPY NDARRAY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -806,6 +809,12 @@ class MixedLogit(DiscreteChoiceModel):
         reg = kwargs.get('reg_penalty', 0.0)
         if reg > 0:
             ll = ll + reg * jnp.sum(jnp.square(betas))
+        # Extra penalty on the random-coefficient standard deviations (Br_w),
+        # which occupy the Kbw entries after Bf, Br_b and the cholesky block.
+        sd_pen = kwargs.get('sd_penalty', 0.0)
+        if sd_pen > 0 and Kbw > 0:
+            _start = Kf + Kr + Kchol
+            ll = ll + sd_pen * jnp.sum(jnp.square(betas[_start:_start + Kbw]))
         return ll
 
     # ------------------------------------------------------------------
@@ -1723,7 +1732,8 @@ class MixedLogit(DiscreteChoiceModel):
 
     def _jax_negloglik_extra_kwargs(self):
         """Extra keyword arguments forwarded to JAX negloglik fn."""
-        return {'reg_penalty': getattr(self, 'reg_penalty', 0.0)}
+        return {'reg_penalty': getattr(self, 'reg_penalty', 0.0),
+                'sd_penalty': getattr(self, 'sd_penalty', 0.0)}
 
     def _jax_cache_key_extra(self):
         """Extra tuple elements for the JAX compilation cache key."""
