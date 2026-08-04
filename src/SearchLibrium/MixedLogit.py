@@ -1,10 +1,16 @@
 from typing import Optional
 import itertools
+import os
 import numpy as np
 import scipy.stats as ss
 from scipy.optimize import minimize, differential_evolution
 from typing import Callable, Tuple
 import inspect
+
+# Set env var SL_QUIET=1 to suppress per-fit progress/debug prints (useful when
+# the model is fit hundreds of times inside a metaheuristic search, which
+# otherwise floods the log).
+_SL_QUIET = bool(os.environ.get("SL_QUIET"))
 
 
 # files
@@ -551,7 +557,8 @@ class MixedLogit(DiscreteChoiceModel):
                                                  self.avail, self.batch_size)[0]
             #print(f"[MXL] Minimization obj before={before_fun:.6g}")
         except Exception as e:
-            print(f"[MXL] Could not evaluate initial objective before minimization: {e}")
+            if not _SL_QUIET:
+                print(f"[MXL] Could not evaluate initial objective before minimization: {e}")
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Generate bound for L-BFGS-B method
@@ -657,9 +664,10 @@ class MixedLogit(DiscreteChoiceModel):
         options = {'gtol': self.gtol, 'maxiter': self.maxiter, 'disp': False}
         result = minimise_func(self.get_loglik_gradient, betas, jac=self.jac, method=self.method,
                                args=args, tol=self.ftol, bounds=bounds, options=options)
-        print(f"[MXL] Minimization completed: success={result.get('success', None)}, fun={result.get('fun', float('nan')):.6g}, nit={result.get('nit', '?')}")
-        if 'x' in result:
-            print(f"[MXL] Minimization final betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
+        if not _SL_QUIET:
+            print(f"[MXL] Minimization completed: success={result.get('success', None)}, fun={result.get('fun', float('nan')):.6g}, nit={result.get('nit', '?')}")
+            if 'x' in result:
+                print(f"[MXL] Minimization final betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         if hasattr(self, 'method') and self.method == "L-BFGS-B":  # {
@@ -851,7 +859,8 @@ class MixedLogit(DiscreteChoiceModel):
             from scipy.optimize import minimize as sp_min
 
             if int(self.Kr) == 0:
-                print("[JAX MXL optimizer] no random coefficients detected (Kr=0); falling back to scipy.")
+                if not _SL_QUIET:
+                    print("[JAX MXL optimizer] no random coefficients detected (Kr=0); falling back to scipy.")
                 return None
 
             # Convert static inputs once
@@ -925,7 +934,8 @@ class MixedLogit(DiscreteChoiceModel):
             return result
 
         except Exception as e:
-            print(f"[JAX MXL optimizer] falling back to scipy: {e}")
+            if not _SL_QUIET:
+                print(f"[JAX MXL optimizer] falling back to scipy: {e}")
             return None   # caller will use standard path
 
     def get_loglik_gradient(self, betas, X, y, panel_info, draws,

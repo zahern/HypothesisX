@@ -56,8 +56,14 @@ except ImportError:
     from .search import*
 
 import copy
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Set env var SL_QUIET=1 to suppress the per-temperature-step console heartbeat
+# ("step number ...", "SA[..] step ../..") while keeping new-best-solution
+# prints and the final dashboard. CSV progress logs are unaffected.
+_SL_QUIET = bool(os.environ.get("SL_QUIET"))
 import threading
 from typing import Callable, Tuple
 from datetime import datetime
@@ -1198,12 +1204,14 @@ class SA(Search):
         # }
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # TURNED OFF. UNSATISFACTORY PERFORMANCE SO FAR!
-        print(f'step number {self.step}')
+        if not _SL_QUIET:
+            print(f'step number {self.step}')
         #if (self.step) % 2:
         #    self.best_sol = self.improve(self.best_sol)  # Apply local improvement
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.report_progress(self.results_file)  # text narrative → results.txt
-        self.report_progress()                   # CSV row → progress.csv + text to stdout
+        # CSV row → progress.csv always; console heartbeat only when not quiet.
+        self.report_progress(to_console=not _SL_QUIET)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.t = self.rate * self.t  # Reduce the temperature accordingly
 
@@ -1239,7 +1247,7 @@ class SA(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
-    def report_progress(self, file=None):
+    def report_progress(self, file=None, to_console=True):
     # {
         now     = time.time()
         elapsed = round(now - self.start, 1)
@@ -1271,8 +1279,11 @@ class SA(Search):
                        f"{curr_vals},archive_size={arch},"
                        f"{self.accepted},{elapsed}")
 
-        # Write human-readable line (console or results_file)
-        print(text, file=file)
+        # Write human-readable line (console or results_file). The console
+        # heartbeat can be suppressed (to_console=False) while the results_file
+        # narrative and the CSV progress log are always kept.
+        if file is not None or to_console:
+            print(text, file=file)
 
         # Always write CSV to progress_file (separate from the text log)
         if file is None and hasattr(self, 'progress_file'):
