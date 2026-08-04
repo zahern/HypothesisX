@@ -743,6 +743,8 @@ class Parameters:
 
         if self.allow_corvars is False:
             self.allow_latent_corvars = False
+        else:
+            self.allow_latent_corvars = kwargs.get('allow_latent_corvars', False)
 
         if self.nb_crit > 1:
         # {

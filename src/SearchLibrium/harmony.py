@@ -326,7 +326,7 @@ class HarmonySearch(Search):
             new_sol['asc_ind'] = chosen_sol['asc_ind']
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            if self.param.allow_latent_corvars:
+            if getattr(self.param, 'allow_latent_corvars', False):
                 if chosen_sol['class_params_spec'] is not None:
                 # {
                     class_params_spec = copy.deepcopy(chosen_sol['class_params_spec'])
