@@ -296,6 +296,8 @@ class HarmonySearch(Search):
             new_asvars = list(self.param.generator.choice(chosen_sol['asvars'], size=size, replace=False))
             n_asvars = sorted(list(set().union(new_asvars, self.param.ps_asvars)))
             new_asvars = self.remove_redundant_asvars(n_asvars, self.param.trans_asvars, self.param.asvarnames)
+            new_asvars = self.remove_collinear_vars(new_asvars)
+            new_asvars = self._apply_mutual_exclusion_filter(new_asvars)
             new_sol['asvars'] = new_asvars
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -304,6 +306,8 @@ class HarmonySearch(Search):
             size = int((len(chosen_sol['isvars'])) * prop)
             new_isvars = list(self.param.generator.choice(chosen_sol['isvars'], size=size, replace=False))
             new_isvars = sorted(list(set().union(new_isvars, self.param.ps_isvars)))
+            new_isvars = self.remove_collinear_vars(new_isvars)
+            new_isvars = self._apply_mutual_exclusion_filter(new_isvars)
             new_sol['isvars'] = new_isvars
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -352,6 +356,7 @@ class HarmonySearch(Search):
                 # }
             # }
 
+        self._enforce_mutual_exclusion(new_sol)
         return new_sol
     # }
 

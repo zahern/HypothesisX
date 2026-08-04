@@ -1424,6 +1424,7 @@ class Search():
         protected = set(protected or [])
         protected |= set(getattr(self.param, 'ps_asvars', []))
         protected |= set(getattr(self.param, 'ps_isvars', []))
+        protected |= set(self._get_forced_vars())
 
         active  = list(varlist)
         removed = set()
@@ -2023,13 +2024,15 @@ class Search():
 
 
         # ── Collinearity constraint: remove highly correlated / high-VIF vars
-        # Protected vars (ps_asvars) are never dropped by this filter.
+        # Protected vars (forced or ps) are never dropped by this filter.
         asvars = self.remove_collinear_vars(asvars)
+        isvars = self.remove_collinear_vars(isvars)
         # Ensure we still have at least one variable after filtering
         while (len(asvars) + len(isvars)) < 1:
             asvars = self.select_asvars()
             isvars = self.select_isvars()
             asvars = self.remove_collinear_vars(asvars)
+            isvars = self.remove_collinear_vars(isvars)
 
         randvars = self.select_randvars(asvars, isvars)
         bcvars, bctrans = self.select_bcvars(asvars)
@@ -2480,6 +2483,11 @@ class Search():
         bcvars, bctrans = self.select_bcvars(asvars)
         cor, corvars = self.select_corvars(randvars, bcvars)
         model_n = self.select_model_for_randvars(randvars)
+
+        asvars = self.remove_collinear_vars(asvars)
+        asvars = self._apply_mutual_exclusion_filter(asvars)
+        isvars = self.remove_collinear_vars(isvars)
+        isvars = self._apply_mutual_exclusion_filter(isvars)
 
         if model_n == 'nested_logit':
             state = Dict({})
@@ -3887,7 +3895,7 @@ class Search():
         X = df[cols].values.astype(float)
         C = np.corrcoef(X.T)
         np.fill_diagonal(C, 0)
-        pairs = np.argwhere(np.abs(C) >= 0.95)
+        pairs = np.argwhere(np.abs(C) >= 0.90)
         learned = 0
         for i, j in pairs:
             if i >= j:
