@@ -771,14 +771,16 @@ class DiscreteChoiceModel(ABC):
             
             #I BELIEVE THIS IS REDUNDANT NOW
 
-            self.fxidx = np.delete(self.fxidx, ispos)
+            if len(self.fxidx) and len(ispos) and max(ispos) < len(self.fxidx):
+                self.fxidx = np.delete(self.fxidx, ispos)
 
-            self.fxtransidx = np.delete(self.fxtransidx, ispos)
+            if len(self.fxtransidx) and len(ispos) and max(ispos) < len(self.fxtransidx):
+                self.fxtransidx = np.delete(self.fxtransidx, ispos)
             # self.fxtransidx = np.insert(np.array(self.fxtransidx, dtype="bool_"),
             #  0, np.repeat(False, len(self.isvars)*(J - 1)))
-            if hasattr(self, 'rvidx'):
+            if hasattr(self, 'rvidx') and len(self.rvidx) and len(ispos) and max(ispos) < len(self.rvidx):
                 self.rvidx = np.delete(self.rvidx, ispos)
-            if hasattr(self, 'rvtransidx'):
+            if hasattr(self, 'rvtransidx') and len(self.rvtransidx) and len(ispos) and max(ispos) < len(self.rvtransidx):
                 self.rvtransidx = np.delete(self.rvtransidx, ispos)
         
                

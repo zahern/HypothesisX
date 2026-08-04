@@ -95,6 +95,7 @@ except ImportError:
 try:
     from ._choice_model import DiscreteChoiceModel
     from .multinomial_logit import MultinomialLogit
+    from .logistic_regression import LogisticRegression
     from .MixedLogit import MixedLogit
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from .mixed_nested import MixedNested
@@ -121,6 +122,7 @@ try:
 except ImportError as e:
     from _choice_model import DiscreteChoiceModel
     from multinomial_logit import MultinomialLogit
+    from logistic_regression import LogisticRegression
     from MixedLogit import MixedLogit
     from multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from mixed_nested import MixedNested
