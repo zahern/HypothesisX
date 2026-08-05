@@ -346,7 +346,7 @@ class MultinomialLogit(DiscreteChoiceModel):
     # }
 
     def wide_setup(self, X_wide, y_chosen, varnames, n_alts,
-                   ids=None, empirical_init=False, **setup_kw):
+                   ids=None, empirical_init=False, base_alt=0, **setup_kw):
         """
         Setup accepting wide-format data (one row per case, features shared
         across alternatives) instead of the standard long format.
@@ -412,7 +412,7 @@ class MultinomialLogit(DiscreteChoiceModel):
             alts=alts,
             isvars=full_varnames,
             ids=ids_sorted,
-            base_alt=0,
+            base_alt=base_alt,
             **setup_kw,
         )
         return self

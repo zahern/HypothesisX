@@ -314,8 +314,10 @@ class RandomRegret(DiscreteChoiceModel):
 
         self.validate_dataframe_columns(self.df, ['id', 'choice', 'alt'])
 
-        self.nb_alt = self.df['alt'].nunique()
-        self.nb_samples = int(len(self.df) / self.nb_alt)
+        id_codes, id_index = np.unique(self.df['id'].to_numpy(), return_inverse=True)
+        alt_codes, alt_index = np.unique(self.df['alt'].to_numpy(), return_inverse=True)
+        self.nb_alt = len(alt_codes)
+        self.nb_samples = len(id_codes)
 
         exclude_columns = {'id', 'alt', 'choice'}
         self.attrs = [col for col in self.df.columns if col not in exclude_columns]
@@ -327,17 +329,14 @@ class RandomRegret(DiscreteChoiceModel):
         self.X = np.zeros((self.nb_samples, self.nb_alt, self.nb_attr))  # Define X[n][i][m] - ind. n, alt. i, attr. m
 
         # Convert columns for indexing
-        ind = self.df['id'].astype(int) - 1
-        alt = self.df['alt'].astype(int) - 1
-
         # Populate self.X
         for m, attr in enumerate(self.attrs):
-            self.X[ind, alt, m] = self.df[attr].to_numpy()
+            self.X[id_index, alt_index, m] = self.df[attr].to_numpy()
 
         # Extract the choices
         self.y = np.zeros((self.nb_samples), dtype=int)
-        chosen_rows = self.df[self.df['choice'] == 1]
-        self.y[chosen_rows['id'].values - 1] = chosen_rows['alt'].values - 1
+        chosen_pos = np.flatnonzero(self.df['choice'].to_numpy() == 1)
+        self.y[id_index[chosen_pos]] = alt_index[chosen_pos]
         self.initialise()
     # }
 
@@ -388,6 +387,21 @@ class RandomRegret(DiscreteChoiceModel):
         self.bic = None
     # }
 
+    def _availability_matrix(self, avail=None, n_samples=None):
+        values = self.avail if avail is None else avail
+        if values is None or len(values) == 0:
+            return None
+        values = np.asarray(values)
+        n_samples = self.nb_samples if n_samples is None else int(n_samples)
+        if values.ndim == 1:
+            expected = n_samples * self.nb_alt
+            if values.size != expected:
+                return None
+            values = values.reshape(n_samples, self.nb_alt)
+        if values.shape != (n_samples, self.nb_alt):
+            return None
+        return (values > 0).astype(float)
+
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
@@ -401,24 +415,22 @@ class RandomRegret(DiscreteChoiceModel):
         # Apply the regret formula element-wise using vectorized operations
         diff = x_j - x_i  # Calculate all differences between x_i and x_j
         # |diff| = nb_attr
-        regret = float(np.sum(np.log(1 + np.exp(beta * diff))))
+        regret = float(np.sum(np.logaddexp(0.0, beta * diff)))
         return regret
     # }
 
     # For each individual, for each alternative, compute the
     # regret of not taking other alternatives
-    def compute_regrets(self, beta:np.ndarray):
+    def compute_regrets(self, beta:np.ndarray, X=None, avail=None):
     # {
-        regrets = np.zeros((self.nb_samples, self.nb_alt))
-        for n in range(self.nb_samples):
-        # {
-            for i in range(self.nb_alt):
-                regrets[n, i] = sum(
-                    self.get_regret(self.X[n,i,:], self.X[n,k,:], beta)
-                    for k in range(self.nb_alt) if k != i
-                )
-        # }
-        return regrets
+        X = np.asarray(self.X if X is None else X, dtype=float)
+        diff = X[:, None, :, :] - X[:, :, None, :]
+        pairwise = np.sum(np.logaddexp(0.0, beta[None, None, None, :] * diff), axis=-1)
+        pair_mask = 1.0 - np.eye(self.nb_alt, dtype=float)[None, :, :]
+        availability = self._availability_matrix(avail, n_samples=X.shape[0])
+        if availability is not None:
+            pair_mask = pair_mask * availability[:, :, None] * availability[:, None, :]
+        return np.sum(pairwise * pair_mask, axis=2)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -430,11 +442,20 @@ class RandomRegret(DiscreteChoiceModel):
             sum_exp_regrets = np.sum([exp_neg_regret[n,j] for j in range(self.nb_alt)])
             for i in range(self.nb_alt): probs[n,i] = exp_neg_regret[n, i] / sum_exp_regrets
     '''
-    def compute_probability(self, beta: np.ndarray)-> np.ndarray:
+    def compute_probability(self, beta: np.ndarray, X=None, avail=None)-> np.ndarray:
     # {
-        regrets = self.compute_regrets(beta)  # shape: (n_samples, nb_alt)
-        exp_neg_regret = np.exp(-regrets)
-        return exp_neg_regret / np.sum(exp_neg_regret, axis=1, keepdims=True)
+        regrets = self.compute_regrets(beta, X=X, avail=avail)  # shape: (n_samples, nb_alt)
+        logits = -regrets
+        n_samples = np.asarray(self.X if X is None else X).shape[0]
+        availability = self._availability_matrix(avail, n_samples=n_samples)
+        if availability is not None:
+            logits = np.where(availability > 0, logits, -np.inf)
+        row_max = np.max(logits, axis=1, keepdims=True)
+        safe_max = np.where(np.isfinite(row_max), row_max, 0.0)
+        shifted_logits = logits - safe_max
+        exp_neg_regret = np.exp(np.where(np.isfinite(shifted_logits), shifted_logits, -np.inf))
+        denom = np.sum(exp_neg_regret, axis=1, keepdims=True)
+        return np.divide(exp_neg_regret, denom, out=np.zeros_like(exp_neg_regret), where=denom > 0)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -450,8 +471,16 @@ class RandomRegret(DiscreteChoiceModel):
     def get_loglike_2(self, beta: np.ndarray)->float:
     # {
         regrets = self.compute_regrets(beta)  # shape: (n_samples, nb_alt)
-        exp_neg_regrets = np.exp(-regrets)
-        log_sums = np.log(np.sum(exp_neg_regrets, axis=1))
+        logits = -regrets
+        avail = self._availability_matrix()
+        if avail is not None:
+            logits = np.where(avail > 0, logits, -np.inf)
+        valid_rows = np.isfinite(logits).any(axis=1)
+        chosen_available = np.isfinite(logits[np.arange(self.nb_samples), self.y])
+        if not np.all(valid_rows & chosen_available):
+            return np.inf
+        max_logits = np.max(logits, axis=1, keepdims=True)
+        log_sums = max_logits[:, 0] + np.log(np.sum(np.exp(logits - max_logits), axis=1))
         chosen_regrets = regrets[np.arange(self.nb_samples), self.y]
         loglik = np.sum(chosen_regrets + log_sums)
         return -loglik
@@ -464,9 +493,8 @@ class RandomRegret(DiscreteChoiceModel):
     def get_loglike(self, beta: np.ndarray)->float:
     # {
         self.probs = self.compute_probability(beta)  # shape: (n_samples, nb_alt)
-
-        # Compute: sum(n, np.log(probs[n, self.y[n]]))
-        loglik = float(np.sum(np.log(self.probs[np.arange(self.nb_samples), self.y])))
+        chosen = self.probs[np.arange(self.nb_samples), self.y]
+        loglik = float(np.sum(np.log(np.clip(chosen, 1e-300, 1.0))))
         return loglik
     # }
 
@@ -490,7 +518,20 @@ class RandomRegret(DiscreteChoiceModel):
     def get_loglike_gradient(self, beta: np.ndarray, delta: np.ndarray):
     # {
         score = self.evaluate(beta) # or use: get_neg_loglike
-        gradient = self.compute_gradient_central(beta, delta)
+        X = np.asarray(self.X, dtype=float)
+        diff = X[:, None, :, :] - X[:, :, None, :]
+        scaled = beta[None, None, None, :] * diff
+        pair_grad = diff * (1.0 / (1.0 + np.exp(-np.clip(scaled, -700.0, 700.0))))
+        pair_mask = 1.0 - np.eye(self.nb_alt, dtype=float)[None, :, :]
+        avail = self._availability_matrix()
+        if avail is not None:
+            pair_mask = pair_mask * avail[:, :, None] * avail[:, None, :]
+        regret_grad = np.sum(pair_grad * pair_mask[:, :, :, None], axis=2)
+        probs = self.compute_probability(beta)
+        expected_grad = np.sum(probs[:, :, None] * regret_grad, axis=1)
+        gradient = np.sum(
+            regret_grad[np.arange(self.nb_samples), self.y] - expected_grad, axis=0
+        )
         return (score, gradient)
     # }
 
@@ -498,10 +539,24 @@ class RandomRegret(DiscreteChoiceModel):
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
     def get_bic(self, loglike):
-        return np.log(self.nb_attr) * self.nb_attr - 2.0 * loglike
+        return np.log(max(self.nb_samples, 1)) * self.nb_attr - 2.0 * loglike
 
     def get_aic(self, loglike):
          return 2.0 * self.nb_attr - 2.0 * loglike
+
+    def predict_proba(self, X=None, avail=None):
+        beta = np.asarray(getattr(self, 'beta', self.coeff_est), dtype=float)
+        if X is None:
+            X = self.X
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 3 or X.shape[1] != self.nb_alt or X.shape[2] != self.nb_attr:
+            raise ValueError(
+                f'X must have shape (N, {self.nb_alt}, {self.nb_attr}); received {X.shape}'
+            )
+        return self.compute_probability(beta, X=X, avail=avail)
+
+    def predict(self, X=None, avail=None):
+        return np.argmax(self.predict_proba(X=X, avail=avail), axis=1)
 
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
@@ -519,12 +574,13 @@ class RandomRegret(DiscreteChoiceModel):
         X_jax : jax array (N, I, M) – attribute values per individual/alternative
         y_jax : jax int array (N,) – chosen alternative index (0-based)
         """
+        import jax
         import jax.numpy as jnp
 
         N, I, M = X_jax.shape
         # regret[n,i] = sum_{j!=i} sum_m log(1 + exp(beta_m * (x_{n,j,m} - x_{n,i,m})))
         diff = X_jax[:, None, :, :] - X_jax[:, :, None, :]   # (N, I, I, M)
-        inner = jnp.log1p(jnp.exp(beta[None, None, None, :] * diff))  # (N, I, I, M)
+        inner = jax.nn.softplus(beta[None, None, None, :] * diff)       # (N, I, I, M)
         pairwise = jnp.sum(inner, axis=-1)                             # (N, I, I)
         # zero diagonal (same alternative)
         mask = 1.0 - jnp.eye(I)[None, :, :]                           # (1, I, I)
@@ -578,7 +634,7 @@ class RandomRegret(DiscreteChoiceModel):
 
         self.fit()   # fallback
 
-    def fit(self, start=None):
+    def fit(self, start=None, compute_inference=True):
     # {
         if start is None: start = np.zeros(self.nb_attr)
         tol = 1e-10
@@ -590,11 +646,19 @@ class RandomRegret(DiscreteChoiceModel):
 
         delta = np.ones(self.nb_attr) * tol
         args = (delta,)  # tuple
-        result = minimize(fun=self.get_loglike_gradient, x0=start, method='BFGS', args=args, tol=tol, jac=True)
+        result = minimize(
+            fun=self.get_loglike_gradient,
+            x0=start,
+            method='BFGS',
+            args=args,
+            tol=tol,
+            jac=True,
+            options={'maxiter': getattr(self, 'maxiter', 2000)},
+        )
         self.coeff_est = result.x
         self.converged =result.success
         self.beta = result.x  # Extract results
-        self.post_process()
+        self.post_process(compute_inference=compute_inference)
     # }
 
 
@@ -688,14 +752,15 @@ class RandomRegret(DiscreteChoiceModel):
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
     ''' ---------------------------------------------------------- '''
-    def post_process(self):
+    def post_process(self, compute_inference=True):
         self.loglik = self.evaluate(self.beta, False)
         self.aic = self.get_aic(self.loglik)
         self.bic = self.get_bic(self.loglik)
-        self.compute_stderr(1E-4) #1E-6)
-        self.compute_zvalues()
-        self.compute_pvalues()
-        self.compute_confidence_intervals()
+        if compute_inference:
+            self.compute_stderr(1E-4) #1E-6)
+            self.compute_zvalues()
+            self.compute_pvalues()
+            self.compute_confidence_intervals()
         self.estim_time_sec = time() - self.fit_start_time
         if self.normalize: self.unscaled_beta = self.unscale_beta(self.beta)
 
