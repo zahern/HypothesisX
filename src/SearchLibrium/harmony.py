@@ -105,7 +105,7 @@ class HarmonySearch(Search):
     ''' Function. Constructor                                      '''
     ''' ---------------------------------------------------------- '''
     def set_control_parameters(self, max_harm=0.9, min_harm=0.6, max_pitch=0.85, min_pitch=0.3,
-        max_mem=10, maxiter=30, threshold=15, prop_local=0.8, generate_plots=True):
+        max_mem=10, maxiter=30, threshold=15, prop_local=0.8, generate_plots=False):
     # {
         self.max_harm = max_harm  # Maximum Harmony Memory Considering Rate / float
         self.min_harm = min_harm  # Minimum Harmony Memory Considering Rate / float
