@@ -665,7 +665,7 @@ class Parameters:
         self.maxiter = maxiter
         self.n_draws = n_draws
         self.p_val = p_val
-        self.all_sig = kwargs.get('all_sig', True)   # enforce all variables significant via backward elimination
+        self.all_sig = kwargs.get('all_sig', False)  # enforce all variables significant via backward elimination
         self.chosen_alts_test = chosen_alts_test
         self.test_weight_var = test_weight_var
         self.allow_random = allow_random
