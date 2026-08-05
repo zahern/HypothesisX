@@ -327,6 +327,9 @@ def call_siman(parameters, init_sol=None, ctrl=None, thorough=False, deep=False,
     print(_describe_ctrl(ctrl, 'sa'))
     print()
 
+    # When the user supplies an explicit ctrl tuple, respect its tI instead of
+    # letting choose_starting_solution recompute (override) it from delta-E sampling.
+    kwargs.setdefault('calibrate_tI', ctrl is None)
     solver = SA(parameters, init_sol, ctrl, id_num, **kwargs)
     solver.run()
     solver.close_files()

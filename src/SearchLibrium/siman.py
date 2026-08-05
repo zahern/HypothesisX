@@ -348,6 +348,11 @@ class SA(Search):
         self.max_temp_steps = max_temp_steps    # Maximum number of temperature steps
         self.max_iter = max_iter    # Maximum number of iterations at each temperature step
         self.max_no_impr = 100        # Max number of steps permitted without improvements
+        # True = let choose_starting_solution recompute tI from delta-E sampling
+        # (defaults to True, so calibration stays on unless a caller explicitly
+        # passes a ctrl tuple and opts out). Body of choose_starting_solution is
+        # guarded by `getattr(self, 'calibrate_tI', True)`.
+        self.calibrate_tI = kwargs.get('calibrate_tI', True)
         self.terminate = False      # Termination flag
         self.rate = np.exp((1.0 / (self.max_temp_steps-1)) * np.log(self.tF/self.tI)) # Temperature reduction rate
 
@@ -601,13 +606,14 @@ class SA(Search):
             if delta_E > 0:
                 delta_Es.append(delta_E)
 
-        if delta_Es:
-            avg_delta_E = np.mean(delta_Es)
-            self.tI = -avg_delta_E / np.log(0.5)
-            print(f"Calculated temperature tI = {self.tI}")
-        else:
-            print("No worse converged proposed solutions found during temperature sampling. Using default starting temperature.")
-            self.tI = 1.0
+        if getattr(self, 'calibrate_tI', True):
+            if delta_Es:
+                avg_delta_E = np.mean(delta_Es)
+                self.tI = -avg_delta_E / np.log(0.5)
+                print(f"Calculated temperature tI = {self.tI}")
+            else:
+                print("No worse converged proposed solutions found during temperature sampling. Using default starting temperature.")
+                self.tI = 1.0
 
         # Recompute the cooling rate to match the (possibly new) tI
         if self.tI > 0 and self.max_temp_steps > 1:
