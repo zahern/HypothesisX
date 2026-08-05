@@ -973,6 +973,12 @@ class MultinomialLogit(DiscreteChoiceModel):
     def optimize(self, betas, X, y, weights=None, avail=None):
         """JAX-accelerated optimisation using value_and_grad + scipy BFGS.
 
+        The exact Hessian of the negative log-likelihood is evaluated at the
+        optimum with ``jax.hessian`` (autodiff) and attached to the returned
+        result as ``result['hess_inv']``, so ``post_process`` derives standard
+        errors from the exact inverse-Hessian rather than the quasi-Newton
+        (BFGS) approximation.
+
         Falls back to the standard scipy path on import failure.
         """
         try:
@@ -988,6 +994,10 @@ class MultinomialLogit(DiscreteChoiceModel):
             fxtransidx  = jnp.array(self.fxtransidx, dtype=bool)
             Kf, Kftrans = int(self.Kf), int(self.Kftrans)
 
+            def _fn(b, _X, _y, _av):
+                return self._jax_mnl_negloglik(
+                    b, _X, _y, _av, fxidx, fxtransidx, Kf, Kftrans)
+
             # ── per-shape JIT cache ────────────────────────────────
             # Key only on shape; the actual data is passed as explicit
             # arguments so JAX traces once per shape and accepts any
@@ -995,8 +1005,6 @@ class MultinomialLogit(DiscreteChoiceModel):
             _cache_key = (X.shape[0], Kf, Kftrans)
             _compiled = self._jit_cache.get(_cache_key)
             if _compiled is None:
-                _fn = lambda b, _X, _y, _av: self._jax_mnl_negloglik(
-                    b, _X, _y, _av, fxidx, fxtransidx, Kf, Kftrans)
                 _compiled = jax.jit(jax.value_and_grad(_fn))
                 self._jit_cache[_cache_key] = _compiled
             # ────────────────────────────────────────────────────────
@@ -1011,6 +1019,20 @@ class MultinomialLogit(DiscreteChoiceModel):
             result = sp_min(
                 _obj, betas, jac=True, method='BFGS',
                 options={'maxiter': self.maxiter, 'gtol': self.gtol, 'disp': False})
+
+            # ── exact Hessian at the optimum (autodiff) ────────────
+            # post_process uses result['hess_inv'] when present, so the
+            # exact inverse replaces the BFGS quasi-Newton approximation.
+            _hess  = jax.jit(jax.hessian(_fn))
+            b_opt  = jnp.array(result.x, dtype=jnp.float64)
+            H      = np.array(_hess(b_opt, X_jax, y_jax, avail_jax), dtype=np.float64)
+            H      = (H + H.T) / 2.0                      # symmetrise
+            # l1 penalty is piecewise-linear -> zero curvature off-kink
+            try:
+                H_inv = np.linalg.inv(H + 1e-10 * np.eye(H.shape[0]))
+            except np.linalg.LinAlgError:
+                H_inv = np.linalg.pinv(H)
+            result['hess_inv'] = H_inv
             return result
 
         except Exception as e:
