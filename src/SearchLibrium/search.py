@@ -204,11 +204,6 @@ class objective_function(Enum):
 ''' ---------------------------------------------------------- '''
 def process_criterions(criterions):
 # {
-    for criteria in criterions:
-    # {
-        if criteria[0] not in valid_criterions:
-            raise ValueError('Must select bic, aic, loglik or mae as objective')
-    # }
     return len(criterions), criterions
 # }
 
