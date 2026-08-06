@@ -745,7 +745,7 @@ class Parameters:
         else:
             self.allow_latent_corvars = kwargs.get('allow_latent_corvars', False)
 
-        if self.nb_crit > 1:
+        if self.nb_crit > 1 and self.df_test is not None:
         # {
             if self.chosen_alts_test is None:
             # {
