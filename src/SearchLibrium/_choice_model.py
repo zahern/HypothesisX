@@ -188,6 +188,17 @@ class DiscreteChoiceModel(ABC):
         self.descr = ""
     # }
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("backend", None)
+        state["_backend_jax"] = bool(state.get("_jax", True))
+        return state
+
+    def __setstate__(self, state):
+        backend_jax = bool(state.pop("_backend_jax", True))
+        self.__dict__.update(state)
+        self.backend = get_backend(backend_jax)
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Virtual                                          '''
     ''' ---------------------------------------------------------- '''

@@ -104,6 +104,7 @@ try:
     from .mixedrrm import MixedRandomRegret
     from .ordered_logit import OrderedLogit, OrderedLogitLong
     from .selection_models import BinaryProbit, HeckmanTwoStep
+    from .zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
     from .latent_class import LatentClassMixedLogit
     from .mdcev import MDCEVFitResult, MDCEVModel
     from .multinomial_probit import MultinomialProbit
@@ -131,6 +132,7 @@ except ImportError as e:
     from mixedrrm import MixedRandomRegret
     from ordered_logit import OrderedLogit, OrderedLogitLong
     from selection_models import BinaryProbit, HeckmanTwoStep
+    from zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
     from latent_class import LatentClassMixedLogit
     from mdcev import MDCEVFitResult, MDCEVModel
     from multinomial_probit import MultinomialProbit
