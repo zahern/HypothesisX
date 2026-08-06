@@ -350,7 +350,7 @@ best = call_siman(params, init_sol=None, id_num=1)
 
 | Parameter | Type | Default | Description |
 | --------- | ---- | ------- | ----------- |
-| `criterions` | list of `(name, sign)` | required | Objectives: `"bic"`, `"aic"`, `"loglik"`, `"mae"`. Sign: `-1` = minimise, `+1` = maximise |
+| `criterions` | list of `(name, sign)` | required | Objectives: `"bic"`, `"aic"`, `"loglik"`, `"mae"`, or custom (e.g. `"nsig"`). Sign: `-1` = minimise, `+1` = maximise |
 | `models` | list of str | all | Model classes to search over |
 | `allow_random` | bool | `False` | Enable random parameters (required for mixed models) |
 | `allow_bcvars` | bool | `False` | Enable Box-Cox variable transformations |
@@ -361,6 +361,66 @@ best = call_siman(params, init_sol=None, id_num=1)
 | `maxiter` | int | `2000` | Maximum MLE iterations per model evaluation |
 
 All models support random parameters for heterogeneity analysis. Use `allow_random=True` and specify `randvars` with distribution codes.
+
+---
+
+## Significance-Guided Search (Pareto-style)
+
+*Custom criterion names are permitted, enabling multi-objective Pareto
+searches that prioritise statistically significant specifications.*
+
+### Latent class search
+
+The ``LatentClassModel.search()`` method automatically applies significance
+prioritisation: when comparing models, it first prefers the model with
+**fewer insignificant variable groups**, and only breaks ties using the
+main criterion (e.g. BIC).  A variable group counts both utility and
+membership coefficients across all classes — the variable is considered
+significant if *any* of its coefficients meets the p-value threshold.
+
+```python
+from SearchLibrium.latent_class import LatentClassModel
+
+best_model, all_models = LatentClassModel.search(
+    X, y, varnames, ids, alts,
+    min_classes=1, max_classes=5,
+    criterion="bic",
+    p_val=0.05,
+)
+```
+
+### Custom SA sub-class for multi-objective Pareto
+
+Any SA search can be extended with custom criteria by subclassing
+``SearchLibrium.siman.SA`` and overriding ``update_objectives``:
+
+```python
+from SearchLibrium.siman import SA
+from SearchLibrium.search import count_insig_groups
+
+class SignificanceSA(SA):
+    def update_objectives(self, crit, sol):
+        model = sol.get('model')
+        p_val = getattr(self.param, 'p_val', 0.05)
+        sol['nsig'] = count_insig_groups(
+            model.coeff_names, model.pvalues, p_val)
+        super().update_objectives(crit, sol)
+
+params = Parameters(
+    criterions=[("bic", -1), ("nsig", -1)],   # Pareto: bic + significance
+    ...
+)
+solver = SignificanceSA(params, ctrl=(5000,0.01,80,15), id_num=1)
+solver.run()
+```
+
+With ``nb_crit > 1`` the SA automatically uses Pareto-dominance acceptance.
+
+The helper ``count_insig_groups(coeff_names, pvalues, p_val)`` strips
+``sd.`` / ``lambda.`` / ``chol.`` / ``class_N_`` prefixes and groups
+coefficients by base variable name.  A group is insignificant only when
+**all** of its coefficients exceed ``p_val`` — so a significant random‑parameter
+SD protects the mean.
 
 ---
 

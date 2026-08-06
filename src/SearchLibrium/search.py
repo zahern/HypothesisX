@@ -208,6 +208,44 @@ def process_criterions(criterions):
 # }
 
 
+def count_insig_groups(coeff_names, pvalues, p_val=0.05):
+    """Count variable *groups* where *every* coefficient fails the p-value
+    threshold.  A group is the set of coefficients belonging to the same
+    base variable name (after stripping ``sd.`` / ``lambda.`` / ``chol.`` /
+    ``class_N_`` prefixes).  ``intercept``-prefixed names are excluded.
+
+    A group is "significant" if *any* of its coefficients has p ≤ p_val.
+    This means a significant random-parameter SD protects the mean (and
+    vice versa), and a significant coefficient in any latent class
+    protects the variable across all classes.
+    """
+    if coeff_names is None or pvalues is None:
+        return 0
+    groups = {}   # base_var -> [p1, p2, ...]
+    for cname, pv in zip(coeff_names, pvalues):
+        cname = str(cname)
+        if cname.startswith('intercept'):
+            continue
+        # strip known prefixes
+        for prefix in ('sd.', 'lambda.', 'chol.',):
+            if cname.startswith(prefix):
+                cname = cname[len(prefix):]
+                break
+        # strip latent-class prefix  "class_N_"
+        import re
+        cname = re.sub(r'^class_\d+_', '', cname)
+        groups.setdefault(cname, []).append(float(pv))
+
+    insig = 0
+    for ps in groups.values():
+        if not ps:
+            continue
+        if any(float(p) <= p_val for p in ps):
+            continue
+        insig += 1
+    return insig
+
+
 
 
 def remove_item_randomly(numpy_array, item_to_remove):

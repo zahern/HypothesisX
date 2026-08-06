@@ -1240,6 +1240,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         """
         fitted_models = []
         best_model = None
+        _best_nsig = float('inf')
         prev_model = None
         criterion = criterion.lower()
 
@@ -1273,9 +1274,18 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             model.get_loglik_null()
             fitted_models.append(model)
 
+            # Pareto-style significance prioritisation:
+            #  1) prefer fewer insignificant variable groups,
+            #  2) among models with equal nsig, prefer lower criterion (e.g. BIC).
+            from .search import count_insig_groups
+            nsig = count_insig_groups(model.coeff_names, model.pvalues,
+                                      p_val=kwargs.get('p_val', 0.05))
             score = getattr(model, criterion)
-            if best_model is None or score < getattr(best_model, criterion):
+            if (best_model is None
+                or nsig < _best_nsig
+                or (nsig == _best_nsig and score < getattr(best_model, criterion))):
                 best_model = model
+                _best_nsig = nsig
             prev_model = model
 
         best_model.search_results = fitted_models
