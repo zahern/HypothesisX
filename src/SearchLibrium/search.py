@@ -344,10 +344,13 @@ def scale(solutions, i, maxcrit=False):
     max_obj, min_obj = max(values),  min(values)
 
     # Normalize the objective values
+    denom = max_obj - min_obj
+    if denom < 1e-12:
+        return [0.0] * len(values)
     if maxcrit:
-        normalized = [(value - min_obj) / (max_obj - min_obj) for value in values]
+        normalized = [(value - min_obj) / denom for value in values]
     else:
-        normalized = [(max_obj - value) / (max_obj - min_obj) for value in values]
+        normalized = [(max_obj - value) / denom for value in values]
     return normalized
 # }
 
@@ -460,7 +463,8 @@ def compute_crowding_dist_front(front, solutions, dist, index, range):
             before = front[i - 1]  # Index of the solution to the left
             after = front[i + 1]  # Index of the solution to the right
             dis = dist.get(soln_index) # QUERY. IS THIS LINE NEEDED?
-            dis += abs(solutions[after].obj(index) - solutions[before].obj(index)) / range  # Compute separation
+            if range > 1e-12:
+                dis += abs(solutions[after].obj(index) - solutions[before].obj(index)) / range  # Compute separation
         # }
         dist.update({soln_index: dis})  # Save the new crowding distance
     # }

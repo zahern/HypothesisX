@@ -150,7 +150,7 @@ class DiscreteChoiceModel(ABC):
         self.fit_intercept = False
         self.reg_penalty = 0.00  # L2 penalty strength (ridge)
         self.l1_penalty  = 0.1   # L1 penalty strength (lasso)
-        self.pval_penalty = 2
+        self.pval_penalty = 5
         logging.info(f'pval penalty set to {self.pval_penalty}')
         # NOTE: The reg_penalty value is tricky to define. If too high, convergence is restricted.
         #  Set to zero to turn off. A value of 1 seems too high.
