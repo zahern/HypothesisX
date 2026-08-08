@@ -600,7 +600,7 @@ class Parameters:
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
         sd_penalty=0.001, base_class=None,
-        intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
+        intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, panels=False,  *args, **kwargs):
 
         
         if models is None:
@@ -804,6 +804,7 @@ class Parameters:
             'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class',
             'num_classes',
         ]
+        self.panels = panels
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
         for key, value in kwargs.items():
@@ -3305,6 +3306,78 @@ class Search():
                 f"  grad_norm={gnorm}"
                 f"  (set verbose_convergence=True in Parameters for full model table)")
         p()
+    
+
+    def log_solution_block(self, solution, tag, file=None):
+        """Unified per-solution log block, written to console + file.
+        tag: 'EVALUATED' | 'NEW BEST' | 'FAILED' | 'Top N'
+        file: target file handle; defaults to self.sol_log_file.
+        """
+        LINE = "=" * 60
+        _lf = file if file is not None else getattr(self, 'sol_log_file', None)
+
+        show_console = getattr(self.param, 'verbose', False) or tag == 'NEW BEST'
+
+        def p(text=""):
+            if show_console:
+                print(text)
+            print(text, file=_lf)
+        def row(label, value):
+            p(f"  {label:<22}: {value}")
+
+        p(LINE)
+        p(f"Solution #{solution.get('sol_num', '?')} — [{tag}]")
+        p(LINE)
+
+        row("model", str(solution.get('model_n', 'unknown')))
+        row("converged", str(solution.get('converged', False)))
+        if tag == 'FAILED':
+            row("fail_reason", str(solution.get('fail_reason', '?')))
+
+        crit_names = [c[0] for c in self.param.criterions]
+        for name in crit_names:
+            val = solution.get(name)
+            if val is not None:
+                try:
+                    row(name, f"{float(val):.4f}")
+                except Exception:
+                    row(name, str(val))
+
+        row("asvars",   sorted(str(v) for v in solution.get('asvars', [])))
+        row("isvars",   sorted(str(v) for v in solution.get('isvars', [])))
+        row("randvars", dict(sorted((str(k), str(v)) for k, v in solution.get('randvars', {}).items())))
+        row("bcvars",   sorted(str(v) for v in solution.get('bcvars', [])))
+        row("corvars",  sorted(str(v) for v in solution.get('corvars', [])))
+
+        class_params_spec  = solution.get('class_params_spec', None)
+        member_params_spec = solution.get('member_params_spec', None)
+        if class_params_spec is not None:
+            p("  class_params_spec:")
+            for c, arr in enumerate(class_params_spec):
+                p(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
+        if member_params_spec is not None:
+            p("  member_params_spec:")
+            for c, arr in enumerate(member_params_spec):
+                p(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
+
+        if tag != 'FAILED' and solution.get('model'):
+            p(LINE)
+            p("  Model Statistics:")
+            model = solution['model']
+            try:
+                if model.converged or getattr(self.param, 'verbose_convergence', False):
+                    model.summarise()
+                    model.summarise(file=_lf)
+                else:
+                    loglik = solution.get('loglik', float('nan'))
+                    gnorm  = getattr(model, 'gtol_res', '?')
+                    p(f"  [accepted, not fully converged]  loglik={loglik:.3f}  grad_norm={gnorm}")
+            except Exception as exc:
+                p(f"  (statistics unavailable: {exc})")
+        p(LINE)
+        p()
+        if _lf is not None:
+            _lf.flush()
 
 
     ''' ---------------------------------------------------------- '''
@@ -4355,11 +4428,6 @@ class Search():
         # logit (the model types the README's own Quick Start demonstrates)
         # never got force_include/mutually_exclusive/etc. enforced. Fixed here.
 
-        _lf = getattr(self, 'sol_log_file', None) # Log Solutions in .txt
-        def _out(msg):
-            print(msg)
-            print(msg, file=_lf)
-
         sol = self.apply_constraints(sol)
         sig = self.setup_signature(sol)
         if sig in self._banlist:
@@ -4417,16 +4485,22 @@ class Search():
             sol['converged'] = True
             self.update_objectives(self.param.criterions, sol)
 
-            if track_best and (not hasattr(self, 'best_solution') or self.find_best_sol([sol, self.best_solution]) == sol):
+            if self.best_solution is None:
+                is_new_best = True
+            elif self.nb_crit == 1:
+                is_new_best = is_better(sol.obj(0), self.best_solution.obj(0), self.param.sign_crit(0))
+            else:
+                is_new_best = self.find_best_sol([sol, self.best_solution]) == sol
+
+            if track_best and is_new_best:
                 self.best_solution = sol
-                if self.last_printed_solution is None or not self.solutions_equal(sol, self.last_printed_solution):
-                    self.print_best_solution(sol)
-                    self.last_printed_solution = sol
+                self.last_printed_solution = sol
         # }
         else:
         # {
             self.not_converged += 1
             sol['converged'] = False
+            is_new_best = False
             # ── Banlist: never visit this exact specification again
             self._banlist.add(sig)
             # ── Variable attrition: only blame vars ADDED vs the
@@ -4443,37 +4517,9 @@ class Search():
             # ── Convergence diagnostic: explain why the model did not converge
             self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
         # }        
-        # Log Solutions in .txt
-        _out(f"[EVAL] sol#{sol.get('sol_num','?')}")
-        _out(f"  model     : {sol.get('model_n')}")
-        _out(f"  converged : {sol.get('converged')}")
-        _out(f"  asvars    : {sorted(str(v) for v in sol.get('asvars', []))}")
-        _out(f"  isvars    : {sorted(str(v) for v in sol.get('isvars', []))}")
-        _out(f"  randvars  : {dict(sorted((str(k), str(v)) for k, v in sol.get('randvars', {}).items()))}")
-        _out(f"  corvars   : {sorted(str(v) for v in sol.get('corvars', []))}")
-        _out(f"  bcvars    : {sorted(str(v) for v in sol.get('bcvars', []))}")
-        _out(f"  bic       : {sol.get('bic')}")
-        _out(f"  converged    : {sol.get('converged')}")
-        _out(f"  loglik    : {sol.get('loglik')}")        
-        _cps = sol.get('class_params_spec', None)
-        if _cps is not None:
-            _out("  class_params_spec :")
-            for c, arr in enumerate(_cps):
-                _out(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
-        else:
-            _out("  class_params_spec  : None")
+        tag = 'NEW BEST' if sol.get('converged') and is_new_best else ('EVALUATED' if sol.get('converged') else 'FAILED')
+        self.log_solution_block(sol, tag)
 
-        _mps = sol.get('member_params_spec', None)
-        if _mps is not None:
-            _out("  member_params_spec:")
-            for c, arr in enumerate(_mps):
-                _out(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
-        else:
-            _out("  member_params_spec : None")
-
-        if self.param.verbose:
-            print("** verbose: TRUE (param.verbose...) ** turn off if dont want to print")
-            self.print_best_solution(sol, "PRINTING SOLUTION")
         return (sol, sol['converged'])
     # }
 
@@ -4629,13 +4675,14 @@ class Search():
             except Exception:
                 logging.debug("report_exploration_summary: unable to write to results_file")
 
-    def perturb_round(self, sol, choices, latent=False, max_attempts=20, pre_touched=None):
+    def perturb_round(self, sol, choices, latent=False, max_attempts=20, pre_touched=None, pitch = None):
 
         """Tabu-tracked perturbation round: draws N (1-9) target moves, applies
         a randomly chosen function from `choices` per attempt, discards any
         attempt whose tabu-key was already touched this round."""
 
-        n_perturb = self.param.generator.randint(1, 10) # Number of random perturbations
+        #n_perturb = self.param.generator.randint(1, 10) # Number of random perturbations
+        n_perturb = self.param.generator.randint(1, math.ceil(9 - (9 - 1) * pitch))
         new_sol = self.copy_solution(sol)
         touched, moves_detail = set(pre_touched or ()), [] # Seed with upstream (HMCR) keys, then track this round's own
         attempts, real = 0, 0 # Track how many attempts were made and how many were actually applied
@@ -4986,30 +5033,30 @@ class Search():
                 num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-6,
                 gtol_membership_func=1e-5, avail=None, avail_latent=None,
                 intercept_opts=None, weights=None, seed=None,
-                alts=None, ftol_lccm=1e-6, base_alt=None):
+                alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None):
         """Fit a latent class multinomial logit model with optional membership equation.
 
         Uses the modern ``LatentClassMixedLogit`` from ``latent_class.py``.
         """
         try:
-            from .latent_class import LatentClassMixedLogit
+            from .latent_class import LatentClassMixedLogit,LatentClass
         except ImportError:
-            from SearchLibrium.latent_class import LatentClassMixedLogit
+            from SearchLibrium.latent_class import LatentClassMixedLogit,LatentClass
 
         optimise_membership = getattr(self, 'optimise_membership', False)
         if optimise_membership and member_params_spec is None:
             optimise_membership = False
 
-        model = LatentClassMixedLogit(
+        model = LatentClass(
             n_classes=num_classes,
             maxiter=maxiter,
-            class_maxiter=100,
+            #class_maxiter=100,
             tol=gtol,
             random_state=seed if seed is not None else 0,
             optimise_membership=optimise_membership,
-            membership_maxiter=100,
+            #membership_maxiter=100,
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), _jax=False  # Need to remove this last one MARIO
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=10, membership_correction=True
         )
 
         membership_vars = None
@@ -5030,14 +5077,16 @@ class Search():
             X=X_arr, y=y_arr,
             varnames=list(varnames),
             ids=ids,
+            ind_id=ind_id,            
             alts=alts if alts is not None else np.ones(len(y_arr), dtype=int),
             avail=avail,
-            membership_vars=membership_vars,
+            #membership_vars=membership_vars,
             member_params_spec=member_params_spec,
             base_class=getattr(self.param, 'base_class', None),
-            class_params_spec=class_params_spec,
+            class_params_spec=class_params_spec, panels=panels
         )
-        model.fit(em_method="squarem")
+        #model.fit(em_method="squarem")
+        model.fit()
         model.get_loglik_null()
         return model
 
@@ -5291,6 +5340,8 @@ class Search():
         X = self.param.df[all_vars].values
         y = self.param.choices
         ids = self.param.choice_id if self.param.choice_id is not None else self.param.ind_id
+        ind_id = self.param.ind_id if self.param.ind_id is not None else None
+        panels = self.param.panels
 
         """
         # TEMP DEBUG — remove after diagnosing
@@ -5319,7 +5370,7 @@ class Search():
             avail=self.param.avail,
             weights=self.param.weights,
             alts=alts,
-            base_alt=self.param.base_alt,
+            base_alt=self.param.base_alt, panels =  panels, ind_id=ind_id
         )
         """
         # TEMP DEBUG — remove after diagnosing

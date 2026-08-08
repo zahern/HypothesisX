@@ -42,14 +42,14 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
     def __init__(
         self,
         n_classes=2,
-        maxiter=50,
-        class_maxiter=50,
+        maxiter=500,
+        class_maxiter=500,
         tol=1e-6,
         random_state=0,
         _jax=True,
         n_init=1,
         optimise_membership=True,
-        membership_maxiter=50,
+        membership_maxiter=500,
         l1_penalty=0.0,
         l2_penalty=0.5,
     ):
@@ -1940,3 +1940,709 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         print(list(zip(self.param_names,self.se_params, self.pvalues))) 
         print(list((zip(self.gamma_names, self.gamma_params, self.gamma_p_values))))
         """
+
+"""
+LatentClass — Newton/JAX estimation engine for latent-class discrete choice models.
+=====================================================================================
+Lives alongside ``LatentClassMixedLogit`` in ``latent_class.py``. Same public
+contract (``setup`` / ``fit`` / ``summarise`` — the last one inherited unchanged
+from ``DiscreteChoiceModel`` in ``_choice_model.py``), same specification syntax
+(``class_params_spec`` / ``member_params_spec`` as variable-name lists per class,
+``base_class``), so it is a drop-in alternative you can run on the exact same
+setup call as ``LatentClassMixedLogit`` and compare.
+
+WHAT'S DIFFERENT FROM LatentClassMixedLogit
+--------------------------------------------
+1. M-step = one damped Newton step per class (exact JAX gradient + Hessian)
+   instead of L-BFGS-B. The weighted MNL log-likelihood is globally concave
+   in its linear parameters (McFadden, 1974), so Newton converges in very few
+   steps; Armijo back-tracking is only a safety net.
+2. Native panel support: pass ``panels=True`` and ``ind_id=`` to ``setup()`` to
+   pool multiple choice occasions per individual under ONE shared latent-class
+   draw (the correct treatment for repeated stated-preference data). Without
+   ``panels=True`` it behaves exactly like one-occasion-per-individual (same
+   as LatentClassMixedLogit).
+3. Standard errors: exact observed-information Hessian (JAX autodiff) of the
+   JOINT panel-aware log-likelihood, computed once at the optimum.
+
+WHAT'S DELIBERATELY NOT SUPPORTED (out of scope by design)
+-------------------------------------------------------------
+Box-Cox transformed variables and random parameters (Mixed Logit within a
+class). Concavity of the M-step is what makes the one-step Newton trick valid;
+neither Box-Cox lambdas nor simulated random coefficients preserve it. Use
+``LatentClassMixedLogit`` for those.
+"""
+
+import time
+import numpy as np
+from scipy.stats import norm as _scipy_norm
+
+try:
+    from _choice_model import DiscreteChoiceModel
+except ImportError:
+    from ._choice_model import DiscreteChoiceModel
+
+import jax
+import jax.numpy as jnp
+from jax import grad, hessian
+
+jax.config.update("jax_enable_x64", True)
+
+RIDGE = 1e-8
+MIN_COMP = 1e-300
+
+
+def _pval_str(pv: float) -> str:
+    if pv < 0.001:
+        return "< 0.001"
+    return f"{pv:.4f}"
+
+
+def _sig_stars(pv: float) -> str:
+    if pv < 0.001:
+        return "***"
+    if pv < 0.01:
+        return " **"
+    if pv < 0.05:
+        return "  *"
+    if pv < 0.1:
+        return "  ."
+    return ""
+
+
+class LatentClass(DiscreteChoiceModel):
+    """Latent-class MNL with an exact-Newton EM engine and native panel support."""
+
+    def __init__(self, n_classes=2, maxiter=200, newton_inner_iter=5, tol=1e-6,
+                 random_state=0, n_init=1, base_class=None,
+                 optimise_membership=True, l2_penalty=0.5, l1_penalty=0.0,membership_correction=False,
+                 verbose=1):
+        self.n_classes = int(n_classes)
+        self.maxiter = int(maxiter)
+        self.newton_inner_iter = int(newton_inner_iter)
+        self.tol = float(tol)
+        self.random_state = int(random_state)
+        self.n_init = max(1, int(n_init))
+        self._base_class_arg = base_class
+        self.optimise_membership = bool(optimise_membership)
+        self.l2_penalty = float(l2_penalty)
+        self.l1_penalty = float(l1_penalty)
+        self.verbose = int(verbose)
+        self.descr = "LC-Newton"
+
+        # attributes summarise()/DiscreteChoiceModel expect to find, even
+        # before fit() runs. pred_prob/obs_prob deliberately NOT declared
+        # here (only after fit(), in _finalise) so hasattr() is False and
+        # summarise() skips that block cleanly if called before fit().
+        self.coeff_est = None
+        self.coeff_names = None
+        self.stderr = None
+        self.zvalues = None
+        self.pvalues = None
+        self.class_betas = None
+        self.class_probs = None
+        self.class_gammas = None
+        self.posterior = None
+        self.loglik = None
+        self.loglik_null = None
+        self.aic = None
+        self.bic = None
+        self.converged = False
+        self.total_iter = 0
+        self.num_params = None
+        self.se_computation_error = None
+        self.membership_correction = bool(membership_correction)
+        self.descr = "LC-Newton-Firth" if self.membership_correction else "LC-Newton"
+
+    # ------------------------------------------------------------------
+    # SETUP
+    # ------------------------------------------------------------------
+    def setup(self, X, y, varnames, ids, alts, avail=None,
+              class_params_spec=None, member_params_spec=None,
+              base_class=None, panels=False, ind_id=None,
+              fit_intercept=False, l1_penalty=None, l2_penalty=None):
+        """
+        ids     : choice-situation id — one situation = one block of J rows.
+        panels  : False (default) -> one situation == one individual, exactly
+                  like LatentClassMixedLogit. True -> pool situations sharing
+                  the same `ind_id` under one latent-class draw.
+        ind_id  : individual id (same length as the raw long-format rows).
+                  Required if panels=True. Ignored (defaults to `ids`) if
+                  panels=False.
+        class_params_spec, member_params_spec, base_class : same syntax as
+                  LatentClassMixedLogit (variable-name lists per class).
+                  member_params_spec entries may be empty lists (delta/intercept
+                  only, no covariates for that class) — handled correctly.
+        """
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float)
+        ids = np.asarray(ids)
+        alts = np.asarray(alts)
+        varnames = list(varnames)
+
+        if fit_intercept and "intercept" not in varnames:
+            X = np.column_stack([np.ones(X.shape[0]), X])
+            varnames = ["intercept"] + varnames
+
+        if avail is None:
+            avail = np.ones_like(y, dtype=float)
+        else:
+            avail = np.asarray(avail, dtype=float)
+
+        if panels and ind_id is None:
+            raise ValueError("panels=True requires ind_id.")
+        ind_id = np.asarray(ind_id) if ind_id is not None else ids
+
+        _, first_idx = np.unique(alts, return_index=True)
+        self.alts = alts[np.sort(first_idx)]
+        self.J = len(self.alts)
+        self.K = X.shape[1]
+        self.varnames = varnames
+        if l1_penalty is not None:
+            self.l1_penalty = float(l1_penalty)
+        if l2_penalty is not None:
+            self.l2_penalty = float(l2_penalty)
+
+        order = np.lexsort((alts, ids))
+        X, y, avail = X[order], y[order], avail[order]
+        ids_s = ids[order]
+        ind_s = ind_id[order]
+
+        uniq_sit, counts = np.unique(ids_s, return_counts=True)
+        if np.any(counts != self.J):
+            raise ValueError("LatentClass requires balanced long-format data by choice id.")
+
+        n_sit = len(uniq_sit)
+        X3 = X.reshape(n_sit, self.J, self.K)
+        y3 = y.reshape(n_sit, self.J)
+        av3 = avail.reshape(n_sit, self.J)
+        ind_per_sit = ind_s.reshape(n_sit, self.J)[:, 0]
+
+        uniq_ind, inv = np.unique(ind_per_sit, return_inverse=True)
+        self.N = len(uniq_ind)
+        self.ids = uniq_ind
+
+        counts_per_ind = np.bincount(inv, minlength=self.N)
+        P = int(counts_per_ind.max())
+        self.P = P
+        self.sample_size = int(n_sit)
+
+        Xp = np.zeros((self.N, P, self.J, self.K))
+        yp = np.zeros((self.N, P, self.J))
+        avp = np.zeros((self.N, P, self.J))
+        mask = np.zeros((self.N, P))
+        slot = np.zeros(self.N, dtype=int)
+        for s in range(n_sit):
+            i = inv[s]
+            t = slot[i]
+            Xp[i, t] = X3[s]
+            yp[i, t] = y3[s]
+            avp[i, t] = av3[s]
+            mask[i, t] = 1.0
+            slot[i] += 1
+
+        self.X = Xp                 # (N, P, J, K) — kept for reference/debug
+        self.y = yp
+        self.avail = avp
+        self.panel_mask = mask
+        self.panel_info = mask      # name summarise() looks for
+
+        # ---- class specs (same convention/semantics as LatentClassMixedLogit)
+        if class_params_spec is None:
+            class_params_spec = [list(varnames) for _ in range(self.n_classes)]
+        self._class_specs, Ks = [], []
+        for c, spec in enumerate(class_params_spec):
+            idxs = []
+            for v in spec:
+                if v == '_inter':
+                    continue
+                if v not in varnames:
+                    raise ValueError(f"Class {c} variable '{v}' not found in varnames.")
+                idxs.append(varnames.index(v))
+            self._class_specs.append(np.array(idxs, dtype=int))
+            Ks.append(len(idxs))
+        self._Ks = np.array(Ks, dtype=int)
+
+        # ---- base class + membership (same convention as LatentClassMixedLogit)
+        bc = base_class if base_class is not None else (
+            self._base_class_arg if self._base_class_arg is not None else self.n_classes - 1)
+        self.base_class = bc
+        """
+        self._intercept_free_classes = [c for c in range(self.n_classes) if c != self.base_class]
+        n_inter = len(self._intercept_free_classes)
+        self._n_inter = n_inter
+        """
+
+        ##############################
+        
+        self._intercept_free_classes = [
+            c for c in range(self.n_classes)
+            if c != self.base_class and (
+                member_params_spec is None
+                or (c < len(member_params_spec) and '_inter' in member_params_spec[c])
+            )
+        ]
+        n_inter = len(self._intercept_free_classes)
+        self._n_inter = n_inter
+        
+#############################
+
+        self._has_membership = member_params_spec is not None
+        self.member_params_spec = member_params_spec
+        if self._has_membership:
+            covariate_vars = sorted({v for arr in member_params_spec for v in arr if v != '_inter'})
+            self.membership_vars = covariate_vars
+            self.K_membership = len(covariate_vars)
+            mem_idx = [varnames.index(v) for v in covariate_vars]
+            var_to_col = {v: i for i, v in enumerate(covariate_vars)}
+            self._member_mask = np.zeros((self.n_classes, self.K_membership))
+            for c in range(self.n_classes):
+                spec = member_params_spec[c] if c < len(member_params_spec) else []
+                for v in spec:
+                    if v != '_inter' and v in var_to_col:
+                        self._member_mask[c, var_to_col[v]] = 1.0
+            Zm = np.zeros((self.N, self.K_membership))
+            for i in range(self.N):
+                t0 = int(np.argmax(mask[i]))     # first real occasion
+                Zm[i] = Xp[i, t0, 0, mem_idx]
+            self.X_membership = Zm
+        else:
+            self.membership_vars = None
+            self.K_membership = 0
+            self._member_mask = np.zeros((self.n_classes, 0))
+            self.X_membership = None
+
+        # ---- device arrays --------------------------------------------------
+        self._Xd = jnp.asarray(self.X)
+        self._yd = jnp.asarray(self.y)
+        self._avd = jnp.asarray(self.avail)
+        self._maskd = jnp.asarray(self.panel_mask)
+        self._Zmd = jnp.asarray(self.X_membership) if self.X_membership is not None else None
+        self._member_mask_d = jnp.asarray(self._member_mask)
+
+        self.class_x_names_ = None  # not used by this engine
+        return self
+    
+    def _firth_penalty(self, ll_fn, v):
+        """0.5 * log|Fisher information(v)| — Jeffreys prior penalty.
+
+        ll_fn must return the (unpenalized) log-likelihood, not its negative.
+        """
+        info = -hessian(ll_fn)(v)          # observed Fisher information
+        _, logdet = jnp.linalg.slogdet(info)
+        return 0.5 * logdet
+
+    # ------------------------------------------------------------------
+    # KERNELS (built fresh per fit(), since they close over device arrays)
+    # ------------------------------------------------------------------
+    def _class_ll(self, beta_active, c):
+        """(N,) panel-aggregated chosen log-likelihood for class c."""
+        idx = jnp.asarray(self._class_specs[c])
+        Xc = jnp.take(self._Xd, idx, axis=3)                       # (N,P,J,Kc)
+        util = jnp.einsum('npjk,k->npj', Xc, beta_active)
+        util = jnp.where(self._avd > 0, util, -1e10)
+        util = util - jnp.max(util, axis=2, keepdims=True)
+        expu = jnp.exp(util) * self._avd
+        denom = jnp.clip(jnp.sum(expu, axis=2, keepdims=True), MIN_COMP)
+        logp = util - jnp.log(denom)
+        ll_np = jnp.sum(self._yd * logp, axis=2)                    # (N,P)
+        return jnp.sum(ll_np * self._maskd, axis=1)                 # (N,)
+
+    def _membership_logits(self, inter, gamma):
+        C = self.n_classes
+        logits = jnp.zeros((self.N, C))
+        for i, c in enumerate(self._intercept_free_classes):
+            logits = logits.at[:, c].set(inter[i])
+        if self.K_membership > 0:
+            gamma_m = gamma * self._member_mask_d
+            logits = logits + self._Zmd @ gamma_m.T
+        return logits
+
+    def _membership_log_probs(self, inter, gamma):
+        logits = self._membership_logits(inter, gamma)
+        logits = logits - jnp.max(logits, axis=1, keepdims=True)
+        return logits - jnp.log(jnp.clip(jnp.sum(jnp.exp(logits), axis=1, keepdims=True), MIN_COMP))
+
+    def _class_ll_matrix(self, betas):
+        return jnp.stack([self._class_ll(betas[c], c) for c in range(self.n_classes)], axis=1)
+
+    def _estep(self, betas, inter, gamma, pi):
+        ll_c = self._class_ll_matrix(betas)
+        if self._has_membership:
+            logH = self._membership_log_probs(inter, gamma)
+        else:
+            logpi = jnp.log(jnp.clip(pi, MIN_COMP))
+            logH = jnp.broadcast_to(logpi[None, :], (self.N, self.n_classes))
+        num = ll_c + logH
+        denom = jax.scipy.special.logsumexp(num, axis=1, keepdims=True)
+        R = jnp.exp(num - denom)
+        return R, jnp.sum(denom)
+
+    # ------------------------------------------------------------------
+    # NEWTON STEP (generic, with Armijo back-tracking). Takes a pre-built
+    # (value, grad, hessian) triple of JIT-compiled closures — built ONCE
+    # per fit() call in `_build_kernels`, reused across every EM iteration
+    # and every n_init restart, so JAX traces each shape exactly once.
+    # ------------------------------------------------------------------
+    def _newton(self, fgh, x0, *args):
+        f_j, g_j, h_j = fgh
+        x = x0
+        for _ in range(self.newton_inner_iter):
+            g = g_j(x, *args)
+            gnorm = float(jnp.linalg.norm(g))
+            if gnorm < 1e-10:
+                break
+            H = h_j(x, *args) + jnp.eye(x.shape[0], dtype=x.dtype) * RIDGE
+            try:
+                step = jnp.linalg.solve(H, g)
+            except Exception:
+                break
+            f0 = float(f_j(x, *args))
+            t = 1.0
+            accepted = False
+            for _ in range(10):
+                cand = x - t * step
+                fc = float(f_j(cand, *args))
+                if np.isfinite(fc) and fc <= f0 + 1e-12:
+                    x = cand
+                    accepted = True
+                    break
+                t *= 0.5
+            if not accepted:
+                break
+        return x
+
+    def _build_kernels(self):
+        """Build and JIT-compile, once per fit() call, a (value, grad,
+        hessian) triple per class (class index baked into the closure, so
+        no static_argnums juggling) and one for the membership block."""
+        class_fgh = []
+        for c in range(self.n_classes):
+            def nll(beta, w, c=c):
+                return -jnp.sum(w * self._class_ll(beta, c))
+            class_fgh.append((jax.jit(nll), jax.jit(grad(nll)), jax.jit(hessian(nll))))
+
+        n_inter, Km, C = self._n_inter, self.K_membership, self.n_classes
+
+        def mem_ll(v, R):
+            inter = v[:n_inter]
+            gamma = v[n_inter:].reshape(C, Km)
+            logH = self._membership_log_probs(inter, gamma)
+            return jnp.sum(R * logH)
+
+        def mem_info(v, R):
+            """Unpenalized (ridge-stabilized) observed Fisher information."""
+            H = hessian(lambda vv: mem_ll(vv, R))(v)
+            return -H + jnp.eye(v.shape[0], dtype=v.dtype) * RIDGE
+
+        if self.membership_correction:
+            def mem_value(v, R):
+                info = mem_info(v, R)
+                _, logdet = jnp.linalg.slogdet(info)
+                return -(mem_ll(v, R) + 0.5 * logdet)
+
+            # Firth score: grad of (ll + 0.5*log|I|) — needs 3rd-order derivs
+            # of the base log-lik. Stable.
+            mem_grad = jax.jit(grad(mem_value))
+
+            # Curvature: classical Firth-Newton practice — use the *unpenalized*
+            # Fisher information, not hessian(mem_value). Avoids 4th-order
+            # derivatives (the source of the NaNs).
+            mem_fgh = (jax.jit(mem_value), mem_grad, jax.jit(mem_info))
+        else:
+            def mem_nll(v, R):
+                return -mem_ll(v, R)   
+            mem_fgh = (jax.jit(mem_nll), jax.jit(grad(mem_nll)), jax.jit(hessian(mem_nll)))
+
+        self._class_fgh = class_fgh
+        self._mem_fgh = mem_fgh
+
+    def _joint_negll(self, betas, inter, gamma, pi):
+        _, ll = self._estep(betas, inter, gamma, pi)
+        return -ll
+
+    # ------------------------------------------------------------------
+    # ONE EM STEP
+    # ------------------------------------------------------------------
+    def _em_step(self, betas, inter, gamma, pi):
+        R, ll = self._estep(betas, inter, gamma, pi)
+
+        new_betas = []
+        for c in range(self.n_classes):
+            b = self._newton(self._class_fgh[c], betas[c], R[:, c])
+            new_betas.append(b)
+
+        n_inter = self._n_inter
+        if self._has_membership and self.optimise_membership:
+            Km = self.K_membership
+            v0 = jnp.concatenate([inter, gamma.ravel()])
+            v1 = self._newton(self._mem_fgh, v0, R)
+            new_inter = v1[:n_inter]
+            new_gamma = v1[n_inter:].reshape(self.n_classes, Km) if Km > 0 else gamma
+            new_pi = pi
+        else:
+            new_inter, new_gamma = inter, gamma
+            new_pi = R.mean(axis=0)
+            new_pi = new_pi / jnp.sum(new_pi)
+
+        return new_betas, new_inter, new_gamma, new_pi, float(ll), R
+
+    # ------------------------------------------------------------------
+    # FIT (SQUAREM-accelerated EM with monotonicity back-tracking)
+    # ------------------------------------------------------------------
+    def fit(self, betas0=None, inter0=None, gamma0=None):
+        t_fit0 = time.time()
+        C = self.n_classes
+        self._build_kernels()
+        best = None
+
+        for init_idx in range(self.n_init):
+            rng = np.random.default_rng(self.random_state + init_idx)
+            betas = [jnp.asarray(rng.normal(scale=0.05, size=int(k))) for k in self._Ks] \
+                if (init_idx > 0 or betas0 is None) else \
+                [jnp.asarray(b) for b in betas0]
+            n_inter, Km = self._n_inter, self.K_membership
+            inter = jnp.asarray(rng.normal(scale=0.01, size=n_inter)) \
+                if (init_idx > 0 or inter0 is None) else jnp.asarray(inter0)
+            gamma = jnp.asarray(rng.normal(scale=0.01, size=(C, Km))) \
+                if (init_idx > 0 or gamma0 is None) else jnp.asarray(gamma0)
+            pi = jnp.full(C, 1.0 / C)
+
+            prev_ll = -np.inf
+            converged = False
+            R_last = None
+            n_iter = 0
+
+            for it in range(1, self.maxiter + 1):
+                n_iter = it
+                b1, i1, g1, p1, ll1, R1 = self._em_step(betas, inter, gamma, pi)
+                b2, i2, g2, p2, ll2, R2 = self._em_step(b1, i1, g1, p1)
+
+                # SQUAREM extrapolation on the flat [betas|inter|gamma|pi] vector
+                def flat(bts, ii, gg, pp):
+                    return jnp.concatenate([jnp.concatenate(bts), ii, gg.ravel(), pp])
+
+                th0, th1, th2 = flat(betas, inter, gamma, pi), flat(b1, i1, g1, p1), flat(b2, i2, g2, p2)
+                r = th1 - th0
+                v = th2 - 2.0 * th1 + th0
+                nv = float(jnp.linalg.norm(v))
+
+                if nv < 1e-14:
+                    betas, inter, gamma, pi, ll, R_last = b2, i2, g2, p2, ll2, R2
+                else:
+                    alpha = min(-float(jnp.linalg.norm(r)) / nv, -1.0)
+                    accepted = False
+                    for _ in range(10):
+                        th_p = th0 - 2.0 * alpha * r + alpha ** 2 * v
+                        off = 0
+                        b_cand = []
+                        for k in self._Ks:
+                            b_cand.append(th_p[off:off + int(k)]); off += int(k)
+                        i_cand = th_p[off:off + n_inter]; off += n_inter
+                        g_cand = th_p[off:off + C * Km].reshape(C, Km); off += C * Km
+                        p_cand = th_p[off:off + C]
+                        p_cand = jnp.clip(p_cand, 1e-9, None)
+                        p_cand = p_cand / jnp.sum(p_cand)
+                        _, ll_cand = self._estep(b_cand, i_cand, g_cand, p_cand)
+                        ll_cand = float(ll_cand)
+                        if np.isfinite(ll_cand) and ll_cand >= ll1:
+                            betas, inter, gamma, pi, ll = b_cand, i_cand, g_cand, p_cand, ll_cand
+                            accepted = True
+                            break
+                        alpha = (alpha - 1.0) / 2.0
+                    if not accepted:
+                        betas, inter, gamma, pi, ll = b2, i2, g2, p2, ll2
+                    R_last, _ = self._estep(betas, inter, gamma, pi)
+
+                if abs(ll - prev_ll) < self.tol:
+                    converged = True
+                    break
+                prev_ll = ll
+
+            if best is None or ll > best['loglik']:
+                best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
+                            converged=converged, n_iter=n_iter, posterior=R_last)
+
+        self._finalise(best, time.time() - t_fit0)
+        return self
+
+    # ------------------------------------------------------------------
+    # FINALISE: populate every attribute summarise() reads
+    # ------------------------------------------------------------------
+    def _finalise(self, best, elapsed):
+        C = self.n_classes
+        betas = [np.asarray(b) for b in best['betas']]
+        inter = np.asarray(best['inter'])
+        gamma = np.asarray(best['gamma'])
+        pi = np.asarray(best['pi'])
+        posterior = np.asarray(best['posterior'])
+
+        self.class_betas = betas
+        self.posterior = posterior
+        self.class_probs = self._normalize(posterior.mean(axis=0))
+        self.loglik = float(best['loglik'])
+        self.converged = bool(best['converged'])
+        self.total_iter = int(best['n_iter'])
+        self.estim_time_sec = float(elapsed)
+        self.pred_prob, self.obs_prob = self._compute_prop_alts(betas, posterior)
+
+        n_inter, Km = self._n_inter, self.K_membership
+        n_gamma_dense = C * Km
+        n_gamma_active = int(self._member_mask.sum()) if self._has_membership else 0
+        n_beta = int(self._Ks.sum())
+        n_phi = C - 1
+
+        # phi: log-odds of (mean posterior) shares vs base class. Kept ONLY
+        # as a positional placeholder in se_params (summarise() hard-codes
+        # offset_cum starting at n_phi), never counted in num_params when a
+        # membership mechanism (delta) exists, since delta already IS the
+        # log-odds parameter in that case — counting both is double-counting
+        # the same quantity.
+        base_share = max(self.class_probs[self.base_class], 1e-12)
+        phi = np.array([np.log(max(self.class_probs[c], 1e-12) / base_share)
+                         for c in range(C) if c != self.base_class])
+
+        self.coeff_est = np.concatenate(betas)
+        self.coeff_names = []
+        for c in range(C):
+            for v in [self.varnames[i] for i in self._class_specs[c]]:
+                self.coeff_names.append(f"class_{c + 1}_{v}")
+
+        if self._has_membership:
+            self.num_params = n_beta + n_inter + n_gamma_active
+        else:
+            self.num_params = n_beta + n_phi
+        self.aic = 2 * self.num_params - 2 * self.loglik
+        self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
+
+        # ---- exact joint Hessian for SE, over [phi | betas | inter | gamma_dense]
+        try:
+            self._compute_se(phi, betas, inter, gamma, n_phi, n_beta, n_inter, n_gamma_dense)
+        except Exception as exc:
+            self.se_computation_error = str(exc)
+            self.stderr = None
+            self.zvalues = None
+            self.pvalues = None
+            self.gamma_params = np.empty(0)
+            self.gamma_se = np.empty(0)
+            self.gamma_t_stats = np.empty(0)
+            self.gamma_p_values = np.empty(0)
+            self.gamma_names = []
+        return self
+
+    @staticmethod
+    def _normalize(p):
+        p = np.clip(np.asarray(p, dtype=float), 1e-12, None)
+        return p / p.sum()
+
+    def _compute_prop_alts(self, betas, posterior):
+        """Observed and posterior-weighted predicted share of each
+        alternative, counting only real (non-padded) occasions."""
+        J = self.J
+        real = self.panel_mask > 0                       # (N,P)
+        total_real = max(float(real.sum()), 1.0)
+
+        obs = np.array([float(self.y[:, :, j][real].sum()) for j in range(J)]) / total_real
+
+        pred = np.zeros(J)
+        for c in range(self.n_classes):
+            idx = self._class_specs[c]
+            Xc = self.X[:, :, :, idx]                     # (N,P,J,Kc)
+            util = np.einsum('npjk,k->npj', Xc, betas[c])
+            util = np.where(self.avail > 0, util, -1e10)
+            util = util - util.max(axis=2, keepdims=True)
+            expu = np.exp(util) * self.avail
+            denom = np.clip(expu.sum(axis=2, keepdims=True), 1e-300, None)
+            probs = expu / denom                           # (N,P,J)
+            w = posterior[:, c][:, None, None] * real[:, :, None]
+            pred += (probs * w).sum(axis=(0, 1))
+        pred = pred / total_real
+        return pred, obs
+
+    def _phi_to_pi(self, phi):
+        C = self.n_classes
+        logits = jnp.zeros(C)
+        idx_free = [c for c in range(C) if c != self.base_class]
+        for i, c in enumerate(idx_free):
+            logits = logits.at[c].set(phi[i])
+        logits = logits - jnp.max(logits)
+        p = jnp.exp(logits)
+        return p / jnp.sum(p)
+
+    def _compute_se(self, phi, betas, inter, gamma, n_phi, n_beta, n_inter, n_gamma_dense):
+        C, Km = self.n_classes, self.K_membership
+
+        def unpack(v):
+            off = n_phi
+            b = []
+            for k in self._Ks:
+                b.append(v[off:off + int(k)]); off += int(k)
+            ii = v[off:off + n_inter]; off += n_inter
+            gg = v[off:off + n_gamma_dense].reshape(C, Km) if n_gamma_dense else jnp.zeros((C, 0))
+            return b, ii, gg
+
+        def joint_negll_flat(v):
+            b, ii, gg = unpack(v)
+            if self._has_membership:
+                pi_arg = jnp.full(C, 1.0 / C)   # unused inside _estep in this branch
+            else:
+                pi_arg = self._phi_to_pi(v[:n_phi])
+            return self._joint_negll(b, ii, gg, pi_arg)
+
+        theta = np.concatenate([phi, np.concatenate(betas), inter, gamma.ravel()])
+        theta_j = jnp.asarray(theta)
+
+        H = np.asarray(hessian(joint_negll_flat)(theta_j))
+        try:
+            cov = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            cov = np.linalg.pinv(H)
+        se_full = np.sqrt(np.clip(np.diag(cov), 0, None))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z_full = np.where(se_full > 0, theta / se_full, np.nan)
+        p_full = 2 * (1 - _scipy_norm.cdf(np.abs(z_full)))
+
+        self.se_params = theta
+        self.stderr = se_full
+        self.zvalues = z_full
+        self.pvalues = p_full
+        self.se_method = "hessian (jax autodiff)"
+        self.cond_number = float(np.linalg.cond(H)) if H.size else float('nan')
+
+        gamma_start = n_phi + n_beta
+        gamma_theta = theta[gamma_start:]
+        gamma_se_d = se_full[gamma_start:]
+        gamma_t_d = z_full[gamma_start:]
+        gamma_p_d = p_full[gamma_start:]
+
+        gamma_names, gp, gs, gt, gpv = [], [], [], [], []
+        for i, c in enumerate(self._intercept_free_classes):
+            gamma_names.append(f"gamma_intercept_class_{c + 1}")
+            gp.append(gamma_theta[i]); gs.append(gamma_se_d[i])
+            gt.append(gamma_t_d[i]); gpv.append(gamma_p_d[i])
+
+        mem_vars = self.membership_vars or []
+        for c in range(C):
+            for k in range(Km):
+                if self._member_mask[c, k] > 0:
+                    idx = n_inter + c * Km + k
+                    gamma_names.append(f"gamma_class_{c + 1}_{mem_vars[k]}")
+                    gp.append(gamma_theta[idx]); gs.append(gamma_se_d[idx])
+                    gt.append(gamma_t_d[idx]); gpv.append(gamma_p_d[idx])
+
+        self.gamma_params = np.array(gp)
+        self.gamma_se = np.array(gs)
+        self.gamma_t_stats = np.array(gt)
+        self.gamma_p_values = np.array(gpv)
+        self.gamma_names = gamma_names
+
+        self.class_gammas = gamma_theta  # flat [inter | gamma C*Km] dense, for parity/debug
+
+    # ------------------------------------------------------------------
+    # Panel-aware null log-likelihood (only real occasions count)
+    # ------------------------------------------------------------------
+    def get_loglik_null(self):
+        avail_counts = np.clip(self.avail.sum(axis=2), 1.0, None)   # (N,P)
+        real = self.panel_mask > 0
+        self.loglik_null = float(-np.sum(np.log(avail_counts[real])))
+        return self.loglik_null

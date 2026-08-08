@@ -150,6 +150,7 @@ class HarmonySearch(Search):
         self.pitch        = self.max_pitch
         self._hmcr_moves  = []              # HMCR-phase track (reset each build_solution call)
         self.memory       = []              # harmony memory
+        self._plot_history = []             # (iter, obj(0), origen) — never trimmed, feeds the convergence plot
         self.all_solutions = []             # de-duplication list
         self.best_sol     = None            # best solution found
         self.converged    = 0               # evaluation counters (matches SA interface)
@@ -159,7 +160,7 @@ class HarmonySearch(Search):
 
         suffix = f'[{idnum}]' if idnum is not None else ''
         self.results_file  = open(f"hs_results{suffix}.txt",  "w")
-        self.progress_file = open(f"hs_progress{suffix}.txt", "w")
+        #self.progress_file = open(f"hs_progress{suffix}.txt", "w")
         self.sol_log_file  = open(f"hs_sol_log{suffix}.txt",  "w")
         self.log_memory = True   # toggle: solver.log_memory = True
         self.hs_csv_file   = open(f"hs_track{suffix}.csv", "w", newline='')
@@ -170,6 +171,20 @@ class HarmonySearch(Search):
             'result','converged','bic','loglik','aic','asvars','isvars','randvars','bcvars',
             'corvars','class_vars','member_vars','p_val_threshold','significant','not_significant',
         ])
+        run_header = (
+            f"SearchLibrium — Harmony Search Run\n"
+            f"Run ID       : {self.idnum}\n"
+            f"Started      : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Criterions   : {self.param.criterions}\n"
+            f"max_mem      : {self.max_mem}\n"
+            f"maxiter      : {self.maxiter}\n"
+            f"max_harm     : {self.max_harm}\n"
+            f"min_harm     : {self.min_harm}\n"
+            f"max_pitch    : {self.max_pitch}\n"
+            f"min_pitch    : {self.min_pitch}\n"
+            + "-" * 60
+        )
+        print(run_header, file=self.results_file)
     # }
 
     def _memory_ids(self):
@@ -519,7 +534,7 @@ class HarmonySearch(Search):
 
         hmcr_touched = adjusted_solution.get('hmcr_touched', set())
 
-        adjusted_solution, n_perturb, attempts, real_perturbations, moves_detail = self.perturb_round( adjusted_solution, choices=perturbations, latent=self.param.latent_class, max_attempts=20, pre_touched=hmcr_touched)
+        adjusted_solution, n_perturb, attempts, real_perturbations, moves_detail = self.perturb_round( adjusted_solution, choices=perturbations, latent=self.param.latent_class, max_attempts=20, pre_touched=hmcr_touched, pitch=pitch)
 
         self._csv_context.update({'n_perturb': n_perturb, 'attempts': attempts, 'real_perturbations': real_perturbations, 'moves_detail': moves_detail})
 
@@ -1153,6 +1168,19 @@ class HarmonySearch(Search):
         return all_val, best_val
     # }
 
+    def log_convergence_single(self):
+    # {
+        """Build plot data from the untrimmed per-iteration history (self._plot_history),
+        never from self.memory (which insert_solution() trims to max_mem)."""
+        history = self._plot_history  # list of (iter, obj, origen)
+        best_val = []
+        running_best = float('inf')
+        for _, obj, _ in history:
+            running_best = min(running_best, obj)
+            best_val.append(running_best)
+        return history, best_val
+    # }
+
     ''' ---------------------------------------------------------- '''
     ''' Function  Conduct harmony memory consideration             '''
     ''' pitch adjustment, and local search                         '''
@@ -1163,6 +1191,7 @@ class HarmonySearch(Search):
     def improvise(self):
     # {
         best, current = [], []
+        
         for iter in range(self.maxiter):
         # {
             self._improv_iter = iter  # track for phase-aware local search
@@ -1188,6 +1217,8 @@ class HarmonySearch(Search):
             # {
                 self.insert_solution(curr_sol)
 
+                self._plot_history.append((iter, curr_sol.obj(0), origin))
+
                 # Phase-aware local search: every 10 iterations, run
                 # developer-style moves on the top solutions
                 if iter > 0 and iter % 10 == 0 and len(self.memory) >= 2:
@@ -1195,7 +1226,11 @@ class HarmonySearch(Search):
             # }
         # }
 
-        all_val, obj_val = self.log_convergence(self.memory)
+        if self.nb_crit == 1:
+            all_val, obj_val = self.log_convergence_single()
+        else:
+            all_val, obj_val = self.log_convergence(self.memory)
+
         if self.generate_plots:
             try:
                 self.plot_results(self.memory, all_val, obj_val)
@@ -1623,34 +1658,34 @@ class HarmonySearch(Search):
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
     def plot_single(self, all_val, best_val):
-    # {
+    # {      
         fig, ax1 = plt.subplots()
-        ax2 = ax1.twinx()
         ax1.xaxis.get_major_locator().set_params(integer=True)
 
-        # self.param.criterions is a list of (name, sign) tuples -- crit_names
-        # are just the names, used in axis labels below.
+        iters   = [row[0] for row in all_val]
+        objs    = [row[1] for row in all_val]
+        origins = [row[2] for row in all_val]
+
+        color_map = {'initial': 'gray', 'memory': 'tab:green', 'new': 'tab:blue'}
+        label_map = {'initial': 'Initial memory', 'memory': 'From memory', 'new': 'New'}
+
+        for origen in ('initial', 'memory', 'new'):
+            xs = [it for it, o in zip(iters, origins) if o == origen]
+            ys = [ob for ob, o in zip(objs, origins) if o == origen]
+            if xs:
+                ax1.scatter(xs, ys, color=color_map[origen], s=20, label=label_map[origen])
+
+        best_idx = int(np.argmin(objs))
+        ax1.scatter([iters[best_idx]], [objs[best_idx]], color='red', s=30,
+                    zorder=5, label='Best overall')
+
         crit_names = [c[0] for c in self.param.criterions[:self.nb_crit]]
-        label = "Solution estimated at current iteration (" + crit_names[0] + ")"
-        line_1 = ax1.plot(np.arange(len(all_val[0])), all_val[0], label=label)
+        ax1.plot(iters, best_val, color="orange", linestyle="dotted",
+                 label=f"Best solution so far ({crit_names[0]})")
 
-        label = "Best solution in memory at current iteration (" + crit_names[0] + ")"
-        line_2 = ax1.plot(np.arange(len(best_val[0])), best_val[0], label=label, linestyle="dotted")
-
-        all_lines = line_1 + line_2
-        ax1.set_ylabel(crit_names[0])
-
-        # Second axis only applies to multi-objective runs (a second criterion).
-        if len(crit_names) >= 2 and len(best_val) >= 2:
-            label = "In-sample LL of best solution in memory at current iteration"
-            line_3 = ax2.plot(np.arange(len(best_val[1])), best_val[1], label=label, linestyle="dashed")
-            all_lines = all_lines + line_3
-            ax2.set_ylabel(crit_names[1])
-
-        labels = [line.get_label() for line in all_lines]
-        handles, _ = ax1.get_legend_handles_labels()
-        lgd = ax1.legend(all_lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.1))
         ax1.set_xlabel("Iterations")
+        ax1.set_ylabel(crit_names[0])
+        lgd = ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1))
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
         num_classes = getattr(self.param, 'num_classes', 1)
         latent_info = "_" + str(num_classes) + "_classes_" if num_classes > 1 else "_"
@@ -1779,6 +1814,9 @@ class HarmonySearch(Search):
         memory        = memory_sorted[: self.max_mem]
         self.memory   = memory.copy()
 
+        for offset, sol in enumerate(self.memory):
+            self._plot_history.append((-len(self.memory) + offset, sol.obj(0), 'initial'))
+
         # Track best before improvisation
         if self.memory:
             self.best_sol = self.copy_solution(self.sort_memory(self.memory)[0])
@@ -1795,6 +1833,10 @@ class HarmonySearch(Search):
 
         self.report_exploration_summary()
 
+        print(f"\nFinal Harmony Memory ({len(improved)} solutions)", file=self.results_file)
+        for rank, sol in enumerate(improved, start=1):
+            self.log_solution_block(sol, f"Top {rank}", file=self.results_file)
+
         return improved
     # }
 
@@ -1804,10 +1846,12 @@ class HarmonySearch(Search):
             self.results_file.close()
         except Exception:
             pass
+        """
         try:
-            self.progress_file.close()
+            self.progress_file.close() # Not useful now
         except Exception:
             pass
+        """ 
         try:
             self.hs_csv_file.close()
         except Exception:
