@@ -2168,6 +2168,7 @@ class LatentClass(DiscreteChoiceModel):
             self._base_class_arg if self._base_class_arg is not None else self.n_classes - 1)
         self.base_class = bc
        
+        """
         self._intercept_free_classes = [c for c in range(self.n_classes) if c != self.base_class]
         n_inter = len(self._intercept_free_classes)
         self._n_inter = n_inter
@@ -2185,7 +2186,7 @@ class LatentClass(DiscreteChoiceModel):
         ]
         n_inter = len(self._intercept_free_classes)
         self._n_inter = n_inter
-         """
+     
         #############################
 
         self._has_membership = member_params_spec is not None
