@@ -82,7 +82,7 @@ Documentation = "https://pypi.org/project/SearchLibrium/"
 realpython = "SearchLibrium.__main__:main"
 
 [tool.bumpver]
-current_version = "0.0.182"
+current_version = "0.0.183"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "[skip ci] Bump version {old_version} -> {new_version}"
 commit = true
