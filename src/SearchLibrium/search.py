@@ -369,9 +369,9 @@ def rank_solutions(solutions, criterion):
         for j in range(i + 1, nsol):
         # {
             # Compare solution i and j:
-            if dominates(solutions[i].obj, solutions[j].obj, criterion):
+            if dominates(solutions[i].data['obj'], solutions[j].data['obj'], criterion):
                 dom_by[j].append(i)  # [j] dominated by [i], so record [i]
-            elif dominates(solutions[j].obj, solutions[i].obj, criterion):
+            elif dominates(solutions[j].data['obj'], solutions[i].data['obj'], criterion):
                 dom_by[i].append(j)  # [i] dominated by [j], so record [j]
         # }
     # }
