@@ -4159,6 +4159,17 @@ class Search():
         # {
             self.converged += 1
             sol['converged'] = True
+
+            # ── inject nsig for Pareto significance-guided search ──────
+            _model = sol.get('model')
+            if _model is not None:
+                _cn = getattr(_model, 'coeff_names', None)
+                _pv = getattr(_model, 'pvalues', None)
+                sol['nsig'] = count_insig_groups(_cn, _pv,
+                                                  getattr(self.param, 'p_val', 0.05))
+            else:
+                sol['nsig'] = 0
+
             self.update_objectives(self.param.criterions, sol)
 
             if track_best and (not hasattr(self, 'best_solution') or self.find_best_sol([sol, self.best_solution]) == sol):
