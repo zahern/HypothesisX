@@ -349,10 +349,9 @@ class SA(Search):
         self.max_iter = max_iter    # Maximum number of iterations at each temperature step
         self.max_no_impr = 100        # Max number of steps permitted without improvements
         # True = let choose_starting_solution recompute tI from delta-E sampling
-        # (defaults to True, so calibration stays on unless a caller explicitly
-        # passes a ctrl tuple and opts out). Body of choose_starting_solution is
-        # guarded by `getattr(self, 'calibrate_tI', True)`.
-        self.calibrate_tI = kwargs.get('calibrate_tI', True)
+        # (defaults to False so an explicitly supplied ctrl tuple is respected;
+        # callers wanting auto-calibration pass calibrate_tI=True explicitly).
+        self.calibrate_tI = kwargs.get('calibrate_tI', False)
         self.terminate = False      # Termination flag
         self.rate = np.exp((1.0 / (self.max_temp_steps-1)) * np.log(self.tF/self.tI)) # Temperature reduction rate
 
@@ -497,6 +496,24 @@ class SA(Search):
 
     @star
     def return_best(self):
+        if self.nb_crit > 1 and self.archive:
+            # Multi-objective: hand back the Pareto-archive member that
+            # prioritises significance (criterion whose name contains 'sig'),
+            # tie-breaking on the first declared criterion (usually bic/AIC).
+            crit_names = [c[0].upper() for c in self.param.criterions[:self.nb_crit]]
+            sig_prior = [(i, c[0]) for i, c in enumerate(self.param.criterions[:self.nb_crit])
+                         if 'sig' in c[0].lower()]
+            sig_idx = sig_prior[0][0] if sig_prior else 1
+            prime_idx = 0
+            best_sol = None
+            best_key = None
+            for s in self.archive:
+                key = (float(s.obj(sig_idx)) if sig_idx < self.nb_crit else 0.0,
+                       float(s.obj(prime_idx)))
+                if best_key is None or key < best_key:
+                    best_key, best_sol = key, s
+            if best_sol is not None:
+                return best_sol
         return self.best_sol
 
 
@@ -1123,15 +1140,10 @@ class SA(Search):
         # }
 
         # Remove all solutions 'add_sol' dominates and add 'add_sol'
-        print('before archvie: ', len(self.archive))
         self.archive = [
                            s for s in self.archive
                            if not any(np.array_equal(s, d) for d in _dominated)
                        ] + [add_sol]
-        print('after archive:' , len(self.archive))
-        #self.archive = [sol for sol in self.archive if sol not in _dominated] + [add_sol]
-
-        #DEBUG: print("The new solution is non-dominated. It dominates ",len(_dominated)," existing solution(s)")
 
         return self.archive
     # }
@@ -1283,11 +1295,18 @@ class SA(Search):
             text    = (f"SA[{self.idnum}] step {step:>9s} | T={temp:>8s} | "
                        f"curr={curr} | archive={arch} | "
                        f"acc={self.accepted} | t={elapsed}s")
-            # For multi-objective runs best_obj is the Pareto archive size
-            curr_vals = '|'.join(f"{self.current_sol.obj(i):.6g}"
-                                 for i in range(self.nb_crit))
+            # For multi-objective runs the CSV keeps the same column layout as
+            # the header (step,temperature,current_obj,best_obj,n_accepted,elapsed_s)
+            # using the primary criterion for current/best so the values stay
+            # strictly numeric (no trailing "archive_size=..." tokens).
+            best0 = None
+            if self.archive:
+                best0 = min(float(s.obj(0)) for s in self.archive)
+            if best0 is None:
+                best0 = float(self.current_sol.obj(0))
             csv_row = (f"{self.step},{self.t:.6g},"
-                       f"{curr_vals},archive_size={arch},"
+                       f"{self.current_sol.obj(0):.6g},"
+                       f"{best0:.6g},"
                        f"{self.accepted},{elapsed}")
 
         # Write human-readable line (console or results_file). The console
