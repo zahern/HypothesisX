@@ -10,25 +10,24 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
     def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u'], **kwargs):
         RandomRegret.__init__(self, **kwargs)
         MixedLogit.__init__(self, halton_opts=halton_opts, distributions=distributions)
-        # RandomRegret's setup()/setup_long()/setup_short() never call
-        # MixedLogit.setup(), so fn_generate_draws (normally assigned there,
-        # defaulting to Halton draws) is never set -- generate_draws() then
-        # crashes with AttributeError the first time fit() is called.
         self.fn_generate_draws = self.generate_draws_halton
 
+    def _n(self):
+        return getattr(self, 'N', getattr(self, 'nb_samples', 0))
 
+    def _j(self):
+        return getattr(self, 'J', getattr(self, 'nb_alt', 0))
 
     def compute_regrets(self, beta_draws: np.ndarray):
-        # Ensure inputs are NumPy arrays
-        self.X = np.array(self.X)
+        X = np.array(self.X)
         beta_draws = np.array(beta_draws)
-
-        regrets = np.zeros((self.nb_samples, self.nb_alt))
-        for n in range(self.nb_samples):
-            for i in range(self.nb_alt):
+        N, J = self._n(), self._j()
+        regrets = np.zeros((N, J))
+        for n in range(N):
+            for i in range(J):
                 regrets[n, i] = sum(
-                    self.get_regret(self.X[n, i, :], self.X[n, k, :], beta_draws[n, :])
-                    for k in range(self.nb_alt) if k != i
+                    self.get_regret(X[n, i, :], X[n, k, :], beta_draws[n, :])
+                    for k in range(J) if k != i
                 )
         return regrets
 
@@ -36,33 +35,23 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
         x_i = np.array(x_i)
         x_j = np.array(x_j)
         beta = np.array(beta)
-
-        diff = x_j - x_i  # Pairwise attribute differences
-        regret = float(np.sum(np.log(1 + np.exp(beta * diff))))  # Regret calculation
+        diff = x_j - x_i
+        regret = float(np.sum(np.log(1 + np.exp(beta * diff))))
         return regret
 
     def compute_probability(self, beta_draws: np.ndarray) -> np.ndarray:
-        """
-        Compute choice probabilities using the regret function and random coefficients.
-        """
         regrets = self.compute_regrets(beta_draws)
         exp_neg_regret = np.exp(-regrets)
         return exp_neg_regret / np.sum(exp_neg_regret, axis=1, keepdims=True)
 
     def fit(self, n_draws=100, **kwargs):
-        """
-        Estimate the Mixed Random Regret model.
-        """
-        # Generate random draws for coefficients
-        beta_draws = self.generate_draws(self.nb_samples, n_draws, self.nb_attr)
+        beta_draws = self.generate_draws(self._n(), n_draws, self.nb_attr)
 
-        # Define the optimization objective
         def neg_log_likelihood(beta):
             probabilities = self.compute_probability(beta_draws)
-            loglik = np.sum(np.log(probabilities[np.arange(self.nb_samples), self.y]))
+            loglik = np.sum(np.log(probabilities[np.arange(self._n()), self.y]))
             return -loglik
 
-        # Optimize the negative log-likelihood
         self.result = minimize(neg_log_likelihood, self.beta, method='SLSQP', tol=1e-6)
         self.beta = self.result.x
         self.post_process()

@@ -4324,7 +4324,8 @@ class Search():
 
         model.setup(X=X, y=y, varnames=varnames, isvars=isvars, alts=alts,
             ids=ids, transvars=transvars, fit_intercept=fit_intercept, init_coeff=init_coeff,
-            weights=weights, avail=avail, base_alt=base_alt, maxiter=maxiter, ftol=ftol, gtol=gtol)
+            weights=weights, avail=avail, base_alt=base_alt, maxiter=maxiter, ftol=ftol, gtol=gtol,
+            l2_penalty=2.0, l1_penalty=0.5)
         model.fit()
     
         return model
