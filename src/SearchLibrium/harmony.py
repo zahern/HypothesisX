@@ -130,6 +130,7 @@ class HarmonySearch(Search):
         self.idnum = idnum or 'HS'
 
         self.min_classes = getattr(param, 'min_classes', 1)
+        self.effective_search = getattr(param, 'Effective_Search', True) # It allows to run the search for each number of latent classes between min_classes and max_classes
         self.max_classes = getattr(param, 'max_classes', 5)
 
         # Unpack ctrl tuple if provided; otherwise use defaults estimated later
@@ -151,6 +152,9 @@ class HarmonySearch(Search):
         self._hmcr_moves  = []              # HMCR-phase track (reset each build_solution call)
         self.memory       = []              # harmony memory
         self._plot_history = []             # (iter, obj(0), origen) — never trimmed, feeds the convergence plot
+        self._global_iter = 0               # cumulative iteration offset across class counts
+        self._level_boundaries = []         # (sol_num, num_classes) per level, for vertical dividers
+        self._level_markers = []            # (sol_num, obj, num_classes) best-of-memory per level
         self.all_solutions = []             # de-duplication list
         self.best_sol     = None            # best solution found
         self.converged    = 0               # evaluation counters (matches SA interface)
@@ -1217,7 +1221,7 @@ class HarmonySearch(Search):
             # {
                 self.insert_solution(curr_sol)
 
-                self._plot_history.append((iter, curr_sol.obj(0), origin))
+                self._plot_history.append((curr_sol['sol_num'], curr_sol.obj(0), origin))
 
                 # Phase-aware local search: every 10 iterations, run
                 # developer-style moves on the top solutions
@@ -1232,10 +1236,11 @@ class HarmonySearch(Search):
             all_val, obj_val = self.log_convergence(self.memory)
 
         if self.generate_plots:
-            try:
-                self.plot_results(self.memory, all_val, obj_val)
-            except Exception as exc:
-                logger.warning(f"Convergence plot failed (non-fatal, search result unaffected): {exc}")
+            if not getattr(self, '_suppress_level_plot', False):
+                try:
+                    self.plot_results(self.memory, all_val, obj_val)
+                except Exception as exc:
+                    logger.warning(f"Convergence plot failed (non-fatal, search result unaffected): {exc}")
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1246,11 +1251,28 @@ class HarmonySearch(Search):
         feasible_solutions = []
         if solutions is not None:
         # {
+            target_classes = getattr(self.param, 'num_classes', 1) 
             for sol in solutions:
             # {
                 new_sol = copy.deepcopy(sol)
-                new_sol = self.increase_sol_by_one_class(new_sol)
-                new_sol.pop('class_num')    # Remove 'class_num'
+
+                current_classes = new_sol.get('class_num', 1)
+                steps = max(0, target_classes - current_classes)
+                if steps == 0:
+                    continue  # already at or beyond target class count
+
+                dominant_ref = self._capture_dominant_class(new_sol)
+                for _ in range(steps):
+                    new_sol = self.increase_sol_by_one_class(new_sol, dominant_ref)
+
+                new_sol.data['sol_num'] = Solution.sol_counter
+                Solution.sol_counter += 1
+                new_sol.data['from_memory_expansion'] = True
+                new_sol.pop('class_num', None)    # Remove 'class_num'
+
+                self._csv_context = {'iter': '', 'harm_rate': '', 'pitch': '',
+                                      'origen': 'new_memory', 'chosen_sol_num': sol.get('sol_num', '')}
+
                 new_sol, converged = self.evaluate_solution(new_sol)
                 if converged:
                     feasible_solutions.append(new_sol)
@@ -1472,16 +1494,19 @@ class HarmonySearch(Search):
     # }
 
 
-    def run_search_latent(self, override=False):
+    def run_search_latent(self, override=None):
     # {
+        override = (not self.effective_search) if override is None else override
+        self._suppress_level_plot = True
         prev, best_model_idx = infinity, 0
         all_solutions, solutions = [], []
+        general_memory = []  # top-max_mem solutions across all class count
 
         for q in range(self.min_classes, self.max_classes + 1):
         # {
             self.param.num_classes = q
             self.param.latent_class = False if q == 1 else True
-            solutions = self.run_search(existing_sols=all_solutions)
+            solutions = self.run_search(existing_sols=general_memory)
 
             # This code iterates over each dictionary sol in the solutions list and updates
             # the value associated with the key 'class_num' to q. The use of a list
@@ -1491,6 +1516,17 @@ class HarmonySearch(Search):
             # Aggregate solutions
             all_solutions = all_solutions + solutions
 
+            # Update general memory: rank the per-class memory against the
+            # running general memory and keep the top max_mem overall.
+            merged_memory = get_unique(general_memory + solutions, 0)
+            general_memory = self.sort_memory(merged_memory)[:self.max_mem]
+
+            print(f"\nGeneral Memory after {q} classes ({len(general_memory)} solutions)",
+                  file=self.results_file)
+            for gsol in general_memory:
+                print(f"  sol_num={gsol['sol_num']:>4}  class_num={gsol.get('class_num', '?')}  "
+                      f"bic={gsol.obj(0):.1f}", file=self.results_file)
+                
             if self.param.nb_crit > 1:
             # {
                 all_solutions = self.non_dominant_sorting(all_solutions)
@@ -1526,11 +1562,18 @@ class HarmonySearch(Search):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.log_solutions(all_solutions)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if self.generate_plots:
+            try:
+                self.plot_multiclass_search()
+            except Exception as exc:
+                logger.warning(f"Multi-class convergence plot failed: {exc}")
 
+        '''
         best_val, all_val, all_val_classes = self.post_process(all_solutions)
 
         if self.generate_plots:
             self.plot_results_latent(all_solutions, best_val, all_val, all_val_classes)
+        '''
 
         return all_solutions
     # }
@@ -1654,6 +1697,64 @@ class HarmonySearch(Search):
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
 
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function                                                   '''
+    ''' ---------------------------------------------------------- '''
+    def plot_multiclass_search(self):
+    # {
+        fig, ax1 = plt.subplots()
+        ax1.xaxis.get_major_locator().set_params(integer=True)
+
+        iters   = [row[0] for row in self._plot_history]
+        objs    = [row[1] for row in self._plot_history]
+        origins = [row[2] for row in self._plot_history]
+
+        color_map = {'initial': 'indigo', 'memory': 'tab:green', 'new': 'tab:blue'}
+        label_map = {'initial': 'Memory seed (per class)', 'memory': 'From memory', 'new': 'New'}
+
+        for origen in ('initial', 'memory', 'new'):
+            xs = [it for it, o in zip(iters, origins) if o == origen]
+            ys = [ob for ob, o in zip(objs, origins) if o == origen]
+            if xs:
+                ax1.scatter(xs, ys, color=color_map[origen], s=20, label=label_map[origen])
+
+        max_y = max(objs) if objs else 0
+        min_y = min(objs) if objs else 0
+        margin = 0.10 * (max_y - min_y) if max_y != min_y else 1.0
+        ax1.set_ylim(min_y - 0.03 * (max_y - min_y), max_y + margin)
+        boundary_starts = [b[0] for b in self._level_boundaries]
+        block_ends = boundary_starts[1:] + [max(iters) if iters else 0]
+        for (start_iter, q), end_iter in zip(self._level_boundaries, block_ends):
+            ax1.axvline(x=start_iter, color='r', linestyle='--', linewidth=0.8)
+            mid = (start_iter + end_iter) / 2
+            ax1.text(mid, max_y + margin * 0.3, f"{q} class" + ("es" if q > 1 else ""),
+                      ha='center')
+
+        if self._level_markers:
+            lvl_x = [m[0] for m in self._level_markers]
+            lvl_y = [m[1] for m in self._level_markers]
+            ax1.scatter(lvl_x, lvl_y, color='red', s=25, marker='D', zorder=4,
+                        label='Best of memory (per class)')
+
+        if objs:
+            best_idx = int(np.argmin(objs))
+            ax1.scatter([iters[best_idx]], [objs[best_idx]], color='gold', edgecolor='black',
+                        s=70, marker='*', zorder=5, label='Best overall')
+
+        order = np.argsort(iters)
+        running_best = np.minimum.accumulate(np.array(objs)[order])
+        ax1.plot(np.array(iters)[order], running_best, color="orange", linestyle="dotted",
+                 label="Best solution so far")
+
+        ax1.set_xlabel("Solution #")
+        ax1.set_ylabel(self.param.criterions[0][0])
+        lgd = ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2)
+        current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
+        plot_filename = self.code_name + "_multiclass_" + current_time + "_SOOF.png"
+        plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
+    # }
+
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
@@ -1683,7 +1784,7 @@ class HarmonySearch(Search):
         ax1.plot(iters, best_val, color="orange", linestyle="dotted",
                  label=f"Best solution so far ({crit_names[0]})")
 
-        ax1.set_xlabel("Iterations")
+        ax1.set_xlabel("Solution #")
         ax1.set_ylabel(crit_names[0])
         lgd = ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1))
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
@@ -1814,8 +1915,11 @@ class HarmonySearch(Search):
         memory        = memory_sorted[: self.max_mem]
         self.memory   = memory.copy()
 
-        for offset, sol in enumerate(self.memory):
-            self._plot_history.append((-len(self.memory) + offset, sol.obj(0), 'initial'))
+        if self.memory:
+            self._level_boundaries.append((min(sol['sol_num'] for sol in self.memory),
+                                            getattr(self.param, 'num_classes', 1)))
+        for sol in self.memory:
+            self._plot_history.append((sol['sol_num'], sol.obj(0), 'initial'))
 
         # Track best before improvisation
         if self.memory:
@@ -1827,6 +1931,8 @@ class HarmonySearch(Search):
         improved = self.sort_memory(self.memory.copy())
         if improved:
             self.best_sol = self.copy_solution(improved[0])
+            self._level_markers.append((improved[0]['sol_num'], improved[0].obj(0), getattr(self.param, 'num_classes', 1)))
+        self._global_iter += self.maxiter
 
         print(f"HS[{self.idnum}]. Search complete")
         logger.info("Search ended at: {}".format(str(_time.ctime())))

@@ -431,7 +431,7 @@ def call_banditsa(parameters, init_sol=None, ctrl=None, **kwargs):
 # Harmony Search
 # ─────────────────────────────────────────────────────────────────────────────
 
-def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, **kwargs):
+def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, search_classes=False, **kwargs):
     """
     Run Harmony Search.
 
@@ -475,9 +475,12 @@ def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=Fals
     print(_describe_ctrl(ctrl, 'hs'))
     print()
 
-    solver = HarmonySearch(parameters, ctrl=ctrl, idnum=id_num)
+    solver = HarmonySearch(parameters, ctrl=ctrl, idnum=id_num, **kwargs)
     existing = [init_sol] if init_sol is not None else None
-    solver.run_search(existing_sols=existing)
+    if search_classes:
+        solver.run_search_latent()
+    else:
+        solver.run_search(existing_sols=existing)
     solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='HS')

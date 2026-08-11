@@ -802,7 +802,7 @@ class Parameters:
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
             '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
             'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class',
-            'num_classes',
+            'num_classes','min_classes', 'max_classes', 'Effective_Search',
         ]
         self.panels = panels
 
@@ -3693,6 +3693,90 @@ class Search():
         else:
             return self.perturb_remove_class_paramfeature(solution)
 
+    def _capture_dominant_class(self, sol):
+
+        """Snapshot the dominant class's vars/betas/member ONCE, before any
+        expansion, so multi-step growth (steps>1) never rereads a stale model."""
+
+        class_params_spec = sol.get('class_params_spec', None)
+        model = sol.get('model')
+        if class_params_spec is None:
+            dom_betas = np.asarray(model.betas, dtype=float) if model is not None else None
+            return {'vars': np.array(sol.get('asvars', []), dtype=object),
+                    'member': np.array(sol.get('isvars', []), dtype=object),
+                    'betas': dom_betas, 'full_betas': [dom_betas] if dom_betas is not None else None}
+        member_params_spec = sol.get('member_params_spec', None)
+        class_probs = getattr(model, 'class_probs', None) if model is not None else None
+        dominant = int(np.argmax(class_probs)) if class_probs is not None else 0
+        class_betas = getattr(model, 'class_betas', None) if model is not None else None
+        return {'vars': np.asarray(class_params_spec[dominant], dtype=object),
+                'member': np.asarray(member_params_spec[dominant], dtype=object) if member_params_spec is not None else np.array([], dtype=object),
+                'betas': np.asarray(class_betas[dominant], dtype=float) if class_betas is not None else None,
+                'full_betas': [np.asarray(b, dtype=float) for b in class_betas] if class_betas is not None else None}
+    
+    def _hmcr_subsample(self, vars_arr, rate=0.5):
+        """Keep each variable independently with probability `rate`
+        (HMCR-style). Guards against an empty result."""
+        vars_arr = np.asarray(vars_arr, dtype=object)
+        if vars_arr.size == 0:
+            return vars_arr.copy()
+        keep = np.random.rand(vars_arr.size) < rate
+        kept = vars_arr[keep]
+        if kept.size == 0:
+            kept = np.array([np.random.choice(vars_arr)], dtype=object)
+        return np.sort(kept)
+
+    def _match_betas(self, dom_vars, dom_betas, new_vars):
+        """Extract dom_betas values for the surviving `new_vars` subset.
+        Exact copy, no jitter — jitter is applied once, later, in the
+        model's multistart loop."""
+        dom_vars = list(dom_vars)
+        idx = [dom_vars.index(v) for v in new_vars if v in dom_vars]
+        return np.asarray(dom_betas, dtype=float)[idx] if idx else np.array([0.0])
+
+    def increase_sol_by_one_class(self, sol, dominant_ref):
+        """Builds a (K+1)-class candidate from a K-class (or MNL) solution.
+        The new class is a copy of the dominant class (largest share),
+        perturbed with HMCR=0.5 at choice and member level, and is
+        inserted immediately before the base class (last position), so
+        the base class never changes identity across class counts.
+        """
+        class_params_spec = sol.get('class_params_spec', None)
+        dom_vars = dominant_ref['vars']
+        dom_member = dominant_ref['member']
+        dom_betas = dominant_ref['betas']
+
+        new_vars = self._hmcr_subsample(dom_vars, rate=0.5)
+        new_member = self._hmcr_subsample(dom_member, rate=0.5)
+
+        if class_params_spec is None:
+            sol['class_params_spec'] = np.array([new_vars, dom_vars], dtype=object)
+            sol['member_params_spec'] = np.array([new_member, np.array([], dtype=object)], dtype=object)
+            if dom_betas is not None:
+                new_betas = self._match_betas(dom_vars, dom_betas, new_vars)
+                sol['init_class_betas'] = [new_betas, dom_betas]
+            else:
+                sol.pop('init_class_betas', None)
+            return sol
+
+        member_params_spec = sol.get('member_params_spec', None)
+
+        new_class_params_spec = list(class_params_spec[:-1]) + [new_vars] + [class_params_spec[-1]]
+        sol['class_params_spec'] = np.array(new_class_params_spec, dtype=object)
+
+        new_member_params_spec = list(member_params_spec[:-1]) + [new_member] + [member_params_spec[-1]]
+        sol['member_params_spec'] = np.array(new_member_params_spec, dtype=object)
+
+        current_betas = sol.get('init_class_betas') or dominant_ref['full_betas']
+        if dom_betas is not None and current_betas is not None:
+            new_betas = self._match_betas(dom_vars, dom_betas, new_vars)
+            extended = list(current_betas[:-1]) + [new_betas] + [current_betas[-1]]
+            sol['init_class_betas'] = extended
+        else:
+            sol.pop('init_class_betas', None)
+
+        return sol  
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Randomly select randvar not already in solution  '''
     ''' ---------------------------------------------------------- '''
@@ -4404,10 +4488,10 @@ class Search():
 
         sol, converged = self._evaluate_solution(sol, track_best=track_best)
 
+        result = 'converged' if converged else sol.get('fail_reason', 'no_converged')
         if converged:
             self.evaluated_solutions[sig] = [sol.obj(i) for i in range(self.nb_crit)]
-            result = 'converged' if converged else sol.get('fail_reason', 'no_converged')
-            self._log_csv_row(sol, result)
+        self._log_csv_row(sol, result)
 
         return sol, converged
 
@@ -4517,7 +4601,10 @@ class Search():
             # ── Convergence diagnostic: explain why the model did not converge
             self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
         # }        
-        tag = 'NEW BEST' if sol.get('converged') and is_new_best else ('EVALUATED' if sol.get('converged') else 'FAILED')
+        if sol.get('converged') and sol.get('from_memory_expansion'):
+            tag = 'NEW MEMORY'
+        else:
+            tag = 'NEW BEST' if sol.get('converged') and is_new_best else ('EVALUATED' if sol.get('converged') else 'FAILED')
         self.log_solution_block(sol, tag)
 
         return (sol, sol['converged'])
@@ -5033,7 +5120,7 @@ class Search():
                 num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-6,
                 gtol_membership_func=1e-5, avail=None, avail_latent=None,
                 intercept_opts=None, weights=None, seed=None,
-                alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None):
+                alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None, betas0=None):
         """Fit a latent class multinomial logit model with optional membership equation.
 
         Uses the modern ``LatentClassMixedLogit`` from ``latent_class.py``.
@@ -5086,8 +5173,9 @@ class Search():
             class_params_spec=class_params_spec, panels=panels
         )
         #model.fit(em_method="squarem")
-        model.fit()
+        model.fit(betas0=betas0)
         model.get_loglik_null()
+
         return model
 
     def fit_lcmm(self, X, y, varnames, isvars=None, class_params_spec=None,
@@ -5370,8 +5458,10 @@ class Search():
             avail=self.param.avail,
             weights=self.param.weights,
             alts=alts,
-            base_alt=self.param.base_alt, panels =  panels, ind_id=ind_id
+            base_alt=self.param.base_alt, panels =  panels, 
+            ind_id=ind_id,betas0=sol.get('init_class_betas')
         )
+
         """
         # TEMP DEBUG — remove after diagnosing
         print(f"[POST-FIT DEBUG] model.varnames = {model.varnames}")

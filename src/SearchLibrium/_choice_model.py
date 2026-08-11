@@ -1179,6 +1179,23 @@ class DiscreteChoiceModel(ABC):
                 p(f"  Individuals: {N}  |  Choices per Individual: {mx if mn == mx else f'{mn}-{mx}'}  |  Total Choices: {total}")
             else:
                 p(f"  Individuals: {N}")
+        # ── Multistarting ──────────────────────────────────────────────────
+        if is_latent_class and getattr(self, 'multistart_loglik', None):
+            p(LINE)
+            n_runs = len(self.multistart_loglik)
+            p(f"Multistarting ({n_runs} runs)")
+            kinds = getattr(self, 'multistart_kind', ['random'] * n_runs)
+            kind_labels = {'memory': 'Memory', 'memory_jitter': 'Memory + Jitter', 'random': 'Random'}
+            for kind_key in ('memory', 'memory_jitter', 'random'):
+                vals = [round(ll, 2) for ll, k in zip(self.multistart_loglik, kinds) if k == kind_key]
+                if not vals:
+                    continue
+                counts = {}
+                for v in vals:
+                    counts[v] = counts.get(v, 0) + 1
+                ordered = sorted(counts.items(), key=lambda kv: -kv[0])
+                row = "  ".join(f"{v:.1f} (x{c})" for v, c in ordered)
+                p(f"  {kind_labels[kind_key]:<18}{row}")
 
         # Convergence warning
         if not self.converged:
@@ -1186,6 +1203,19 @@ class DiscreteChoiceModel(ABC):
             p("  WARNING: Convergence was not reached. Estimates may not be reliable.")
             if is_latent_class:
                 p(f"  EM iterations: {self.total_iter}  (maxiter reached)")
+                if hasattr(self, "gtol_res") and hasattr(self, "grad_vector"):
+                    gtol_ok = "OK" if self.gtol_res < self.tol else "X"
+                    p(f"  gtol: {self.tol}  |  Final gradient norm: {self.gtol_res:.2e}  {gtol_ok}")
+                    if gtol_ok == "X":
+                        names = getattr(self, "coeff_names_grad", None)
+                        if names is not None:
+                            failing = [(names[k], self.grad_vector[k])
+                                       for k in range(len(names))
+                                       if abs(self.grad_vector[k]) > self.tol]
+                            if failing:
+                                p("  Parameters not meeting gtol threshold:")
+                                for name, gval in failing:
+                                    p(f"    {name:<30}  grad = {gval:.4e}")
             elif hasattr(self, "gtol_res") and hasattr(self, "ftol_res"):
                 gtol_ok = "OK" if self.gtol_res < self.gtol else "X"
                 ftol_ok = "OK" if self.ftol_res < self.ftol else "X"

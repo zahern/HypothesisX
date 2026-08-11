@@ -2168,7 +2168,7 @@ class LatentClass(DiscreteChoiceModel):
             self._base_class_arg if self._base_class_arg is not None else self.n_classes - 1)
         self.base_class = bc
        
-        """
+        
         self._intercept_free_classes = [c for c in range(self.n_classes) if c != self.base_class]
         n_inter = len(self._intercept_free_classes)
         self._n_inter = n_inter
@@ -2186,6 +2186,8 @@ class LatentClass(DiscreteChoiceModel):
         ]
         n_inter = len(self._intercept_free_classes)
         self._n_inter = n_inter
+
+        """
      
         #############################
 
@@ -2270,7 +2272,7 @@ class LatentClass(DiscreteChoiceModel):
 
     def _estep(self, betas, inter, gamma, pi):
         ll_c = self._class_ll_matrix(betas)
-        if self._has_membership:
+        if self._has_membership and self.optimise_membership:
             logH = self._membership_log_probs(inter, gamma)
         else:
             logpi = jnp.log(jnp.clip(pi, MIN_COMP))
@@ -2398,16 +2400,34 @@ class LatentClass(DiscreteChoiceModel):
         self._build_kernels()
         best = None
 
+        multistart_ll = []
+
+        # When betas0 is provided, we do 10% exact + 30% jittered + 60% random initialisations. (For K+1 Class we use K betas)
+
+        n_exact = int(np.ceil(0.10 * self.n_init)) if betas0 is not None else 0
+        n_jitter = int(np.ceil(0.30 * self.n_init)) if betas0 is not None else 0
+        jitter_scales = np.linspace(0.05, 0.20, n_jitter) if n_jitter > 0 else np.array([])
+
+        multistart_kind = []
+
         for init_idx in range(self.n_init):
             rng = np.random.default_rng(self.random_state + init_idx)
-            betas = [jnp.asarray(rng.normal(scale=0.05, size=int(k))) for k in self._Ks] \
-                if (init_idx > 0 or betas0 is None) else \
-                [jnp.asarray(b) for b in betas0]
+            if betas0 is not None and init_idx < n_exact:
+                betas = [jnp.asarray(b) for b in betas0]
+                multistart_kind.append('memory')
+            elif betas0 is not None and init_idx < n_exact + n_jitter:
+                scale = float(jitter_scales[init_idx - n_exact])
+                betas = [jnp.asarray(np.asarray(b) + rng.normal(scale=scale, size=len(b)))
+                         for b in betas0]
+                multistart_kind.append('memory_jitter')
+            else:
+                betas = [jnp.asarray(rng.normal(scale=0.05, size=int(k))) for k in self._Ks]
+                multistart_kind.append('random')
+
             n_inter, Km = self._n_inter, self.K_membership
-            inter = jnp.asarray(rng.normal(scale=0.01, size=n_inter)) \
-                if (init_idx > 0 or inter0 is None) else jnp.asarray(inter0)
-            gamma = jnp.asarray(rng.normal(scale=0.01, size=(C, Km))) \
-                if (init_idx > 0 or gamma0 is None) else jnp.asarray(gamma0)
+            inter = jnp.asarray(rng.normal(scale=0.01, size=n_inter))
+            gamma = jnp.asarray(rng.normal(scale=0.01, size=(C, Km)))
+
             pi = jnp.full(C, 1.0 / C)
 
             prev_ll = -np.inf
@@ -2464,8 +2484,11 @@ class LatentClass(DiscreteChoiceModel):
             if best is None or ll > best['loglik']:
                 best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
                             converged=converged, n_iter=n_iter, posterior=R_last)
+            multistart_ll.append(ll)
 
         self._finalise(best, time.time() - t_fit0)
+        self.multistart_loglik = multistart_ll
+        self.multistart_kind = multistart_kind
         return self
 
     # ------------------------------------------------------------------
