@@ -40,7 +40,7 @@ max_comp_val, min_comp_val = 1e+20, 1e-200 # or use float('inf')
 infinity = float('inf')
 
 class MixedLogit(DiscreteChoiceModel):
-    def __init__(self, halton_opts=None, distributions=['n', 'ln', 't', 'tn', 'u'], _jax=True):
+    def __init__(self, halton_opts=None, distributions=['n', 'ln', 'nln', 't', 'tn', 'u'], _jax=True):
         super().__init__(_jax)
         self.descr = "MXL"
         self.halton_opts = halton_opts
@@ -85,7 +85,7 @@ class MixedLogit(DiscreteChoiceModel):
         if isinstance(values, list) or values.size == 0:
             return values
         for k, distr_k in enumerate(distr):
-            if distr_k in ['n', 'ln', 'tn']:
+            if distr_k in ['n', 'ln', 'nln', 'tn']:
                 values[:, k, :] = ss.norm.ppf(values[:, k, :])
             elif distr_k == 't':
                 values_k = values[:, k, :]
@@ -1250,9 +1250,9 @@ class MixedLogit(DiscreteChoiceModel):
             print(f'XNames:{Xnames}')
             raise ValueError("Some variable names in randvars were not found "
                              "in the list of variable names")
-        if not set(randvars.values()).issubset(["n", "ln", "t", "tn", "u"]):
+        if not set(randvars.values()).issubset(["n", "ln", "nln", "t", "tn", "u"]):
             raise ValueError("Wrong mixing distribution found in randvars. "
-                             "Accepted distrubtions are n, ln, t, u, tn")
+                             "Accepted distrubtions are n, ln, nln, t, u, tn")
     # }
 
 

@@ -1808,7 +1808,7 @@ class DiscreteChoiceModel(ABC):
             distr = self.distributions[ii]
             if distr in ('n', 't'):
                 stdev = val
-            elif distr == 'ln':
+            elif distr in ('ln', 'nln'):
                 stdev = np.sqrt(np.exp(val ** 2) - 1) * np.exp(means[ii] + 0.5 * val ** 2)
             elif distr == 'u':
                 stdev = (val ** 2) / 3

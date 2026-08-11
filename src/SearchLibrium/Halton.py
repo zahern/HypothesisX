@@ -174,7 +174,7 @@ class Draws:
     def evaluate_distribution(self, distr, values):
         """Transform uniform values to the specified distribution."""
         for k, distr_k in enumerate(distr):
-            if distr_k in ['n', 'ln', 'tn']:
+            if distr_k in ['n', 'ln', 'nln', 'tn']:
                 u = np.clip(values[:, k, :], self._PPF_CLIP, 1.0 - self._PPF_CLIP)
                 values[:, k, :] = ss.norm.ppf(u)
             elif distr_k == 't':
@@ -190,6 +190,8 @@ class Draws:
         for k, distr in enumerate(index):
             if distr == 'ln':
                 betas_random[:, k, :] = np.exp(betas_random[:, k, :])
+            elif distr == 'nln':                                   # negative log-normal
+                betas_random[:, k, :] = -np.exp(betas_random[:, k, :])
             elif distr == 'tn':
                 betas_random[:, k, :] = np.maximum(betas_random[:, k, :], 0)
         return betas_random
