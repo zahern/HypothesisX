@@ -61,6 +61,7 @@ from collections import UserDict
 from enum import Enum
 import copy
 import numpy as np
+import pandas as pd
 import random
 from typing import Callable
 import re
@@ -559,6 +560,85 @@ def report_model_statistics(model, file):
 ''' ---------------------------------------------------------- '''
 ''' CLASS. OBJECT TO HOLD SEARCH PARAMETERS                    '''
 ''' ---------------------------------------------------------- '''
+def _bcvar_safe(df, var):
+    col = np.asarray(df[var].values, dtype=float)
+    nonzero = col[col != 0.0]
+    nz_count = len(nonzero)
+    if nz_count < 5:
+        return False
+    if nz_count / max(len(col), 1) < 0.02:
+        return False
+    unique_nz = len(np.unique(nonzero))
+    if unique_nz < 3:
+        return False
+    if np.std(col) < 1e-8:
+        return False
+    return True
+
+
+def auto_classify_as_is(df, varnames, choice_id=None, alt_var=None):
+    """Automatically classify candidate variables as alternative-specific
+    (AS) or individual-specific (IS) from the long-format choice data alone.
+
+    A variable is treated as *alternative-specific* when its value differs
+    across the alternatives within a choice situation (e.g. an attribute that
+    only applies to one alternative, or a generic attribute that varies by
+    alternative). A variable is treated as *individual-specific* when it is
+    constant across all alternatives within every choice situation but still
+    varies between individuals (e.g. income, age, household characteristics).
+
+    Returns
+    -------
+    (asvars, isvars, dropped) : (list, list, list)
+        Variables assigned to each role plus variables with no usable
+        variation at all (constant everywhere), which cannot be estimated.
+    """
+    asvars, isvars, dropped = [], [], []
+    try:
+        work = df.copy()
+        cid = None
+        if choice_id is not None:
+            work['__cid'] = np.asarray(choice_id, dtype=object)
+            cid = '__cid'
+        elif 'id' in work.columns:
+            cid = 'id'
+        if cid is None:
+            # No choice-situation id: fall back to row order (rows of a single
+            # choice situation must be contiguous).
+            work['__cid'] = np.arange(len(work))
+            cid = '__cid'
+
+        for v in varnames:
+            if v not in work.columns:
+                continue
+            col = pd.to_numeric(work[v], errors='coerce')
+            if col.notna().sum() == 0:
+                dropped.append(v)
+                continue
+            overall_std = float(col.std(skipna=True))
+            if not np.isfinite(overall_std) or overall_std < 1e-12:
+                dropped.append(v)
+                continue
+            nuniq = work.groupby(cid)[v].transform('nunique')
+            frac_varying = float((nuniq > 1).mean())
+            # A variable is alternative-specific if its value differs across
+            # the alternatives within ANY choice situation.  Variables that
+            # are alternatives-specific but only offered to a fraction of
+            # respondents still differ across alternatives in those tasks
+            # (e.g. a bundle attribute that is zero in most tasks), so any
+            # within-task variation is enough.  Only variables that are
+            # constant across every alternative of every task — but still
+            # vary between individuals — are individual-specific.
+            if frac_varying > 0.0:
+                asvars.append(v)
+            else:
+                isvars.append(v)
+    except Exception as exc:
+        logging.warning("[auto_as_is] classification failed: %s", exc)
+        return [], [], []
+    return asvars, isvars, dropped
+
+
 class Parameters:
 # {
     """ Docstring """
@@ -631,6 +711,7 @@ class Parameters:
         test_weight_var=None, allow_random=False, allow_random_isvars=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
         sd_penalty=0.001,
+        var_attrition_limit=40, min_candidates_after_attrition=6,
         intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
 
         
@@ -690,13 +771,59 @@ class Parameters:
         self.alt_var, self.test_alt_var = alt_var, test_alt_var
         self.choice_id, self.test_choice_id = choice_id, test_choice_id
         self.ind_id, self.test_ind_id = ind_id, test_ind_id
+
+        # ── Automatic AS / IS detection ─────────────────────────────────
+        # Where the modeller does not state which variables are
+        # alternative-specific (AS) and which are individual-specific (IS),
+        # classify them from the data: within each choice situation an AS
+        # variable varies across alternatives, an IS variable is constant.
+        # The inferred role is then used for random-coefficient routing
+        # (random coefficients must only be assigned to AS terms) and for
+        # the alternative-interaction expansion of isvars.
+        self.auto_asvars, self.auto_isvars, self.auto_dropped = [], [], []
+        self.varname_role = {}
+        auto_as_is = kwargs.get('auto_as_is', True)
+        if auto_as_is and self.df is not None and self.varnames:
+            self.auto_asvars, self.auto_isvars, self.auto_dropped = auto_classify_as_is(
+                self.df, self.varnames, self.choice_id, self.alt_var,
+            )
+            for v in self.auto_asvars:
+                self.varname_role[v] = 'as'
+            for v in self.auto_isvars:
+                self.varname_role[v] = 'is'
+            for v in self.auto_dropped:
+                self.varname_role[v] = 'drop'
+            if self.verbose or kwargs.get('report_auto_as_is', True):
+                print(
+                    f"[auto_as_is] detected {len(self.auto_asvars)} AS, "
+                    f"{len(self.auto_isvars)} IS, {len(self.auto_dropped)} "
+                    f"constant/dropped variables."
+                )
+                print(f"[auto_as_is] AS : {self.auto_asvars}")
+                print(f"[auto_as_is] IS : {self.auto_isvars}")
+                logging.info(
+                    "[auto_as_is] detected %d AS, %d IS, %d constant/dropped "
+                    "variables (AS: %s | IS: %s | dropped: %s)",
+                    len(self.auto_asvars), len(self.auto_isvars), len(self.auto_dropped),
+                    self.auto_asvars, self.auto_isvars, self.auto_dropped,
+                )
+        if isvarnames is None and self.auto_isvars:
+            isvarnames = self.auto_isvars
+        if asvarnames is None and self.auto_asvars:
+            asvarnames = self.auto_asvars
+
         self.isvarnames, self.asvarnames = isvarnames, asvarnames
+        # WARNING: This keyword does nothing but is kept for compatibility
+        # (asvarnames defaulting to varnames is handled below via auto-detection).
         if asvarnames is None and isvarnames is None:
             logging.info('Warning: asvarnames and isvarnames is None. Setting asvarnames as varnames')
             self.asvarnames = varnames
         self.trans_asvars = trans_asvars
         self.ftol, self.gtol = ftol, gtol
         self.gtol_membership_func = gtol_membership_func
+
+        self.var_attrition_limit = var_attrition_limit
+        self.min_candidates_after_attrition = min_candidates_after_attrition
 
 
         self.maxiter = maxiter
@@ -957,6 +1084,9 @@ class Parameters:
     # {
         self.avail_rvars = self.avail_rvars if self.allow_random else []
         self.avail_bcvars = self.avail_bcvars if self.allow_bcvars else []
+        if self.allow_bcvars and self.df is not None:
+            self.avail_bcvars = [v for v in self.avail_bcvars
+                                 if _bcvar_safe(self.df, v)]
         self.avail_corvars = self.avail_corvars if self.allow_corvars else []
 
 
@@ -1317,11 +1447,13 @@ class Search():
         # ── Variable-level failure tracker ──────────────────────────────
         # {varname: count} — how many times each variable appeared in a
         # failed (non-convergent, exception, infinite-LL) specification.
-        # When count exceeds _var_attrition_limit the variable is removed
-        # from the available lists so it never appears again for the
-        # remainder of the search.
+        # When count exceeds the threshold the variable is removed from the
+        # available lists so it never appears again for the remainder of the
+        # search.  The threshold is configurable (param.var_attrition_limit)
+        # and protected by a floor on the number of remaining candidates so
+        # the search can never "spam remove" variables away to nothing.
         self._var_failures = {}
-        self._var_attrition_limit = 15    # failures before permanent removal
+        self._var_attrition_limit = int(getattr(param, 'var_attrition_limit', 40))
 
         # ── Latent class feature toggles ────────────────────────────────
         self.optimise_class = kwargs.get('optimise_class', False)
@@ -2415,19 +2547,48 @@ class Search():
         """Remove variables from the available pools that have exceeded the
         failure threshold.  Once removed they stay out for the rest of
         the search, freeing the algorithm to focus on viable variables.
+
+        Safeguards against over-removal (selected by the modeller via
+        ``Parameters``):
+          • the failure threshold is ``param.var_attrition_limit``;
+          • members of the current best solution are never culled;
+          • removal stops once ``param.min_candidates_after_attrition``
+            candidates would remain, so the search space can never be
+            drained completely.
         """
         limit = self._var_attrition_limit
+        floor = getattr(self.param, 'min_candidates_after_attrition', 6)
         forced = set(self._get_forced_vars())
+
+        def _n_active():
+            return (len(getattr(self.param, 'avail_asvars', [])) +
+                    len(getattr(self.param, 'avail_isvars', [])))
+
         to_kill = {v for v, cnt in self._var_failures.items()
                    if cnt >= limit and v not in forced}
         if not to_kill:
             return
-        for v in sorted(to_kill):
+        # Protect any variable that already appears in the best solution —
+        # it demonstrably works and should not be removed on failure blame.
+        if self.best_solution is not None:
+            best_vars = (set(self.best_solution.get('asvars', [])) |
+                         set(self.best_solution.get('isvars', [])))
+            to_kill -= best_vars
+        # Never drain the candidate pool below the floor.
+        order = sorted(to_kill, key=lambda v: -self._var_failures.get(v, 0))
+        removed_count = 0
+        for v in order:
+            if _n_active() - removed_count <= floor:
+                break
             if hasattr(self.param, 'avail_asvars') and v in self.param.avail_asvars:
                 self.param.avail_asvars.remove(v)
             if hasattr(self.param, 'avail_isvars') and v in self.param.avail_isvars:
                 self.param.avail_isvars.remove(v)
+            removed_count += 1
             print(f"  [attrition] '{v}' removed from search after {self._var_failures[v]} failures")
+        if to_kill and not removed_count:
+            print("  [attrition] extra variables exceeded failure threshold but "
+                  f"were kept to preserve the candidate pool (floor={floor})")
 
     def _apply_latent_class_constraints(self, solution, lc_constraints):
         """Apply constraints specific to latent class models.
@@ -3986,9 +4147,6 @@ class Search():
             # Build map: coefficient name -> p-value
             pval_map = dict(zip(coeff_names, pvalues))
 
-            # Identify the worst insignificant variable that is not pre-specified
-            # Match coefficient names back to variable names:
-            # coeff names may be "var", "sd.var", "lambda.var", "chol.var1.var2", "var.alt"
             def base_var(name):
                 for prefix in ('sd.', 'lambda.', 'chol.'):
                     if name.startswith(prefix):
@@ -3999,24 +4157,61 @@ class Search():
                     name = name.split('.')[0]
                 return name
 
-            # Find the variable with the largest p-value that exceeds the threshold
-            worst_name  = None
-            worst_pval  = p_threshold
-            worst_bvar  = None
+            # Group coefficients by their base variable. A group survives
+            # (stays in the model) if ANY of its coefficients is significant —
+            # this mirrors count_insig_groups and stops a significant random
+            # mean from being dropped just because its sd is not, and vice
+            # versa.
+            groups = {}
             for cname, pv in pval_map.items():
-                if pv <= p_threshold:
+                if str(cname).startswith('intercept'):
                     continue
                 bvar = base_var(cname)
-                # Skip pre-specified (protected) variables
-                if bvar in ps_asvars or bvar in ps_isvars or bvar in ps_randvars or bvar in ps_bcvars:
+                groups.setdefault(bvar, []).append((str(cname), float(pv)))
+
+            # ── Demote random → fixed when the SD is the only insignificant
+            #    coefficient and the mean(s) are significant.  This keeps a
+            #    useful variable in the model instead of deleting it, so
+            #    genuinely-random coefficients are retained while useless
+            #    random draws are trimmed.
+            randvars_cur = dict(sol.get('randvars', {}))
+            demoted = False
+            for cname, pv in pval_map.items():
+                if not str(cname).startswith('sd.'):
                     continue
-                if pv > worst_pval:
-                    worst_pval = pv
-                    worst_name = cname
+                bvar = base_var(cname)
+                if bvar in ps_randvars or bvar not in randvars_cur:
+                    continue
+                group = groups.get(bvar, [])
+                mean_sig = any(pv2 <= p_threshold for n, pv2 in group
+                               if not n.startswith('sd.'))
+                if pv > p_threshold and mean_sig:
+                    del randvars_cur[bvar]
+                    demoted = True
+            if demoted:
+                sol['randvars'] = randvars_cur
+                # refit on the next pass with the trimmed random specification
+                continue
+
+            # ── Remove a whole variable ONLY when its entire group is
+            #    insignificant (no coefficient, fixed or random, is
+            #    significant).  Pick the most hopeless group to drop first.
+            worst_bvar = None
+            worst_pv   = p_threshold
+            for bvar, coeffs in groups.items():
+                if bvar in ps_asvars or bvar in ps_isvars:
+                    continue
+                if bvar in ps_randvars or bvar in ps_bcvars:
+                    continue
+                min_pv = min(pv2 for _, pv2 in coeffs)
+                if min_pv <= p_threshold:
+                    continue  # at least one coefficient significant → keep
+                if min_pv > worst_pv:
+                    worst_pv = min_pv
                     worst_bvar = bvar
 
             if worst_bvar is None:
-                break  # All significant (or only protected vars remain)
+                break  # All groups significant (or only protected vars remain)
 
             # Remove the worst variable from the solution
             new_asvars  = [v for v in sol.get('asvars',  []) if v != worst_bvar]
@@ -4290,6 +4485,7 @@ class Search():
     def define_bc_vars(self, sol):
     # {
         bcvars = [var for var in sol['bcvars'] if all(self.param.df[var].values >= 0)]
+        bcvars = [var for var in bcvars if _bcvar_safe(self.param.df, var)]
         return bcvars
     # }
 
