@@ -30,6 +30,7 @@ import copy
 import math
 import random
 import numpy as np
+from scipy.stats import chi2
 
 
 # ------------------------------------------------------------------------
@@ -184,6 +185,187 @@ def _remove_insig_corvars(insig, corvars, rem_randvars, rem_bcvars, all_pvalues,
 
     return rem_corvars if len(rem_corvars) >= 2 else []
 
+def _parse_lc_coeff_name(name):
+    """Split a latent-class coefficient name into (kind, class_idx, base_var).
+
+    kind is one of 'class_fixed', 'member_gamma', 'member_intercept', or
+    'other' (anything not matching the latent-class naming convention).
+    class_idx is 0-based. base_var is None for member_intercept.
+    """
+    if name.startswith('gamma_intercept_class_'):
+        return 'member_intercept', int(name.rsplit('_', 1)[-1]) - 1, None
+    if name.startswith('gamma_class_'):
+        rest = name[len('gamma_class_'):]
+        class_str, var = rest.split('_', 1)
+        return 'member_gamma', int(class_str) - 1, var
+    if name.startswith('class_'):
+        rest = name[len('class_'):]
+        class_str, var = rest.split('_', 1)
+        return 'class_fixed', int(class_str) - 1, var
+    return 'other', None, None
+
+
+def _lrt_within_range(loglik_child, loglik_parent, df, alpha=0.05):
+    """True when the loglik drop from parent to child is no larger than
+    what `df` lost parameters would explain under H0 — i.e. the child's
+    loglik looks reliable and does not need more multistart attempts."""
+    if loglik_child is None or not math.isfinite(loglik_child) or df <= 0:
+        return False
+    drop = loglik_parent - loglik_child
+    if drop <= 0:
+        return True
+    return (2.0 * drop) <= chi2.ppf(1 - alpha, df)
+
+
+def _build_lc_init_betas(search_instance, model, old_class_spec, new_class_spec):
+    """Per-class warm start: restrict each class's converged betas to the
+    variables that survive in `new_class_spec`, reusing `_match_betas`
+    (the same subsetting logic already used for K -> K+1 class growth)."""
+    new_betas = []
+    for c in range(len(new_class_spec)):
+        dom_vars  = old_class_spec[c]
+        dom_betas = model.class_betas[c]
+        new_vars  = new_class_spec[c]
+        new_betas.append(search_instance._match_betas(dom_vars, dom_betas, new_vars))
+    return new_betas
+
+
+def _behier_latent(search_instance, sol, max_passes=10):
+    """Latent-class counterpart of BEHier: surgical, per-class elimination
+    of insignificant class-fixed and membership-gamma coefficients, using
+    an LRT gate to decide how many multistart attempts each re-fit needs.
+    """
+    param = search_instance.param
+    p_val = param.p_val
+    ps_asvars = set(getattr(param, 'ps_asvars', []))
+    ps_isvars = set(getattr(param, 'ps_isvars', []))
+
+    if sol.get('model') is None or getattr(sol['model'], 'pvalues', None) is None:
+        print("No p-values available for _behier_latent. Returning original solution.")
+        return sol
+
+    def insignificant(ref_sol):
+        ref_model = ref_sol['model']
+        out = []
+        n_phi = ref_model.n_classes - 1
+        beta_pvalues = np.asarray(ref_model.pvalues)[n_phi:n_phi + len(ref_model.coeff_names)]
+
+        print(f"[DEBUG insignificant] class-beta coeff_names/pvalues ({len(ref_model.coeff_names)}, n_phi offset={n_phi}):")
+        for _n, _p in zip(ref_model.coeff_names, beta_pvalues):
+            print(f"    {_n:<30} p={float(_p):.4f}")
+
+        for name, pv in zip(ref_model.coeff_names, beta_pvalues):
+            if float(pv) <= p_val:
+                continue
+            kind, c_idx, var = _parse_lc_coeff_name(name)
+            if kind == 'class_fixed' and var not in ps_asvars:
+                out.append((kind, c_idx, var, float(pv)))
+
+        gamma_names = getattr(ref_model, 'gamma_names', None)
+        gamma_names = [] if gamma_names is None else gamma_names
+        gamma_pvals = getattr(ref_model, 'gamma_p_values', None)
+        gamma_pvals = [] if gamma_pvals is None else gamma_pvals
+        print(f"[DEBUG insignificant] membership gamma_names/p_values ({len(gamma_names)}):")
+        for _n, _p in zip(gamma_names, gamma_pvals):
+            print(f"    {_n:<30} p={float(_p):.4f}")
+
+        for name, pv in zip(gamma_names, gamma_pvals):
+            if float(pv) <= p_val:
+                continue
+            kind, c_idx, var = _parse_lc_coeff_name(name)
+            if kind == 'member_gamma' and var not in ps_isvars:
+                out.append((kind, c_idx, var, float(pv)))
+        return out
+
+    def remove_from_spec(ref_sol, items):
+        new_class  = [list(arr) for arr in ref_sol['class_params_spec']]
+        new_member = [list(arr) for arr in ref_sol['member_params_spec']] \
+            if ref_sol.get('member_params_spec') is not None else None
+        for kind, c_idx, var, _ in items:
+            if kind == 'class_fixed' and var in new_class[c_idx]:
+                new_class[c_idx].remove(var)
+            elif kind == 'member_gamma' and new_member is not None and var in new_member[c_idx]:
+                new_member[c_idx].remove(var)
+        return new_class, new_member
+
+    def refit(ref_sol, new_class, new_member, df):
+        """Warm-started re-fit of a reduced spec, escalating multistart via
+        the LRT gate. Returns (trial_sol, accepted_by_lrt)."""
+        old_class = ref_sol['class_params_spec']
+        trial = search_instance.copy_solution(ref_sol)
+        trial['class_params_spec']  = np.array(new_class,  dtype=object)
+        trial['member_params_spec'] = np.array(new_member, dtype=object) if new_member is not None else None
+        trial['init_class_betas'] = _build_lc_init_betas(search_instance, ref_sol['model'], old_class, new_class)
+        search_instance.param.num_classes = len(new_class)
+
+        parent_loglik = float(ref_sol['loglik'])
+        converged, loglik = False, float('-inf')
+        for n_init_try in (1, 5):
+            trial['n_init_override'] = n_init_try
+            aic, bic, loglik, mae, _, _, _, _, _, converged, trial = search_instance.evaluate_model(trial)
+            trial['aic'], trial['bic'], trial['loglik'], trial['mae'] = aic, bic, loglik, mae
+            _drop = parent_loglik - loglik if (converged and math.isfinite(loglik)) else float('nan')
+            _crit = chi2.ppf(0.95, df) if df > 0 else float('nan')
+            print(f"    [DEBUG refit] n_init={n_init_try} converged={converged} "
+                  f"loglik={loglik:.4f} parent_loglik={parent_loglik:.4f} "
+                  f"drop={_drop:.4f} 2*drop={2*_drop:.4f} critical(df={df})={_crit:.4f} "
+                  f"BIC={float(trial['bic']):.4f}")
+            if converged and _lrt_within_range(loglik, parent_loglik, df):
+                return trial, True
+        return trial, (converged and math.isfinite(loglik))
+
+    # ---- Phase 1: batch — remove every insignificant coeff at once ----
+    to_remove = insignificant(sol)
+    print(f"[DEBUG] to_remove ({len(to_remove)}): " +
+          ", ".join(f"{k} class{c+1}.{v}(p={p:.3f})" for k, c, v, p in to_remove))
+    if not to_remove:
+        return sol
+
+    new_class, new_member = remove_from_spec(sol, to_remove)
+    trial, reliable = refit(sol, new_class, new_member, df=len(to_remove))
+
+    if reliable and float(trial['bic']) < float(sol['bic']):
+        print(f"BEHier[latent] batch: {len(to_remove)} coeffs removed, "
+              f"BIC {float(sol['bic']):.4f} -> {float(trial['bic']):.4f} — accepted.")
+        return trial
+
+    print(f"BEHier[latent] batch not accepted (reliable={reliable}) "
+          f"— falling back to sequential elimination.")
+
+    # ---- Phase 2: sequential, worst p-value first ----
+    current = sol
+    remaining = sorted(to_remove, key=lambda it: -it[3])
+    cleanup_pass = 0
+
+    while remaining and cleanup_pass < max_passes:
+        item = remaining.pop(0)
+        kind, c_idx, var, _ = item
+        cur_class  = current['class_params_spec']
+        cur_member = current.get('member_params_spec')
+
+        still_present = (kind == 'class_fixed' and var in cur_class[c_idx]) or \
+                         (kind == 'member_gamma' and cur_member is not None and var in cur_member[c_idx])
+        if not still_present:
+            cleanup_pass += 1
+            continue
+
+        new_class, new_member = remove_from_spec(current, [item])
+        print(f"    [DEBUG pass {cleanup_pass + 1}] trying to remove {kind} class {c_idx+1} "
+              f"'{var}' (p={item[3]:.4f}) — baseline BIC={float(current['bic']):.4f}")
+        trial, reliable = refit(current, new_class, new_member, df=1)
+
+        if reliable and float(trial['bic']) < float(current['bic']):
+            print(f"BEHier[latent] pass {cleanup_pass + 1}: {kind} class {c_idx + 1} "
+                  f"'{var}' removed — BIC improved to {float(trial['bic']):.4f}.")
+            current = trial
+        else:
+            print(f"BEHier[latent] pass {cleanup_pass + 1}: {kind} class {c_idx + 1} "
+                  f"'{var}' — BIC did not improve, kept.")
+
+        cleanup_pass += 1
+
+    return current
+
 
 # ------------------------------------------------------------------------
 # Main entry point
@@ -203,6 +385,9 @@ def BEHier(search_instance, sol, max_passes=10):
     `search_instance` is only used to call `evaluate_model(sol)`.
     """
     param = search_instance.param
+
+    if getattr(param, 'latent_class', False):
+        return _behier_latent(search_instance, sol, max_passes)
 
     np_state  = np.random.get_state()
     rnd_state = random.getstate()

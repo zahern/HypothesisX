@@ -265,6 +265,8 @@ class HarmonySearch(Search):
         """
         mem, opp_mem = [], []  # Initialize memory and opposite memory
         for counter in range(30000):
+            self._csv_context = {'iter': '', 'harm_rate': '', 'pitch': '',
+                                  'origen': 'initial', 'chosen_sol_num': ''}
             sol = self.generate_solution()  # Generate a solution
             sol, converged = self.evaluate_solution(sol)
 
@@ -1547,8 +1549,10 @@ class HarmonySearch(Search):
             # }
             else:
             # {
-                all_solutions = sorted(solutions, key=lambda sol: sol.obj(0))
-                best_solution = all_solutions[0]  # assume already sorted
+                #all_solutions = sorted(solutions, key=lambda sol: sol.obj(0))
+                #best_solution = all_solutions[0]  # assume already sorted
+                current_sorted = sorted(solutions, key=lambda sol: sol.obj(0))
+                best_solution = current_sorted[0]  # assume already sorted
                 if best_solution.obj(0) < prev or override:
                 # {
                     best_model_idx += 1
@@ -1567,7 +1571,21 @@ class HarmonySearch(Search):
                 self.plot_multiclass_search()
             except Exception as exc:
                 logger.warning(f"Multi-class convergence plot failed: {exc}")
+        if getattr(self.param, 'latent_class', False):
+            try:
+                from .BEHier import BEHier
+            except ImportError:
+                from BEHier import BEHier
 
+            suffix = f'[{self.idnum}]' if self.idnum is not None else ''
+            clean_file = open(f"hs_results_clean{suffix}.txt", "w")
+            ranked = self.sort_memory(all_solutions)
+            grouped = self._top_per_class_count(ranked, n=self.max_mem)
+
+            for k in sorted(grouped):
+                for rank, sol in enumerate(grouped[k], start=1):
+                    clean_sol = BEHier(self, self.copy_solution(sol), max_passes=10)
+                    self.log_solution_block(clean_sol, f"Clean Top {rank} (K={k})", file=clean_file)
         '''
         best_val, all_val, all_val_classes = self.post_process(all_solutions)
 
@@ -1899,6 +1917,18 @@ class HarmonySearch(Search):
         import copy
         return copy.deepcopy(sol)
 
+    def _top_per_class_count(self, solutions, n):
+        """Best `n` solutions for each distinct class_num. `solutions` is
+        assumed already sorted best-first, so the first n hits per K are
+        that K's best n."""
+        by_k = {}
+        for sol in solutions:
+            k = len(sol['class_params_spec'])
+            by_k.setdefault(k, [])
+            if len(by_k[k]) < n:
+                by_k[k].append(sol)
+        return by_k
+
     def run_search(self, existing_sols=None):
     # {
         """Override the inherited no-op run_search with the real HS loop."""
@@ -1941,7 +1971,7 @@ class HarmonySearch(Search):
 
         print(f"\nFinal Harmony Memory ({len(improved)} solutions)", file=self.results_file)
         for rank, sol in enumerate(improved, start=1):
-            self.log_solution_block(sol, f"Top {rank}", file=self.results_file)
+            self.log_solution_block(sol, f"Top {rank}", file=self.results_file)        
 
         return improved
     # }

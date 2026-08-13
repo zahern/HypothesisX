@@ -5120,7 +5120,7 @@ class Search():
                 num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-6,
                 gtol_membership_func=1e-5, avail=None, avail_latent=None,
                 intercept_opts=None, weights=None, seed=None,
-                alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None, betas0=None):
+                alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None, betas0=None, n_init=10):
         """Fit a latent class multinomial logit model with optional membership equation.
 
         Uses the modern ``LatentClassMixedLogit`` from ``latent_class.py``.
@@ -5143,7 +5143,7 @@ class Search():
             optimise_membership=optimise_membership,
             #membership_maxiter=100,
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=10, membership_correction=True
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True
         )
 
         membership_vars = None
@@ -5459,7 +5459,7 @@ class Search():
             weights=self.param.weights,
             alts=alts,
             base_alt=self.param.base_alt, panels =  panels, 
-            ind_id=ind_id,betas0=sol.get('init_class_betas')
+            ind_id=ind_id,betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10)
         )
 
         """
