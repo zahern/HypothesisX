@@ -639,6 +639,19 @@ def auto_classify_as_is(df, varnames, choice_id=None, alt_var=None):
     return asvars, isvars, dropped
 
 
+def _nonbase_alts(choice_set, base_alt):
+    """Non-base alternatives, in choice-set order.
+
+    Individual-specific variables expand into one column per non-base
+    alternative (``var.alt``). A per-alternative random coefficient targets one
+    such column, so these are the alternatives over which per-alt random keys are
+    formed. If ``base_alt`` is unset the first alternative is treated as base.
+    """
+    cs = list(choice_set or [])
+    base = base_alt if base_alt is not None else (cs[0] if cs else None)
+    return [a for a in cs if a != base]
+
+
 class Parameters:
 # {
     """ Docstring """
@@ -1061,7 +1074,14 @@ class Parameters:
         # allow_random_isvars, individual-specific variables are eligible too.
         _rand_pool = list(self.asvarnames)
         if getattr(self, "allow_random_isvars", False):
-            _rand_pool = _rand_pool + [v for v in self.isvarnames if v not in _rand_pool]
+            # Individual-specific variables expand into (J-1) alternative-specific
+            # columns; a random coefficient is scoped to a SINGLE alternative via
+            # the per-alt key "var.alt". The search therefore explores
+            # per-alternative random coefficients (one sd.var.alt at a time)
+            # rather than randomising every alternative of an isvar at once.
+            _nb = _nonbase_alts(self.choice_set, self.base_alt)
+            for v in self.isvarnames:
+                _rand_pool += ["{}.{}".format(v, a) for a in _nb]
         self.avail_rvars = [var for var in _rand_pool if var not in self.ps_randvars]
 
         # Available alternative-specific variables for transformation
@@ -2092,7 +2112,24 @@ class Search():
 
     def normalize_randvars(self, asvars, randvars, isvars=None):
         use_is = getattr(self.param, "allow_random_isvars", False)
-        pool = set(asvars) | (set(isvars) if (use_is and isvars) else set())
+        # Valid random keys: asvar names, plus (when random isvars are enabled)
+        # per-alternative keys "isvar.alt" for the selected isvars and the
+        # legacy base-name keys "isvar" (random on every alternative).
+        pool = set(asvars)
+        order = list(self.param.asvarnames)
+        if use_is:
+            _nb = _nonbase_alts(self.param.choice_set, self.param.base_alt)
+            _isv = list(isvars) if isvars else []
+            for v in _isv:
+                pool.add(v)
+                pool.update("{}.{}".format(v, a) for a in _nb)
+            for v in self.param.isvarnames:
+                if v not in order:
+                    order.append(v)
+                for a in _nb:
+                    k = "{}.{}".format(v, a)
+                    if k not in order:
+                        order.append(k)
         normalized_randvars = {
             variable_name: distribution_name
             for variable_name, distribution_name in self.param.ps_randvars.items()
@@ -2103,10 +2140,8 @@ class Search():
             if variable_name in pool and distribution_name != "f":
                 normalized_randvars[variable_name] = distribution_name
 
-        # Preserve a deterministic order: asvars first, then (if enabled) isvars.
-        order = list(self.param.asvarnames)
-        if use_is:
-            order += [v for v in self.param.isvarnames if v not in order]
+        # Preserve a deterministic order: asvars first, then (if enabled)
+        # isvars and their per-alternative keys.
         return {
             variable_name: normalized_randvars[variable_name]
             for variable_name in order
@@ -2114,6 +2149,23 @@ class Search():
         }
 
 
+
+    def _randkey_base(self, key):
+        """Underlying data column for a random key.
+
+        A per-alternative random coefficient on an individual-specific variable
+        is keyed as ``"var.alt"``; the underlying data column is the base isvar
+        ``var``. Alternative-specific random keys are already data columns and
+        are returned unchanged.
+        """
+        key = str(key)
+        if (key in getattr(self.param, "asvarnames", []) or
+                key in getattr(self.param, "isvarnames", [])):
+            return key
+        base = key.rsplit(".", 1)[0]
+        if base in getattr(self.param, "isvarnames", []):
+            return base
+        return key
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Determine random coefficient distributions       '''
@@ -2127,10 +2179,18 @@ class Search():
         available_distributions = [distribution_name for distribution_name in self.param.distr if distribution_name != "f"]
         selected_randvars = {}
 
-        # Candidate pool: selected asvars, plus selected isvars when enabled.
+        # Candidate pool: selected asvars, plus (when random isvars are enabled)
+        # the per-alternative keys of the selected isvars. Each per-alt key is
+        # coin-flipped independently, so the search can make an isvar random on
+        # one alternative without randomising it on the others.
         pool = list(asvars)
         if getattr(self.param, "allow_random_isvars", False) and isvars:
-            pool += [v for v in isvars if v not in pool]
+            _nb = _nonbase_alts(self.param.choice_set, self.param.base_alt)
+            for v in isvars:
+                for a in _nb:
+                    k = "{}.{}".format(v, a)
+                    if k not in pool:
+                        pool.append(k)
 
         for variable_name in pool:
             if variable_name in self.param.ps_randvars:
@@ -2211,8 +2271,9 @@ class Search():
         # estimator receives isvar-randoms as isvars (not asvars).
         if getattr(self.param, "allow_random_isvars", False):
             for _v in list(randvars):
-                if _v in self.param.isvarnames and _v not in isvars:
-                    isvars = list(isvars) + [_v]
+                _b = self._randkey_base(_v)   # 'var.alt' -> base isvar 'var'
+                if _b in self.param.isvarnames and _b not in isvars:
+                    isvars = list(isvars) + [_b]
                 elif _v in self.param.asvarnames and _v not in asvars:
                     asvars = list(asvars) + [_v]
         model_n = self.select_model_for_randvars(randvars)
@@ -2674,8 +2735,9 @@ class Search():
             randvars = self.select_randvars(asvars, isvars)
         if getattr(self.param, "allow_random_isvars", False):
             for _v in list(randvars):
-                if _v in self.param.isvarnames and _v not in isvars:
-                    isvars = list(isvars) + [_v]
+                _b = self._randkey_base(_v)   # 'var.alt' -> base isvar 'var'
+                if _b in self.param.isvarnames and _b not in isvars:
+                    isvars = list(isvars) + [_b]
                 elif _v in self.param.asvarnames and _v not in asvars:
                     asvars = list(asvars) + [_v]
         bcvars, bctrans = self.select_bcvars(asvars)
@@ -3494,10 +3556,12 @@ class Search():
         available_distributions = [distribution_name for distribution_name in self.param.distr if distribution_name != "f"]
         distr = self.random_choice(available_distributions)  # Choose a distribution
         solution['randvars'][new_randvar] = distr
-        # Keep an isvar-random in the isvars list (asvar-random in asvars).
+        # Keep the base isvar in the isvars list (asvar-random in asvars). A
+        # per-alternative key 'var.alt' maps back to its base isvar 'var'.
         if getattr(self.param, "allow_random_isvars", False):
-            if new_randvar in self.param.isvarnames and new_randvar not in solution.get('isvars', []):
-                solution['isvars'] = list(solution.get('isvars', [])) + [new_randvar]
+            _base = self._randkey_base(new_randvar)
+            if _base in self.param.isvarnames and _base not in solution.get('isvars', []):
+                solution['isvars'] = list(solution.get('isvars', [])) + [_base]
             elif new_randvar in self.param.asvarnames and new_randvar not in solution.get('asvars', []):
                 solution['asvars'] = list(solution.get('asvars', [])) + [new_randvar]
         solution['randvars'] = self.normalize_randvars(
@@ -3517,10 +3581,14 @@ class Search():
         #ROB I believe we only want yo add a randvar is its in asvar
         candidates = [var for var in self.param.asvarnames if var not in solution['randvars'] and var in solution['asvars']]
         # With allow_random_isvars, individual-specific vars in the model are also
-        # candidates for a random coefficient.
+        # candidates for a random coefficient, scoped per alternative (var.alt).
         if getattr(self.param, "allow_random_isvars", False):
-            candidates += [var for var in self.param.isvarnames
-                           if var not in solution['randvars'] and var in solution.get('isvars', [])]
+            _nb = _nonbase_alts(self.param.choice_set, self.param.base_alt)
+            for v in solution.get('isvars', []):
+                if v not in self.param.isvarnames:
+                    continue
+                candidates += ["{}.{}".format(v, a) for a in _nb
+                               if "{}.{}".format(v, a) not in solution['randvars']]
         #NOT THIS (I THINK)
         #candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]
         if len(candidates) > 0:
@@ -3562,6 +3630,13 @@ class Search():
         # Find candidate variables to add or remove
         if add:
             candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]
+            # Per-alternative random keys for individual-specific vars in the model.
+            if getattr(self.param, "allow_random_isvars", False):
+                _nb = _nonbase_alts(self.param.choice_set, self.param.base_alt)
+                for v in solution.get('isvars', []):
+                    if v in self.param.isvarnames:
+                        candidates += ["{}.{}".format(v, a) for a in _nb
+                                       if "{}.{}".format(v, a) not in solution['randvars']]
         else:
             candidates = [var for var in solution['randvars'] if var not in self.param.ps_randvars]
 
@@ -4612,18 +4687,27 @@ class Search():
             if i not in varnames and i != 'intercept':
                 varnames.append(i)
 
-        # Add variables from randvars.keys() to varnames if not already present
+        # Add variables from randvars.keys() to varnames if not already present.
+        # A per-alternative random key 'var.alt' is NOT a data column; its base
+        # isvar 'var' is. Add only real data columns to varnames (and make sure
+        # the base isvar is present), so per-alt keys stay in the randvars dict
+        # where the estimator's design-matrix expansion consumes them.
         if randvars is not None:
+            _is_names = set(getattr(self.param, "isvarnames", []) or [])
+            _allow_ri = getattr(self.param, "allow_random_isvars", False)
             for i in randvars.keys():
-                if i not in varnames:
-                    varnames.append(i)
+                col = self._randkey_base(i) if _allow_ri else i
+                if col not in varnames:
+                    varnames.append(col)
+                if _allow_ri and col in _is_names and col not in isvars:
+                    isvars = list(isvars) + [col]
 
             # Remove random variables from isvars because random coefficients are
             # normally alternative-specific. EXCEPTION: when allow_random_isvars is
             # enabled, an individual-specific variable can itself be random and must
-            # STAY in isvars (otherwise the estimator treats it as an asvar).
-            _is_names = set(getattr(self.param, "isvarnames", []) or [])
-            if getattr(self.param, "allow_random_isvars", False):
+            # STAY in isvars (otherwise the estimator treats it as an asvar). Per-alt
+            # keys never equal an isvar name, so base isvars survive this filter.
+            if _allow_ri:
                 isvars = [i for i in isvars if (i not in randvars.keys()) or (i in _is_names)]
             else:
                 isvars = [i for i in isvars if i not in randvars.keys()]

@@ -853,8 +853,18 @@ class DiscreteChoiceModel(ABC):
             # column order matches the isvar design block below: for isvar in isvars,
             # for each non-base alternative. This enables random coefficients on
             # individual-specific variables and on the ASCs (intercept).
+            # Per-alternative random coefficients on individual-specific vars.
+            # A column ``isvar.alt`` is RANDOM when either the exact per-alt key
+            # ``"{isvar}.{alt}"`` is present in randvars (random on JUST that
+            # alternative), or the base-name key ``isvar`` is present (random on
+            # EVERY alternative -- the legacy behaviour, kept for backward
+            # compatibility). Column order matches the isvar design block below:
+            # for each isvar, for each non-base alternative (in self.alts order).
+            _nonbase_alts = [j for j in self.alts if j != self.base_alt]
+            _rand_keys = set(str(k) for k in self.randvars)
             isvar_rand_block = np.array(
-                [iv in self.randvars for iv in isvars for _ in range(J - 1)],
+                [(str(iv) in _rand_keys) or ("{}.{}".format(iv, j) in _rand_keys)
+                 for iv in isvars for j in _nonbase_alts],
                 dtype="bool_")
             isvar_fix_block = ~isvar_rand_block
             self.fxidx =np.insert(np.array(self.fxidx, dtype="bool_"), where_h, isvar_fix_block)
@@ -903,7 +913,8 @@ class DiscreteChoiceModel(ABC):
 
 
 
-        randpos = [self.varnames.tolist().index(i) for i in randvars]  # Position of AS vars
+        _vn_list = self.varnames.tolist()
+        randpos = [_vn_list.index(i) for i in randvars if i in _vn_list]  # Position of random vars (per-alt keys like 'var.alt' aren't base varnames -> skipped)
         randtranspos = [self.varnames.tolist().index(i) for i in randtransvars]  # bc transformed variables with random coeffs
         fixedtranspos = [self.varnames.tolist().index(i) for i in fixedtransvars]  # bc transformed variables with fixed coeffs
 
@@ -1068,7 +1079,10 @@ class DiscreteChoiceModel(ABC):
         # the compact isvar-name order used by the legacy path below. This branch
         # covers the uncorrelated, untransformed case; correlated/Box-Cox models
         # keep the original construction.
-        has_rand_isvar = any(iv in self.randvars for iv in isvars)
+        _rk_simple = set(str(k) for k in self.randvars)
+        has_rand_isvar = any(
+            (str(iv) in _rk_simple) or any(k.startswith(str(iv) + ".") for k in _rk_simple)
+            for iv in isvars)
         simple_case = (has_rand_isvar and not self.correlated_vars
                        and len(fixedtransvars) == 0 and len(randtransvars) == 0)
         if simple_case:
@@ -1083,6 +1097,23 @@ class DiscreteChoiceModel(ABC):
             rand_mean_names = [col_names[i] for i in range(len(col_names)) if rvidx[i]]
             sd_names = ["sd." + col_names[i] for i in range(len(col_names)) if rvidx[i]]
             names = np.array(fixed_names + rand_mean_names + sd_names, dtype="<U64")
+            # Align the random-coefficient distribution list with the expanded
+            # random columns (one entry per random column, in design order) so
+            # that each alternative-specific random coefficient's Halton draws
+            # are transformed to its correct distribution. Previously self.rvdist
+            # carried one entry per *base* varname, so with a random isvar
+            # spanning multiple alternatives only the first column was
+            # distribution-transformed (the rest stayed uniform); with
+            # per-alternative keys every random var is a single column and relies
+            # on this alignment being correct.
+            _rvd = getattr(self, "randvarsdict", None) or {}
+            def _dist_for_col(_cn):
+                _cn = str(_cn)
+                if _cn in _rvd:                       # exact per-alt key, e.g. 'alone.bike'
+                    return _rvd[_cn]
+                return _rvd.get(_cn.split(".")[0], "n")  # base-name key, e.g. 'alone'
+            self.rvdist = [_dist_for_col(col_names[i])
+                           for i in range(len(col_names)) if rvidx[i]]
             return X, names
 
         names = np.concatenate((intercept_names, names, asvars_names, randvars,
