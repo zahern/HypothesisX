@@ -107,5 +107,38 @@ def test_asvar_only_pool_unchanged():
     assert p.avail_rvars == ["male"]
 
 
+def _solver():
+    from SearchLibrium.siman import SA
+    df = _synth()
+    varnames = ["alone", "male"]
+    p = Parameters(
+        criterions=[("bic", -1), ("nsig", -1)], df=df, varnames=varnames,
+        isvarnames=varnames, asvarnames=[], choice_set=ALTS,
+        choices=df["choice"].values, alt_var=df["alt"].values,
+        choice_id=df["obs_id"].values, ind_id=df["obs_id"].values,
+        base_alt="walk", models=["multinomial", "mixed_logit"], distr=["n", "f"],
+        allow_random=True, allow_random_isvars=True, n_draws=50, p_val=0.05,
+        all_sig=False)
+    return SA(p, init_sol=None, ctrl=(100, 0.01, 2, 2), id_num=1)
+
+
+def test_as_is_partition_moves_isvar_out_of_asvars():
+    s = _solver()
+    sol = {"asvars": ["alone"], "isvars": ["male"]}   # 'alone' leaked into asvars
+    s._enforce_as_is_partition(sol)
+    assert "alone" in sol["isvars"]
+    assert "alone" not in sol["asvars"]
+    # a variable is never in both lists
+    assert set(sol["asvars"]).isdisjoint(sol["isvars"])
+
+
+def test_as_is_partition_disjoint_after_duplicate():
+    s = _solver()
+    sol = {"asvars": ["alone", "male"], "isvars": ["alone"]}
+    s._enforce_as_is_partition(sol)
+    assert set(sol["asvars"]).isdisjoint(sol["isvars"])
+    assert "alone" in sol["isvars"] and "alone" not in sol["asvars"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

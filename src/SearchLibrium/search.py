@@ -2338,7 +2338,18 @@ class Search():
         
         if 'force_include' in constraints:
             force_vars = constraints['force_include']
-            solution['asvars'] = list(set(force_vars + solution['asvars']))
+            # Respect the AS/IS partition: an individual-specific forced variable
+            # must go into isvars (it is expanded per alternative), an
+            # alternative-specific one into asvars. Never push an isvar into
+            # asvars (that would give it a single generic coefficient instead of
+            # the per-alternative expansion).
+            _isn_fi = set(getattr(self.param, "isvarnames", []) or [])
+            _fi_is = [v for v in force_vars if v in _isn_fi]
+            _fi_as = [v for v in force_vars if v not in _isn_fi]
+            if _fi_as:
+                solution['asvars'] = list(set(_fi_as + solution['asvars']))
+            if _fi_is:
+                solution['isvars'] = list(set(_fi_is + list(solution.get('isvars', []))))
             # Also enforce in class_params_spec: every forced var must appear in at least one class
             if 'class_params_spec' in solution and solution['class_params_spec'] is not None:
                 cp = solution['class_params_spec']
@@ -2384,8 +2395,36 @@ class Search():
         # ── Min-behavioural constraint (soft: at least n from a pool) ──
         self._enforce_min_behavioral(solution)
 
+        # ── Strict AS/IS partition: a variable is EITHER alternative-specific OR
+        #    individual-specific, never both. ──
+        self._enforce_as_is_partition(solution)
+
         return solution
-    
+
+    def _enforce_as_is_partition(self, solution):
+        """Keep asvars and isvars disjoint, each variable in its declared bucket.
+
+        An individual-specific variable can never be alternative-specific and
+        vice versa. Any variable that leaked into the wrong list (e.g. via
+        force_include or a min-behavioural top-up) is moved to the bucket
+        declared by the model (``asvarnames`` / ``isvarnames``). Variables in
+        neither declared list are left where they are; if a name still ends up in
+        both lists it is kept as individual-specific (isvars win).
+        """
+        asn = set(getattr(self.param, "asvarnames", []) or [])
+        isn = set(getattr(self.param, "isvarnames", []) or [])
+        asv = list(solution.get('asvars', []) or [])
+        isv = list(solution.get('isvars', []) or [])
+        moved_to_is = [v for v in asv if v in isn]       # isvar that leaked into asvars
+        moved_to_as = [v for v in isv if v in asn]       # asvar that leaked into isvars
+        asv = [v for v in asv if v not in isn] + [v for v in moved_to_as if v not in asv]
+        isv = [v for v in isv if v not in asn] + [v for v in moved_to_is if v not in isv]
+        isv_set = set(isv)
+        asv = [v for v in asv if v not in isv_set]        # final guard: isvars win
+        solution['asvars'] = list(dict.fromkeys(asv))
+        solution['isvars'] = list(dict.fromkeys(isv))
+        return solution
+
     def _get_forced_vars(self):
         """Return list of variables that must always be included (never removed)."""
         if not hasattr(self.param, 'pres_spec_constr') or self.param.pres_spec_constr is None:
