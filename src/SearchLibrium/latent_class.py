@@ -2060,7 +2060,7 @@ class LatentClass(DiscreteChoiceModel):
     def setup(self, X, y, varnames, ids, alts, avail=None,
               class_params_spec=None, member_params_spec=None,
               base_class=None, panels=False, ind_id=None,
-              fit_intercept=False, l1_penalty=None, l2_penalty=None):
+              fit_intercept=False, base_alt=None, l1_penalty=None, l2_penalty=None):
         """
         ids     : choice-situation id — one situation = one block of J rows.
         panels  : False (default) -> one situation == one individual, exactly
@@ -2069,6 +2069,7 @@ class LatentClass(DiscreteChoiceModel):
         ind_id  : individual id (same length as the raw long-format rows).
                   Required if panels=True. Ignored (defaults to `ids`) if
                   panels=False.
+        base_alt : alternative to be used as the base alternative for the model.
         class_params_spec, member_params_spec, base_class : same syntax as
                   LatentClassMixedLogit (variable-name lists per class).
                   member_params_spec entries may be empty lists (delta/intercept
@@ -2079,11 +2080,7 @@ class LatentClass(DiscreteChoiceModel):
         ids = np.asarray(ids)
         alts = np.asarray(alts)
         varnames = list(varnames)
-
-        if fit_intercept and "intercept" not in varnames:
-            X = np.column_stack([np.ones(X.shape[0]), X])
-            varnames = ["intercept"] + varnames
-
+        
         if avail is None:
             avail = np.ones_like(y, dtype=float)
         else:
@@ -2096,6 +2093,24 @@ class LatentClass(DiscreteChoiceModel):
         _, first_idx = np.unique(alts, return_index=True)
         self.alts = alts[np.sort(first_idx)]
         self.J = len(self.alts)
+
+        if fit_intercept:           
+            self.base_alt = base_alt if base_alt is not None else self.alts[0]
+            asc_alts = [a for a in self.alts if a != self.base_alt]
+            asc_names = [f"intercept.{a}" for a in asc_alts]
+            if asc_alts and not any(n in varnames for n in asc_names):
+                asc_cols = np.column_stack([(alts == a).astype(float) for a in asc_alts])
+                X = np.column_stack([asc_cols, X])
+                varnames = asc_names + varnames
+        else:
+            self.base_alt = None
+
+        if fit_intercept and asc_names and class_params_spec is not None:
+            class_params_spec = [
+                list(asc_names) + [v for v in spec if v not in asc_names]
+                for spec in class_params_spec
+            ]
+
         self.K = X.shape[1]
         self.varnames = varnames
         if l1_penalty is not None:

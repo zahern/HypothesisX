@@ -1341,7 +1341,7 @@ class DiscreteChoiceModel(ABC):
                 p(LINE2)
                 idx = self._class_specs[c]
                 for k in range(K_c):
-                    vname = self.varnames[idx[k]]
+                    vname = self.varnames[idx[k]].replace("intercept.", "ASC_", 1)
                     pi = offset_cum + k
                     p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])))
                 offset_cum += K_c
@@ -1354,7 +1354,7 @@ class DiscreteChoiceModel(ABC):
                     var_tag = f"gamma_class_{c + 1}_"
                     for gi, gname in enumerate(self.gamma_names):
                         if gname == inter_tag:
-                            var_name = "_inter"
+                            var_name = f"Inter_C{c + 1}"
                         elif gname.startswith(var_tag):
                             var_name = gname[len(var_tag):]
                         else:

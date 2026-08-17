@@ -600,7 +600,7 @@ class Parameters:
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
         sd_penalty=0.001, base_class=None,
-        intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, panels=False,  *args, **kwargs):
+        fit_intercept=True, base_alt=None, val_share=0.25,  grad = True, hess = False, panels=False,  *args, **kwargs):
 
         
         if models is None:
@@ -699,7 +699,7 @@ class Parameters:
         self.l1_penalty = kwargs.get('l1_penalty', 0.1)
         self.l2_penalty = kwargs.get('l2_penalty', 0.5)
 
-        self.intercept_opts = intercept_opts
+        self.fit_intercept = fit_intercept
         self.base_alt = base_alt
         self.base_class = base_class
         self.val_share = val_share
@@ -5119,7 +5119,7 @@ class Search():
     def fit_lcm(self, X, y, varnames, class_params_spec, member_params_spec=None,
                 num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-6,
                 gtol_membership_func=1e-5, avail=None, avail_latent=None,
-                intercept_opts=None, weights=None, seed=None,
+                fit_intercept=True, weights=None, seed=None,
                 alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None, betas0=None, n_init=10):
         """Fit a latent class multinomial logit model with optional membership equation.
 
@@ -5170,7 +5170,7 @@ class Search():
             #membership_vars=membership_vars,
             member_params_spec=member_params_spec,
             base_class=getattr(self.param, 'base_class', None),
-            class_params_spec=class_params_spec, panels=panels
+            class_params_spec=class_params_spec, panels=panels, fit_intercept=fit_intercept, base_alt=base_alt
         )
         #model.fit(em_method="squarem")
         model.fit(betas0=betas0)
