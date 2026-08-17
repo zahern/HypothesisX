@@ -104,11 +104,13 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
 
     def setup(self, X, y, varnames, ids, alts, avail=None, fit_intercept=False,
               membership_vars=None, member_params_spec=None,
-              class_params_spec=None, l1_penalty=None, l2_penalty=None):
+              class_params_spec=None, l1_penalty=None, l2_penalty=None,
+              panels=None):
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
         ids = np.asarray(ids)
         alts = np.asarray(alts)
+        panels = None if panels is None else np.asarray(panels)
         varnames = list(varnames)
 
         if fit_intercept and "intercept" not in varnames:
@@ -135,6 +137,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         y = y[order]
         ids = ids[order]
         avail = avail[order]
+        if panels is not None:
+            panels = panels[order]
 
         unique_ids, counts = np.unique(ids, return_counts=True)
         if np.any(counts != self.J):
@@ -145,7 +149,29 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.X = X.reshape(self.N, self.J, self.K)
         self.y = y.reshape(self.N, self.J)
         self.avail = avail.reshape(self.N, self.J)
-        self.sample_size = self.N
+
+        # ── Panel (person-level) grouping of choice tasks ──────────────────
+        # ``ids`` identify individual choice tasks (J rows each); ``panels``
+        # (optional) identify the decision-maker who made several tasks.  Class
+        # membership is assigned at the panel level: a person belongs to one
+        # class that governs all of their tasks.  With no panels, every task is
+        # its own panel and the model reduces to the cross-sectional case.
+        if panels is None:
+            self.panel_ids = self.ids
+            self.n_panels = self.N
+            self.panel_idx = np.arange(self.N, dtype=int)
+            self._panelled = False
+        else:
+            panel_per_task = panels.reshape(self.N, self.J)[:, 0]
+            uniq_panels, panel_idx = np.unique(panel_per_task, return_inverse=True)
+            self.panel_ids = uniq_panels
+            self.n_panels = len(uniq_panels)
+            self.panel_idx = panel_idx.astype(int)
+            self._panelled = True
+
+        # BIC / null-model scaling uses the number of independent decision
+        # makers (== tasks when there is no panel structure).
+        self.sample_size = self.n_panels
 
         # ── Class-specific specification ────────────────────────────────────
         self._class_specs = None
@@ -231,9 +257,17 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             self.K_membership = len(membership_indices)
             if self.K_membership > 0:
                 mem_data = X[:, membership_indices]
-                self.X_membership = np.zeros((self.N, self.K_membership))
-                for n in range(self.N):
-                    self.X_membership[n] = mem_data[n * self.J]
+                # First take the covariate row of each task, then collapse to
+                # one row per panel (person).  Membership covariates are
+                # constant within a person, so the first task suffices.
+                mem_task = mem_data[np.arange(self.N) * self.J]  # (N_task, Km)
+                self.X_membership = np.zeros((self.n_panels, self.K_membership))
+                seen = np.zeros(self.n_panels, dtype=bool)
+                for t in range(self.N):
+                    p = self.panel_idx[t]
+                    if not seen[p]:
+                        self.X_membership[p] = mem_task[t]
+                        seen[p] = True
         else:
             self.membership_vars = None
             self.member_params_spec = None
@@ -307,13 +341,13 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         """
         C = self.n_classes
         if not self._has_membership or self.X_membership is None:
-            return np.tile(np.full(C, 1.0 / C), (self.N, 1))
+            return np.tile(np.full(C, 1.0 / C), (self.n_panels, 1))
 
         gammas = np.asarray(gammas, dtype=float)
         if gammas.ndim == 1:
             gammas = gammas.reshape(C - 1, self.K_membership)
 
-        logits = np.zeros((self.N, C))
+        logits = np.zeros((self.n_panels, C))
         for c in range(C - 1):
             logits[:, c] = self.X_membership @ gammas[c]
         logits -= logits.max(axis=1, keepdims=True)
@@ -448,7 +482,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         if hasattr(self, cache_key):
             return getattr(self, cache_key)
 
-        if not self._jax_enabled or len(set(self._Ks)) != 1:
+        if not self._jax_enabled or len(set(self._Ks)) != 1 or self._panelled:
             setattr(self, cache_key, None)
             return None
 
@@ -628,7 +662,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         n_params = sum(self._Ks)
         bounds = [(-bounds_scale, bounds_scale)] * n_params
 
-        if self._jax_enabled and len(set(self._Ks)) == 1:
+        if self._jax_enabled and len(set(self._Ks)) == 1 and not self._panelled:
             jnp = self.jnp
             X_b = self.X_backend
             y_b = self.y_backend
@@ -671,7 +705,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 for k in self._Ks:
                     betas.append(betas_np[offset:offset + k])
                     offset += k
-                log_choice, _ = self._log_choice_probs_np(betas)
+                log_choice_task, _ = self._log_choice_probs_np(betas)
+                log_choice = self._panel_sum(log_choice_task)
                 log_prior = np.log(np.full(self.n_classes, 1.0 / self.n_classes))
                 log_joint = log_choice + log_prior[None, :]
                 log_marg = logsumexp(log_joint, axis=1)
@@ -726,14 +761,34 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             raise ValueError("class_probs0 must have length n_classes.")
         return self._normalize_class_probs(class_probs0)
 
-    def _em_step(self, betas, class_probs, gammas=None):
-        """Single E+M step. Returns (new_betas, new_class_probs, new_gammas, loglik, posterior)."""
-        log_choice, _ = self._log_choice_probs_np(betas)
+    def _panel_sum(self, arr_task):
+        """Sum a per-task array ``(N_task, C)`` into per-panel ``(n_panels, C)``.
+
+        When there is no panel structure (each task is its own panel) this is
+        the identity, so the cross-sectional path is unchanged.
+        """
+        if not self._panelled:
+            return arr_task
+        out = np.zeros((self.n_panels, arr_task.shape[1]), dtype=float)
+        np.add.at(out, self.panel_idx, arr_task)
+        return out
+
+    def _estep(self, betas, class_probs, gammas=None):
+        """Shared E-step returning per-panel posteriors and the log-likelihood.
+
+        Returns
+        -------
+        posterior : ndarray (n_panels, C)
+        loglik    : float   (penalised marginal log-likelihood)
+        priors    : ndarray (n_panels, C)
+        """
+        log_choice_task, _ = self._log_choice_probs_np(betas)      # (N_task, C)
+        log_choice = self._panel_sum(log_choice_task)              # (n_panels, C)
 
         if self._has_membership and self.optimise_membership and gammas is not None:
             priors = self._compute_membership_priors(gammas)
         else:
-            priors = np.broadcast_to(class_probs[None, :], (self.N, self.n_classes))
+            priors = np.broadcast_to(class_probs[None, :], (self.n_panels, self.n_classes))
 
         log_joint = log_choice + np.log(np.clip(priors, 1e-300, None))
         log_denom = logsumexp(log_joint, axis=1, keepdims=True)
@@ -743,13 +798,21 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         loglik -= self._regularize_l1_betas(betas)
         loglik -= self._regularize_l2_gammas(gammas)
         loglik -= self._regularize_l1_gammas(gammas)
+        return posterior, loglik, priors
+
+    def _em_step(self, betas, class_probs, gammas=None):
+        """Single E+M step. Returns (new_betas, new_class_probs, new_gammas, loglik, posterior)."""
+        posterior, loglik, _ = self._estep(betas, class_probs, gammas)
 
         new_class_probs = self._normalize_class_probs(posterior.mean(axis=0))
+
+        # Each task inherits the posterior weight of the person who made it.
+        task_weights = posterior[self.panel_idx] if self._panelled else posterior
 
         new_betas = betas.copy() if isinstance(betas, list) else list(betas)
         for c in range(self.n_classes):
             new_betas[c] = self._weighted_m_step(betas[c] if isinstance(betas, list) else betas[c],
-                                                  posterior[:, c], class_idx=c)
+                                                  task_weights[:, c], class_idx=c)
 
         new_gammas = gammas
         if self._has_membership and self.optimise_membership and gammas is not None and self.K_membership > 0:
@@ -759,19 +822,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
 
     def _squarem_loglik(self, betas, class_probs, gammas=None):
         """Log-likelihood at (betas, class_probs, gammas) without running the M-step."""
-        log_choice, _ = self._log_choice_probs_np(betas)
-
-        if self._has_membership and self.optimise_membership and gammas is not None:
-            priors = self._compute_membership_priors(gammas)
-        else:
-            priors = np.broadcast_to(class_probs[None, :], (self.N, self.n_classes))
-
-        log_joint = log_choice + np.log(np.clip(priors, 1e-300, None))
-        ll = float(logsumexp(log_joint, axis=1).sum())
-        ll -= self._regularize_l2_betas(betas)
-        ll -= self._regularize_l1_betas(betas)
-        ll -= self._regularize_l2_gammas(gammas)
-        ll -= self._regularize_l1_gammas(gammas)
+        _, ll, _ = self._estep(betas, class_probs, gammas)
         return ll
 
     def _fit_em_once(self, rng, betas0=None, class_probs0=None, gammas0=None):
@@ -779,30 +830,17 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         class_probs = self._make_initial_class_probs(class_probs0=class_probs0)
         gammas = self._make_initial_gammas(rng, gammas0=gammas0) if self._has_membership else None
         prev_loglik = -np.inf
-        posterior = np.full((self.N, self.n_classes), 1.0 / self.n_classes)
+        posterior = np.full((self.n_panels, self.n_classes), 1.0 / self.n_classes)
         converged = False
 
         for iteration in range(1, self.maxiter + 1):
-            log_choice, _ = self._log_choice_probs_np(betas)
-
-            if self._has_membership and self.optimise_membership and gammas is not None:
-                priors = self._compute_membership_priors(gammas)
-            else:
-                priors = np.broadcast_to(class_probs[None, :], (self.N, self.n_classes))
-
-            log_joint = log_choice + np.log(np.clip(priors, 1e-300, None))
-            log_denom = logsumexp(log_joint, axis=1, keepdims=True)
-            posterior = np.exp(log_joint - log_denom)
-            loglik = float(log_denom.sum())
-            loglik -= self._regularize_l2_betas(betas)
-            loglik -= self._regularize_l1_betas(betas)
-            loglik -= self._regularize_l2_gammas(gammas)
-            loglik -= self._regularize_l1_gammas(gammas)
+            posterior, loglik, _ = self._estep(betas, class_probs, gammas)
+            task_weights = posterior[self.panel_idx] if self._panelled else posterior
 
             class_probs = self._normalize_class_probs(posterior.mean(axis=0))
             for c in range(self.n_classes):
                 bc = betas[c] if isinstance(betas, list) else betas[c]
-                betas[c] = self._weighted_m_step(bc, posterior[:, c], class_idx=c)
+                betas[c] = self._weighted_m_step(bc, task_weights[:, c], class_idx=c)
 
             if self._has_membership and self.optimise_membership and gammas is not None and self.K_membership > 0:
                 gammas = self._membership_m_step(gammas, posterior)
@@ -861,7 +899,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         theta = _pack(betas, class_probs, gammas)
         prev_loglik = -np.inf
         converged = False
-        posterior = np.full((self.N, self.n_classes), 1.0 / self.n_classes)
+        posterior = np.full((self.n_panels, self.n_classes), 1.0 / self.n_classes)
         em_calls = 0
 
         for outer_iter in range(1, self.maxiter + 1):
@@ -901,14 +939,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 if accepted:
                     theta = _pack(b_p, cp_p, gm_p)
                     loglik = ll_p
-                    if _do_membership and gm_p is not None:
-                        priors = self._compute_membership_priors(gm_p)
-                    else:
-                        priors = np.broadcast_to(cp_p[None, :], (self.N, self.n_classes))
-                    log_choice, _ = self._log_choice_probs_np(b_p)
-                    log_joint = log_choice + np.log(np.clip(priors, 1e-300, None))
-                    log_denom = logsumexp(log_joint, axis=1, keepdims=True)
-                    posterior = np.exp(log_joint - log_denom)
+                    posterior, _, _ = self._estep(b_p, cp_p, gm_p)
                 else:
                     theta = theta2
                     loglik = ll2
@@ -1147,14 +1178,9 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
 
         # Compute posteriors for prediction / summary
-        log_choice, _ = self._log_choice_probs_np(self.class_betas)
-        if self._has_membership and self.optimise_membership and self.class_gammas is not None:
-            priors = self._compute_membership_priors(self.class_gammas)
-        else:
-            priors = np.broadcast_to(self.class_probs[None, :], (self.N, C))
-        log_joint = log_choice + np.log(np.clip(priors, 1e-300, None))
-        log_marg = logsumexp(log_joint, axis=1, keepdims=True)
-        self.posterior = np.exp(log_joint - log_marg)
+        self.posterior, _, _ = self._estep(
+            self.class_betas, self.class_probs, self.class_gammas
+        )
         self.total_iter = result.nit
 
         return self
@@ -1221,6 +1247,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         de_seed=None,
         membership_vars=None,
         member_params_spec=None,
+        class_params_spec=None,
+        panels=None,
         **kwargs,
     ):
         """Search over number of latent classes, optionally using DE warm-start.
@@ -1247,7 +1275,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         for n_classes in range(int(min_classes), int(max_classes) + 1):
             model = cls(n_classes=n_classes, **kwargs)
             model.setup(X=X, y=y, varnames=varnames, ids=ids, alts=alts, avail=avail,
-                        membership_vars=membership_vars, member_params_spec=member_params_spec)
+                        membership_vars=membership_vars, member_params_spec=member_params_spec,
+                        class_params_spec=class_params_spec, panels=panels)
 
             betas0 = None
             class_probs0 = None
@@ -1319,15 +1348,16 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             gammas = params[offset:offset + n_gamma].reshape(C - 1, self.K_membership)
             priors = self._compute_membership_priors(gammas)
         else:
-            priors = np.broadcast_to(pi[None, :], (self.N, self.n_classes))
+            priors = np.broadcast_to(pi[None, :], (self.n_panels, self.n_classes))
 
         _, choice_probs_all = self._log_choice_probs_np(betas)
-        log_chosen = np.log(
+        log_chosen_task = np.log(
             np.clip(
                 (choice_probs_all * self.y[:, np.newaxis, :]).sum(axis=2),
                 1e-300, None,
             )
         )
+        log_chosen = self._panel_sum(log_chosen_task)
         log_joint = log_chosen + np.log(np.clip(priors, 1e-300, None))
         ll = float(logsumexp(log_joint, axis=1).sum())
         ll -= self._regularize_l2_betas(betas)
@@ -1348,6 +1378,10 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             return None
         if len(set(self._Ks)) != 1:
             print("[LC] Autograd Hessian requires all classes to share the same variable set.")
+            return None
+        if self._panelled:
+            # The JIT objective marginalises per task, not per person; use the
+            # panel-aware finite-difference Hessian instead.
             return None
 
         cache_key = "_cached_autograd_hessian_fn"
@@ -1529,48 +1563,56 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         se = np.sqrt(np.clip(np.diag(cov), 0.0, None))
 
         # ── OPG cross-check (diagnostics only) ────────────────────────────
+        # Scores are accumulated per decision-maker (panel), so each person is
+        # one independent unit of the outer-product-of-gradients estimator.
         _, choice_probs_all = self._log_choice_probs_np(self.class_betas)
-        log_chosen = np.log(
+        log_chosen_task = np.log(
             np.clip(
                 (choice_probs_all * self.y[:, np.newaxis, :]).sum(axis=2),
                 1e-300, None,
             )
         )
+        log_chosen = self._panel_sum(log_chosen_task)          # (n_panels, C)
         if has_gamma:
             priors = self._compute_membership_priors(self.class_gammas)
         else:
-            priors = np.broadcast_to(pi[None, :], (self.N, C))
+            priors = np.broadcast_to(pi[None, :], (self.n_panels, C))
         log_joint = log_chosen + np.log(np.clip(priors, 1e-300, None))
         log_marg  = logsumexp(log_joint, axis=1, keepdims=True)
-        posterior = np.exp(log_joint - log_marg)
+        posterior = np.exp(log_joint - log_marg)               # (n_panels, C)
+
+        # Per-task posterior weight is inherited from the task's person.
+        post_task = posterior[self.panel_idx] if self._panelled else posterior
 
         if C > 1:
             score_phi = posterior[:, :C - 1] - pi[np.newaxis, :C - 1]
         else:
-            score_phi = np.zeros((self.N, 0))
+            score_phi = np.zeros((self.n_panels, 0))
 
         resid = self.y[:, np.newaxis, :] - choice_probs_all
         try:
             if len(set(self._Ks)) == 1 and self._Ks[0] == self.K:
-                score_beta = np.einsum(
-                    "ncj,njk->nck", resid * posterior[:, :, np.newaxis], self.X
+                score_beta_task = np.einsum(
+                    "ncj,njk->nck", resid * post_task[:, :, np.newaxis], self.X
                 ).reshape(self.N, C * self.K)
+                score_beta = self._panel_sum(score_beta_task)
             else:
-                score_beta = np.zeros((self.N, sum(self._Ks)))
+                score_beta_task = np.zeros((self.N, sum(self._Ks)))
                 offset_col = 0
                 for c in range(C):
                     X_c = self.X[:, :, self._class_specs[c]]
                     sc = np.einsum(
-                        "nj,njk->nk", resid[:, c, :] * posterior[:, c], X_c
+                        "nj,njk->nk", resid[:, c, :] * post_task[:, c], X_c
                     )
                     kc = self._Ks[c]
-                    score_beta[:, offset_col:offset_col + kc] = sc
+                    score_beta_task[:, offset_col:offset_col + kc] = sc
                     offset_col += kc
+                score_beta = self._panel_sum(score_beta_task)
         except Exception:
-            score_beta = np.zeros((self.N, sum(self._Ks)))
+            score_beta = np.zeros((self.n_panels, sum(self._Ks)))
 
         if has_gamma:
-            score_gamma = np.zeros((self.N, n_gamma))
+            score_gamma = np.zeros((self.n_panels, n_gamma))
             resid_m = posterior - priors
             offset = 0
             for c in range(C - 1):
