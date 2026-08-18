@@ -140,5 +140,47 @@ def test_as_is_partition_disjoint_after_duplicate():
     assert "alone" in sol["isvars"] and "alone" not in sol["asvars"]
 
 
+def test_doctor_detects_lowvar_and_overspecification():
+    s = _solver()
+    # inject a constant (low-variance) column and a duplicate of 'alone'
+    # (perfect collinearity -> overspecification)
+    s.param.df = s.param.df.copy()
+    s.param.df["const"] = 1.0
+    s.param.df["alone_dup"] = s.param.df["alone"]
+    diag = s._diagnose_specification(["alone", "alone_dup", "male", "const"])
+    assert "const" in diag["lowvar"]
+    assert diag["overspec"] >= 1          # alone == alone_dup
+    assert diag["n_problems"] >= 2
+
+
+def test_doctor_soft_penalty_worsens_objectives():
+    df = _synth()
+    from SearchLibrium.siman import SA
+    p = Parameters(
+        criterions=[("nsig", -1), ("bic", -1)], df=df, varnames=["alone", "male"],
+        isvarnames=["alone", "male"], asvarnames=[], choice_set=ALTS,
+        choices=df["choice"].values, alt_var=df["alt"].values,
+        choice_id=df["obs_id"].values, ind_id=df["obs_id"].values,
+        base_alt="walk", models=["multinomial"], distr=["n", "f"],
+        allow_random=True, n_draws=50, p_val=0.05, all_sig=False)
+    s = SA(p, init_sol=None, ctrl=(100, 0.01, 2, 2), id_num=1)
+    s.nb_crit = 2
+
+    class _Fake(dict):
+        def update_objective(self, i, v):
+            self["obj"][i] = v
+
+    sol = _Fake(nsig=3, bic=500.0, _doctor_penalty=2)
+    sol["obj"] = [0, 0]
+    s.update_objectives([("nsig", -1), ("bic", -1)], sol)
+    assert sol["obj"][0] == 3 + 2                    # nsig += count
+    assert abs(sol["obj"][1] - (500.0 + 10 * 2)) < 1e-9   # bic += 10*count
+    # no penalty -> objectives unchanged
+    sol2 = _Fake(nsig=3, bic=500.0, _doctor_penalty=0)
+    sol2["obj"] = [0, 0]
+    s.update_objectives([("nsig", -1), ("bic", -1)], sol2)
+    assert sol2["obj"] == [3, 500.0]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

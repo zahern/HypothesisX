@@ -1750,6 +1750,66 @@ class Search():
         return warnings_out
 
     ''' ---------------------------------------------------------- '''
+    ''' Function. Larch-style "doctor" for a candidate spec BEFORE  '''
+    ''' fitting: detect OVERSPECIFICATION (rank-deficient / linearly '''
+    ''' dependent design columns -> unidentified parameters) and    '''
+    ''' LOW-VARIANCE data (near-constant columns). Returns a problem '''
+    ''' count + offenders so the search can distinguish and disfavour '''
+    ''' these specs (soft penalty) instead of wasting a fit on a     '''
+    ''' model that cannot be identified.                            '''
+    ''' ---------------------------------------------------------- '''
+    def _diagnose_specification(self, all_vars, model_n=''):
+        """Pre-fit design diagnosis.
+
+        Returns a dict:
+            n_problems : int   (overspecification deficiency + low-variance cols)
+            overspec   : int   (rank deficiency of the design among selected cols)
+            lowvar     : list  (near-constant column names)
+            offenders  : list  (columns to steer the search away from)
+
+        Cheap proxy for larch's Hessian-eigenvalue overspecification check: the
+        rank deficiency of the standardised data design (n_cols - rank) counts how
+        many parameters are not separately identified by the data (perfect/near
+        collinearity, duplicated dummies, an attribute that is a linear
+        combination of others). Low variance = a column with ~zero spread, which
+        contributes a flat likelihood direction (singular Hessian).
+        """
+        out = {"n_problems": 0, "overspec": 0, "lowvar": [], "offenders": []}
+        try:
+            df = self.param.df
+            cols = [v for v in dict.fromkeys(all_vars) if v in df.columns]
+            if len(cols) == 0:
+                return out
+            X = df[cols].to_numpy(dtype=float)
+            stds = X.std(axis=0)
+
+            # 1. LOW VARIANCE (near-constant columns)
+            lowvar = [cols[i] for i, s in enumerate(stds) if not np.isfinite(s) or s < 1e-8]
+            out["lowvar"] = lowvar
+
+            # 2. OVERSPECIFICATION (rank deficiency of the standardised design).
+            #    Drop the zero-variance columns first (their rank contribution is
+            #    already captured by low-variance) and standardise the rest.
+            keep = [i for i, s in enumerate(stds) if np.isfinite(s) and s >= 1e-8]
+            overspec = 0
+            if len(keep) >= 2:
+                Xz = (X[:, keep] - X[:, keep].mean(axis=0)) / stds[keep]
+                Xz = Xz[:, ~np.any(~np.isfinite(Xz), axis=0)] if Xz.size else Xz
+                if Xz.shape[1] >= 2:
+                    try:
+                        rank = int(np.linalg.matrix_rank(Xz, tol=1e-8))
+                        overspec = max(Xz.shape[1] - rank, 0)
+                    except Exception:
+                        overspec = 0
+            out["overspec"] = overspec
+
+            out["offenders"] = list(lowvar)
+            out["n_problems"] = int(overspec) + len(lowvar)
+        except Exception as e:
+            logging.debug("[_diagnose_specification] %s", e)
+        return out
+
+    ''' ---------------------------------------------------------- '''
     ''' Function. Diagnose why gradient optimisation failed to     '''
     ''' converge. Prints a structured diagnostic report to stdout. '''
     ''' ---------------------------------------------------------- '''
@@ -3930,9 +3990,26 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def update_objectives(self, crit, sol):
     # {
+        # Soft doctor penalty: worsen the objective of an over-specified /
+        # low-variance spec (detected pre-fit) so the search disfavours it,
+        # WITHOUT altering the stored bic/nsig/etc. The penalty count is scaled
+        # per metric so it bites regardless of which criteria are active
+        # (nsig is a count; bic/aic are on the deviance scale; test_mae in [0,1]).
+        pen = float(sol.get('_doctor_penalty', 0) or 0)
+        _scale = {"nsig": 1.0, "insig": 1.0, "bic": 10.0, "aic": 10.0,
+                  "loglik": 10.0, "loglikelihood": 10.0, "test_mae": 0.05,
+                  "mae": 0.05}
         for i in range(self.nb_crit):
             metric = crit[i][0]
-            sol.update_objective(i, sol[metric])
+            val = sol[metric]
+            if pen > 0.0 and val is not None:
+                try:
+                    sign = crit[i][1]          # +1 maximise, -1 minimise
+                    delta = pen * _scale.get(metric, 1.0)
+                    val = float(val) + (delta if sign == -1 else -delta)
+                except (TypeError, ValueError):
+                    val = sol[metric]
+            sol.update_objective(i, val)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -5494,6 +5571,23 @@ class Search():
         randvars = sol.get('randvars', {})
         _all_chk = list(dict.fromkeys(as_vars + is_vars + list(randvars.keys())))
         self._check_model_prerequisites(_all_chk, model_n)
+        # ── Doctor: overspecification / low-variance detection (soft) ──
+        # Detect BEFORE fitting whether this spec is over-specified (rank-
+        # deficient design -> unidentified parameters) or carries near-constant
+        # (low-variance) columns. We still fit (soft penalty), but record a
+        # penalty so update_objectives can DISFAVOUR the spec, and nudge the
+        # near-constant offenders toward attrition. Toggle with
+        # param.doctor_penalty = False.
+        if getattr(self.param, "doctor_penalty", True):
+            try:
+                _diag = self._diagnose_specification(_all_chk, model_n)
+                sol['_doctor_penalty'] = int(_diag.get("n_problems", 0))
+                sol['_doctor'] = _diag
+                if _diag.get("n_problems", 0) > 0 and hasattr(self, "_var_failures"):
+                    for _v in _diag.get("offenders", []):
+                        self._var_failures[_v] = self._var_failures.get(_v, 0) + 1
+            except Exception:
+                sol['_doctor_penalty'] = 0
         # ─────────────────────────────────────────────────────────────
 
         if model_n == 'random_regret':
