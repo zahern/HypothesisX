@@ -1037,7 +1037,11 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         n_gamma_params = 0
         if self.class_gammas is not None and self._has_membership and self.optimise_membership:
             n_gamma_params = self.class_gammas.size
-        self.num_params = self.coeff_est.size + max(0, self.n_classes - 1) + n_gamma_params
+        # When a membership equation is active it fully determines the class
+        # shares (its own intercept subsumes the class-share logits), so the
+        # separate share parameters are not free and must not be counted.
+        n_share_params = 0 if n_gamma_params > 0 else max(0, self.n_classes - 1)
+        self.num_params = self.coeff_est.size + n_share_params + n_gamma_params
         self.aic = 2 * self.num_params - 2 * self.loglik
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
 
@@ -1173,7 +1177,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         n_gamma_params = 0
         if self.class_gammas is not None and self._has_membership and self.optimise_membership:
             n_gamma_params = self.class_gammas.size
-        self.num_params = self.coeff_est.size + max(0, C - 1) + n_gamma_params
+        n_share_params = 0 if n_gamma_params > 0 else max(0, C - 1)
+        self.num_params = self.coeff_est.size + n_share_params + n_gamma_params
         self.aic = 2 * self.num_params - 2 * self.loglik
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
 

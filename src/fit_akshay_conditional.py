@@ -41,11 +41,19 @@ def main() -> None:
     df = pd.read_csv(args.data)
 
     # utility variables = 19 scheme attributes + opt-out constant;
-    # membership variables carried in X but excluded from utility by name.
+    # membership variables = a class-specific constant ("const", the intercept
+    # of the membership MNL, matching Table 5 of Vij et al. 2020) + 11 person
+    # covariates.  Membership vars are carried in X but excluded from utility.
     util_vars = CHOICE_ATTRS + ASC
-    varnames = util_vars + MEMBERSHIP_VARS
+    memb_vars = ["const"] + MEMBERSHIP_VARS
+    varnames = util_vars + memb_vars
 
-    X = df[varnames].to_numpy(dtype=float)
+    # Assemble X in varnames order: utility columns, const=1, membership columns.
+    X = np.column_stack([
+        df[util_vars].to_numpy(dtype=float),
+        np.ones((len(df), 1)),
+        df[MEMBERSHIP_VARS].to_numpy(dtype=float),
+    ])
     y = df["choice"].to_numpy(dtype=float)
     ids = df["task_id"].to_numpy()
     alts = df["alt"].to_numpy()
@@ -53,7 +61,7 @@ def main() -> None:
 
     print(f"rows={len(df)}  tasks={df['task_id'].nunique()}  "
           f"persons={df['indID'].nunique()}  K_util={len(util_vars)}  "
-          f"K_memb={len(MEMBERSHIP_VARS)}")
+          f"K_memb={len(memb_vars)} (incl. constant)")
 
     model = LatentClassMixedLogit(
         n_classes=args.classes,
@@ -64,7 +72,7 @@ def main() -> None:
     )
     model.setup(
         X, y, varnames, ids, alts,
-        membership_vars=MEMBERSHIP_VARS,
+        membership_vars=memb_vars,
         panels=panels,
     )
     model.fit(em_method="squarem")
