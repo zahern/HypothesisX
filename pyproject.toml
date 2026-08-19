@@ -45,7 +45,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
 dependencies = [
-    "numpy>=2.0,<2.3",
+    # Accept the whole numpy 2.x line. The old <2.3 cap forced pip to backtrack
+    # to an ancient release (0.0.105) on environments carrying numpy 2.3.x, since
+    # nothing newer satisfied the cap. numpy 2.3.x is exercised by the HPC jobs;
+    # the <3 guard still excludes a potentially breaking numpy 3.0.
+    "numpy>=2.0,<3",
     "pandas>=2.0.0",
     "scipy>=1.10",
     "scikit-learn>=1.3.1",
