@@ -25,6 +25,7 @@ try:
     from threshold import*
     from sapbil import SAPBIL, ProbabilityMatrix
     from hspbil import HSPBIL
+    from sparseea_agds import SparseEAAGDS
 except ImportError:
     from .harmony import*
     from .siman import*
@@ -32,6 +33,7 @@ except ImportError:
     from .threshold import*
     from .sapbil import SAPBIL, ProbabilityMatrix
     from .hspbil import HSPBIL
+    from .sparseea_agds import SparseEAAGDS
 
 import numpy as np
 
@@ -148,8 +150,22 @@ def estimate_ctrl(parameters, algorithm='sa', thorough=False, deep=False):
 
         ctrl = (max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)
 
+    elif algorithm == 'agds':
+        # SparseEA-AGDS: population size and generations scale with complexity;
+        # pc0 is the base crossover probability, pm0=None -> 1/len(asvarnames).
+        if c < 50:
+            pop_size, maxiter = max(20, 20 * scale), max(30, 30 * scale)
+        elif c < 200:
+            pop_size, maxiter = max(30, 30 * scale), max(50, 50 * scale)
+        elif c < 600:
+            pop_size, maxiter = max(40, 40 * scale), max(80, 80 * scale)
+        else:
+            pop_size, maxiter = max(50, 50 * scale), max(120, 120 * scale)
+        pc0 = 0.9
+        ctrl = (pop_size, maxiter, pc0, None)
+
     else:
-        raise ValueError(f"Unknown algorithm '{algorithm}'. Use 'sa' or 'hs'.")
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Use 'sa', 'hs' or 'agds'.")
 
     return ctrl
 
@@ -163,6 +179,14 @@ def _describe_ctrl(ctrl, algorithm):
             'final temperature    — lower  = more exploitation',
             'number of cooling steps',
             'evaluations per cooling step',
+        )
+    elif algorithm == 'agds':
+        names = ('pop_size', 'maxiter', 'pc0', 'pm0')
+        hints = (
+            'population size',
+            'number of generations',
+            'base crossover probability',
+            'base mutation probability (None → 1/len(asvarnames))',
         )
     else:
         names = ('max_mem', 'maxiter', 'max_harm', 'min_harm', 'max_pitch', 'min_pitch')
@@ -485,6 +509,60 @@ def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=Fals
     solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='HS')
+    return best
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SparseEA-AGDS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def call_agds(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, **kwargs):
+    """
+    Run SparseEA-AGDS (adaptive genetic operator + dynamic scoring + reference
+    point environmental selection; Wang et al. 2025).
+
+    Parameters
+    ----------
+    parameters : Parameters
+        Problem definition.
+    init_sol : Solution, optional
+        Warm-start solution (seeded into the initial population).
+    ctrl : tuple, optional
+        ``(pop_size, maxiter, pc0, pm0)``.  If omitted the values are estimated
+        from the problem size.
+    thorough, deep : bool
+        Scale up population / generations for a more thorough search.
+    **kwargs
+        ``id_num`` — run identifier.
+
+    Returns
+    -------
+    Solution
+        Best solution in the final population.
+    """
+    if ctrl is None:
+        ctrl = kwargs.pop('ctrl', None)
+
+    id_num = kwargs.pop('id_num', None)
+
+    if ctrl is None:
+        ctrl = estimate_ctrl(parameters, algorithm='agds',
+                             thorough=thorough, deep=deep)
+        label = 'DEEP' if deep else ('THOROUGH' if thorough else 'Auto-estimated')
+        print(f"[AGDS] {label} hyperparameters (problem complexity "
+              f"= {_problem_size(parameters)['complexity']}):")
+    else:
+        print("[AGDS] Using provided hyperparameters:")
+
+    print(_describe_ctrl(ctrl, 'agds'))
+    print()
+
+    solver = SparseEAAGDS(parameters, ctrl=ctrl, idnum=id_num)
+    existing = [init_sol] if init_sol is not None else None
+    solver.run_search(existing_sols=existing)
+    solver.close_files()
+    best = solver.return_best()
+    _print_dashboard(solver, best, algorithm='AGDS')
     return best
 
 
