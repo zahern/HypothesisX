@@ -2106,10 +2106,16 @@ class LatentClass(DiscreteChoiceModel):
             self.base_alt = None
 
         if fit_intercept and asc_names and class_params_spec is not None:
-            class_params_spec = [
-                list(asc_names) + [v for v in spec if v not in asc_names]
-                for spec in class_params_spec
-            ]
+            already_has_asc = any(v in asc_names for spec in class_params_spec for v in spec)
+            if not already_has_asc:
+                class_params_spec = [
+                    list(asc_names) + [v for v in spec if v not in asc_names]
+                    for spec in class_params_spec
+                ]
+
+        if class_params_spec is not None:
+            _sort_key = lambda v: (0, str(v)) if (str(v).startswith('intercept.') or v == '_inter') else (1, str(v))
+            class_params_spec = [sorted(spec, key=_sort_key) for spec in class_params_spec]
 
         self.K = X.shape[1]
         self.varnames = varnames

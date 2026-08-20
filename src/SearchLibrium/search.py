@@ -600,7 +600,7 @@ class Parameters:
         test_weight_var=None, allow_random=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
         sd_penalty=0.001, base_class=None,
-        fit_intercept=True, base_alt=None, val_share=0.25,  grad = True, hess = False, panels=False,  *args, **kwargs):
+        fit_intercept=None, base_alt=None, val_share=0.25,  grad = True, hess = False, panels=False,  *args, **kwargs):
 
         
         if models is None:
@@ -782,6 +782,7 @@ class Parameters:
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # FURTHER PRE-PROCESSING AND SETUPS
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        self.fit_intercept = fit_intercept
         logging.info('adding in alterantive pre_spec')
         self.pres_spec_constr = pre_spec_constraints
         self.setup_prerequisites(**kwargs)
@@ -2101,10 +2102,10 @@ class Search():
     'ps intercept_always fits intercept'
     def select_asc_ind(self):
     # {
-        if self.param.ps_intercept is None:
+        if self.param.fit_intercept is None:
             return self.random_coin_flip()
         else:
-            return self.param.ps_intercept
+            return self.param.fit_intercept
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -3064,7 +3065,7 @@ class Search():
                 solution['corvars'] = []
                 solution['cor']     = False
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        if self.param.ps_intercept is None:
+        if self.param.fit_intercept is None:
             solution['asc_ind'] = self.random_coin_flip()
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         return solution
@@ -3495,12 +3496,20 @@ class Search():
             for c in range(num_classes):
                 member_params_spec[c] = np.array([], dtype=object)
 
-        available = [c for c, arr in enumerate(member_params_spec) if new_param not in arr]
+        touched = getattr(self, '_current_touched', set())
+        available = [c for c, arr in enumerate(member_params_spec)
+                     if new_param not in arr and (c, new_param) not in touched]
         if not available:
             solution['member_params_spec'] = member_params_spec
             return
 
-        choose = np.random.choice(available)
+        base = getattr(self.param, 'base_class', None)
+        if base is None:
+            base = len(member_params_spec) - 1
+        non_base_available = [c for c in available if c != base]
+        choose = np.random.choice(non_base_available) if non_base_available else np.random.choice(available)
+        self._last_proposed = (choose, new_param)
+
         member_params_spec[choose] = np.sort(np.append(member_params_spec[choose], new_param))
 
         member_params_spec = self._enforce_membership_identifiability(member_params_spec)
@@ -3513,15 +3522,27 @@ class Search():
         member_params_spec = solution.get('member_params_spec', None)
         all_vars = list(self.param.isvarnames)
 
+        num_classes = getattr(self.param, 'num_classes', 2)
+        base = getattr(self.param, 'base_class', None)
+        if base is None:
+            base = num_classes - 1
+
         if member_params_spec is None or len(member_params_spec) == 0:
             candidates = all_vars
         else:
+            touched = getattr(self, '_current_touched', set())
+            # A var only has real room to grow if some NON-base, NON-touched
+            # class is still missing it — the base is always a dead end
+            # (identifiability redirects straight through it), and a touched
+            # class is off-limits this round even after that redirect.
             candidates = [v for v in all_vars
-                          if any(v not in arr for arr in member_params_spec)]
+                          if any(v not in arr and (c, v) not in touched
+                                 for c, arr in enumerate(member_params_spec) if c != base)]
 
-        if candidates:
-            candidate = np.random.choice(candidates)
-            self.add_member_paramfeature(candidate, solution)
+        if not candidates:
+            return None
+        candidate = np.random.choice(candidates)
+        self.add_member_paramfeature(candidate, solution)
 
         return solution
 
@@ -3585,6 +3606,8 @@ class Search():
 
     def add_class_paramfeature(self, new_param, solution):
         """Add a variable to a class's specification."""
+        if str(new_param).startswith('intercept.'):
+            return
         class_params_spec = solution.get('class_params_spec', None)
         if class_params_spec is None:
             num_classes = getattr(self.param, 'num_classes', 2)
@@ -3595,8 +3618,10 @@ class Search():
             solution['class_params_spec'] = class_params_spec
             return
 
+        touched = getattr(self, '_current_touched', set())
         available = [i for i, arr in enumerate(class_params_spec)
-                     if new_param not in arr]
+                     if new_param not in arr and (i, new_param) not in touched]
+                     
         if len(available) == 0:
             # new_param is already present in every class — nothing to add
             solution['class_params_spec'] = class_params_spec
@@ -3616,13 +3641,14 @@ class Search():
             self.add_class_paramfeature(candidate, solution)
             return solution
 
-        for _ in range(4):
-            pick = np.random.choice(range(len(class_params_spec)))
-            all_vars = list(self.param.asvarnames)
-            candidates = [v for v in all_vars if v not in class_params_spec[pick]]
-            if candidates:
-                self.add_class_paramfeature(np.random.choice(candidates), solution)
-                break
+        touched = getattr(self, '_current_touched', set())
+        candidates = [v for v in self.param.asvarnames
+                      if any(v not in arr and (c, v) not in touched
+                             for c, arr in enumerate(class_params_spec))]
+        if not candidates:
+            return None
+        self.add_class_paramfeature(np.random.choice(candidates), solution)
+
         return solution
 
     def remove_class_paramfeature(self, rem_var, solution):
@@ -3702,17 +3728,26 @@ class Search():
         model = sol.get('model')
         if class_params_spec is None:
             dom_betas = np.asarray(model.betas, dtype=float) if model is not None else None
-            return {'vars': np.array(sol.get('asvars', []), dtype=object),
+            dom_names = list(sol.get('asvars', []))
+            betas_map = dict(zip(dom_names, dom_betas)) if dom_betas is not None else {}
+            return {'vars': np.array(dom_names, dtype=object),
                     'member': np.array(sol.get('isvars', []), dtype=object),
-                    'betas': dom_betas, 'full_betas': [dom_betas] if dom_betas is not None else None}
+                    'betas_map': betas_map,
+                    'full_betas_map': [betas_map] if betas_map else None}
         member_params_spec = sol.get('member_params_spec', None)
         class_probs = getattr(model, 'class_probs', None) if model is not None else None
         dominant = int(np.argmax(class_probs)) if class_probs is not None else 0
         class_betas = getattr(model, 'class_betas', None) if model is not None else None
-        return {'vars': np.asarray(class_params_spec[dominant], dtype=object),
+        if getattr(model, 'varnames', None) is not None and getattr(model, '_class_specs', None) is not None:
+            names_by_class = [[model.varnames[i] for i in spec] for spec in model._class_specs]
+        else:
+            names_by_class = [list(arr) for arr in class_params_spec]
+        full_betas_map = ([dict(zip(names_by_class[c], class_betas[c])) for c in range(len(class_betas))]
+                           if class_betas is not None else None)
+        return {'vars': np.asarray(names_by_class[dominant], dtype=object),
                 'member': np.asarray(member_params_spec[dominant], dtype=object) if member_params_spec is not None else np.array([], dtype=object),
-                'betas': np.asarray(class_betas[dominant], dtype=float) if class_betas is not None else None,
-                'full_betas': [np.asarray(b, dtype=float) for b in class_betas] if class_betas is not None else None}
+                'betas_map': full_betas_map[dominant] if full_betas_map is not None else {},
+                'full_betas_map': full_betas_map}
     
     def _hmcr_subsample(self, vars_arr, rate=0.5):
         """Keep each variable independently with probability `rate`
@@ -3726,13 +3761,12 @@ class Search():
             kept = np.array([np.random.choice(vars_arr)], dtype=object)
         return np.sort(kept)
 
-    def _match_betas(self, dom_vars, dom_betas, new_vars):
-        """Extract dom_betas values for the surviving `new_vars` subset.
-        Exact copy, no jitter — jitter is applied once, later, in the
-        model's multistart loop."""
-        dom_vars = list(dom_vars)
-        idx = [dom_vars.index(v) for v in new_vars if v in dom_vars]
-        return np.asarray(dom_betas, dtype=float)[idx] if idx else np.array([0.0])
+    def _match_betas(self, dom_map, new_vars):
+        """Return {name: value} restricted to the names in `new_vars` present
+        in `dom_map`. Pure name-based lookup — no positional index, so no
+        caller's ordering (or setup()'s canonical sort) can ever desync a
+        value from the name it belongs to."""
+        return {v: dom_map[v] for v in new_vars if v in dom_map}
 
     def increase_sol_by_one_class(self, sol, dominant_ref):
         """Builds a (K+1)-class candidate from a K-class (or MNL) solution.
@@ -3744,17 +3778,20 @@ class Search():
         class_params_spec = sol.get('class_params_spec', None)
         dom_vars = dominant_ref['vars']
         dom_member = dominant_ref['member']
-        dom_betas = dominant_ref['betas']
+        dom_map = dominant_ref['betas_map']
 
-        new_vars = self._hmcr_subsample(dom_vars, rate=0.5)
+        asc_in_dom = [v for v in dom_vars if str(v).startswith('intercept.')]
+        regular_dom = [v for v in dom_vars if not str(v).startswith('intercept.')]
+        new_vars = self._hmcr_subsample(regular_dom, rate=0.5)
+        if sol.get('asc_ind', False) and asc_in_dom:
+            new_vars = np.array(sorted(list(new_vars) + list(asc_in_dom)), dtype=object)
         new_member = self._hmcr_subsample(dom_member, rate=0.5)
 
         if class_params_spec is None:
             sol['class_params_spec'] = np.array([new_vars, dom_vars], dtype=object)
             sol['member_params_spec'] = np.array([new_member, np.array([], dtype=object)], dtype=object)
-            if dom_betas is not None:
-                new_betas = self._match_betas(dom_vars, dom_betas, new_vars)
-                sol['init_class_betas'] = [new_betas, dom_betas]
+            if dom_map:
+                sol['init_class_betas'] = [self._match_betas(dom_map, new_vars), dom_map]
             else:
                 sol.pop('init_class_betas', None)
             return sol
@@ -3767,10 +3804,10 @@ class Search():
         new_member_params_spec = list(member_params_spec[:-1]) + [new_member] + [member_params_spec[-1]]
         sol['member_params_spec'] = np.array(new_member_params_spec, dtype=object)
 
-        current_betas = sol.get('init_class_betas') or dominant_ref['full_betas']
-        if dom_betas is not None and current_betas is not None:
-            new_betas = self._match_betas(dom_vars, dom_betas, new_vars)
-            extended = list(current_betas[:-1]) + [new_betas] + [current_betas[-1]]
+        current_maps = sol.get('init_class_betas') or dominant_ref['full_betas_map']
+        if dom_map and current_maps:
+            new_map = self._match_betas(dom_map, new_vars)
+            extended = list(current_maps[:-1]) + [new_map] + [current_maps[-1]]
             sol['init_class_betas'] = extended
         else:
             sol.pop('init_class_betas', None)
@@ -4235,7 +4272,7 @@ class Search():
    # {
         ns_intercept = [var for var in insig if '_intercept.' in var]  # Insignificant intercepts
         new_asc_ind = asc_ind
-        if self.param.ps_intercept is None:
+        if self.param.fit_intercept is None:
         # {
             if len(ns_intercept) == len(self.param.choice_set) - 1:
                 new_asc_ind = False
@@ -4774,30 +4811,52 @@ class Search():
         touched, moves_detail = set(pre_touched or ()), [] # Seed with upstream (HMCR) keys, then track this round's own
         attempts, real = 0, 0 # Track how many attempts were made and how many were actually applied
 
-        while real < n_perturb and attempts < max_attempts:
+        attempted_moves = []  # every attempt this round, accepted or not, with a reason
+
+        available_choices = list(choices)  # functions that still have something to offer this round
+
+        while real < n_perturb and attempts < max_attempts and available_choices:
             attempts += 1
             prev_sol = self.copy_solution(new_sol)
-            func = self.param.generator.choice(choices)
-            _before = prev_sol.get('class_params_spec')
-            #print(f"[DEBUG PRE] attempt={attempts} func={func.__name__} class_params_spec_before={[list(a) for a in _before] if _before is not None else None}")
+            func = self.param.generator.choice(available_choices)
+
+            # Expose this round's tabu set so add_class_paramfeature/add_member_
+            # paramfeature can filter their own candidates against it up front,
+            # instead of proposing a move we already know will be rejected.
+            self._current_touched = touched
+            self._last_proposed = None
             candidate = func(new_sol)
+           
             if candidate is None:
+                attempted_moves.append((func.__name__, [], 'no_candidate'))
+                available_choices = [f for f in available_choices if f is not func]
                 continue
             new_sol = candidate
 
             keys, moves = self._diff_solution(prev_sol, new_sol, latent=latent)
-            _after = new_sol.get('class_params_spec')
-            #print(f"[DEBUG POST] attempt={attempts} class_params_spec_after ={[list(a) for a in _after] if _after is not None else None}")
-            #print(f"[DEBUG PERTURB] attempt={attempts} func={func.__name__} moves={moves} keys={keys}")
-            if not keys or keys & touched:
+            if not keys:
+                attempted_moves.append((func.__name__, moves, 'no_change'))
+                new_sol = prev_sol
+                available_choices = [f for f in available_choices if f is not func]
+                continue
+            if keys & touched:
+                attempted_moves.append((func.__name__, moves, 'tabu'))
                 new_sol = prev_sol
                 continue
 
             touched |= keys
             moves_detail.extend(moves)
+
+            # If what actually landed differs from what was proposed, the
+            # membership identifiability rule redirected it — flag that
+            # distinctly from a plain accept.
+            reason = 'Iden_Accepted' if (self._last_proposed is not None and self._last_proposed not in keys) else 'accepted'
+            attempted_moves.append((func.__name__, moves, reason))
             real += 1
 
-        return new_sol, n_perturb, attempts, real, moves_detail
+        self._current_touched = set()
+
+        return new_sol, n_perturb, attempts, real, moves_detail, attempted_moves
 
     def _diff_solution(self, prev_sol, new_sol, latent=False):
 
@@ -4884,6 +4943,13 @@ class Search():
 
         return '\n'.join(lines)
 
+    def _format_shares(self, shares):
+        """Format class shares as 'Class1:27.3%' lines, one per class,
+        matching _format_class_list's bracket style."""
+        if shares is None or len(shares) == 0:
+            return ''
+        return '\n'.join(f"Class{c + 1}:[{float(s) * 100:.1f}%]" for c, s in enumerate(shares))    
+
     def _significance_report(self, sol):
 
         """Per-class '[x1,x2],[x4]' bracket strings for significant/not-significant
@@ -4938,6 +5004,20 @@ class Search():
 
         return f"[{','.join(sig)}]", f"[{','.join(insig)}]"
 
+       
+    def _format_attempted_moves(self, attempted):
+        """One line per PAR attempt this round: which function tried, the
+        class-qualified variable (e.g. 'C1X6'), and why it was accepted or
+        rejected."""
+        if not attempted:
+            return ''
+        lines = []
+        for func_name, moves, reason in attempted:
+            move_str = ','.join(f"C{c + 1}{var}:{action}" for (c, var, _, action) in moves) if moves else '-'
+            lines.append(f"{func_name}({move_str}):{reason}")
+        return '\n'.join(lines)
+
+
     def _format_moves_report(self, moves, num_classes):
 
         """Latent class: group class_params/member_params moves into aligned
@@ -4978,17 +5058,19 @@ class Search():
         memory_str = str([m.get('sol_num', '') for m in getattr(self, 'memory', [])])
         hmcr_moves_str = self._format_moves_report(ctx.get('hmcr_moves', []), num_classes)
         moves_str = self._format_moves_report(ctx.get('moves_detail', []), num_classes)
+        flag = sol.get('solution_flag', '')
+        bic_penalized_display = sol.get('bic', '') if flag else ''
         writer.writerow([
-            sol.get('sol_num', ''), ctx.get('iter', ''), getattr(self.param, 'num_classes', ''),
-            ctx.get('harm_rate', ''), ctx.get('pitch', ''), ctx.get('origen', 'other'), memory_str,
-            ctx.get('chosen_sol_num', ''), hmcr_moves_str, ctx.get('n_perturb', ''), ctx.get('attempts', ''),
-            ctx.get('real_perturbations', ''), moves_str, resultado,
-            sol.get('converged', False), sol.get('bic', ''), sol.get('loglik', ''), sol.get('aic', ''),
-            sol.get('asvars', []), sol.get('isvars', []), sol.get('randvars', {}), sol.get('bcvars', []),
-            sol.get('corvars', []),  class_vars_str, member_vars_str,
-            self.param.p_val, sig, not_sig, 
+            sol.get('sol_num', ''), ctx.get('iter', ''), getattr(self.param, 'num_classes', ''), memory_str,
+            ctx.get('harm_rate', ''), ctx.get('origen', 'other'), ctx.get('chosen_sol_num', ''), hmcr_moves_str, 
+            ctx.get('pitch', ''),  ctx.get('n_perturb', ''), ctx.get('attempts', ''), self._format_attempted_moves(ctx.get('attempted_moves', [])),
+            ctx.get('real_perturbations', ''), moves_str, resultado, sol.get('converged', False),  sol.get('loglik', ''), sol.get('bic_raw', sol.get('bic', '')), 
+            self._format_shares(sol.get('class_shares', [])), flag, bic_penalized_display, sol.get('aic', ''),
+            class_vars_str, member_vars_str, self.param.p_val, sig, not_sig, sol.get('asvars', []), sol.get('isvars', []),
+            sol.get('randvars', {}), sol.get('bcvars', []), sol.get('corvars', []),  
         ])
         self.hs_csv_file.flush()
+        
 
     def _enforce_membership_identifiability(self, member_params_spec):
         """No membership covariate may end up present in every class at once.
@@ -5172,8 +5254,37 @@ class Search():
             base_class=getattr(self.param, 'base_class', None),
             class_params_spec=class_params_spec, panels=panels, fit_intercept=fit_intercept, base_alt=base_alt
         )
+        # Convert {name: value} warm-start maps into positional arrays,
+        # resolved against setup()'s FINAL per-class column order — the
+        # single point where name-based lookup becomes position. Names
+        # missing from the map (new or reintroduced vars) get a random
+        # draw, same as a cold start.
+        if betas0 is not None:
+            resolved_betas0 = []
+            for c in range(model.n_classes):
+                names_c = [model.varnames[i] for i in model._class_specs[c]]
+                dom_map = betas0[c] if c < len(betas0) else {}
+                vals, tags = [], []
+                for v in names_c:
+                    if v in dom_map:
+                        vals.append(dom_map[v]); tags.append(f"{v}={dom_map[v]:.4f}")
+                    else:
+                        val = float(self.param.generator.normal(0, 0.05))
+                        vals.append(val); tags.append(f"{v}=RANDOM({val:.4f})")
+                print(f"[WARM START] Class {c + 1}:")
+                print(f"  Parent_Memory:[{', '.join(f'{k}={v:.4f}' for k, v in dom_map.items())}]")
+                print(f"  Warm_Start:[{', '.join(tags)}]")
+                resolved_betas0.append(np.array(vals, dtype=float))
+            betas0 = resolved_betas0
         #model.fit(em_method="squarem")
         model.fit(betas0=betas0)
+        if betas0 is not None:
+            for c in range(model.n_classes):
+                names_c = [model.varnames[i] for i in model._class_specs[c]]
+                est = ', '.join(f"{v}={b:.4f}" for v, b in zip(names_c, model.class_betas[c]))
+                print(f"[FIT RESULT] Class {c + 1}:")
+                print(f"  Estimated:[{est}]")
+
         model.get_loglik_null()
 
         return model
@@ -5375,13 +5486,16 @@ class Search():
         # Defensive guard: drop any spec entry that no longer corresponds to
         # an actual column in all_vars.
         all_vars_check = set(all_vars)
+        is_asc = lambda v: str(v).startswith('intercept.')
+        member_sort_key = lambda v: (0, str(v)) if v == '_inter' else (1, str(v))
+
         if class_params_spec is not None:
             for c in range(len(class_params_spec)):
-                stale = [v for v in class_params_spec[c] if v not in all_vars_check and v != '_inter']
+                stale = [v for v in class_params_spec[c] if v not in all_vars_check and v != '_inter' and not is_asc(v)]
                 if stale:
                     print(f"[LC] WARNING: dropping stale class_params_spec[{c}] entries not in all_vars: {stale}")
                 class_params_spec[c] = np.array(
-                    [v for v in class_params_spec[c] if v in all_vars_check or v == '_inter'], dtype=object
+                    [v for v in class_params_spec[c] if v in all_vars_check or v == '_inter' or is_asc(v)], dtype=object
                 )
             sol['class_params_spec'] = class_params_spec
         if member_params_spec is not None:
@@ -5390,17 +5504,18 @@ class Search():
                 if stale:
                     print(f"[LC] WARNING: dropping stale member_params_spec[{c}] entries not in all_vars: {stale}")
                 member_params_spec[c] = np.array(
-                    [v for v in member_params_spec[c] if v in all_vars_check or v == '_inter'], dtype=object
+                    sorted((v for v in member_params_spec[c] if v in all_vars_check or v == '_inter'), key=member_sort_key),
+                    dtype=object
                 )
             sol['member_params_spec'] = member_params_spec
-            
+
         # asvars/isvars are derived, not authoritative: asvars = union across
         # classes (a var can be in class 1 only, class 2 only, or both),
         # isvars = union of membership vars. Recomputed here so the log/print
         # always reflects the actual class_params_spec/member_params_spec,
         # regardless of how they got mutated (perturbation, opposite, repair).
         sol['asvars'] = sorted({str(v) for arr in class_params_spec for v in arr
-                                if str(v) != '_inter'}) if class_params_spec is not None else []
+                                if str(v) != '_inter' and not str(v).startswith('intercept.')}) if class_params_spec is not None else []
         sol['isvars'] = sorted({str(v) for arr in member_params_spec for v in arr
                                 if str(v) != '_inter'}) if member_params_spec is not None else []
 
@@ -5459,7 +5574,7 @@ class Search():
             weights=self.param.weights,
             alts=alts,
             base_alt=self.param.base_alt, panels =  panels, 
-            ind_id=ind_id,betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10)
+            ind_id=ind_id,betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10), fit_intercept=asc_ind
         )
 
         """
@@ -5472,8 +5587,18 @@ class Search():
             print(f"[POST-FIT DEBUG] model._class_specs[{c}] = {list(idx)} -> {names_at_idx}")
         """
         sol['model'] = model
+        if getattr(model, 'varnames', None) is not None and getattr(model, '_class_specs', None) is not None:
+            sol['class_params_spec'] = np.array(
+                [np.array([model.varnames[i] for i in spec], dtype=object) for spec in model._class_specs],
+                dtype=object
+            )
         sol['coeff'] = model.coeff_est
         sol['model_n'] = 'latent_class'
+        if getattr(model, 'varnames', None) is not None and getattr(model, '_class_specs', None) is not None:
+            sol['class_params_spec'] = np.array(
+                [np.array([model.varnames[i] for i in spec], dtype=object) for spec in model._class_specs],
+                dtype=object
+            )
         converged = model.converged
 
         # Standard errors / p-values: needed by significance-based refinement
@@ -5485,8 +5610,20 @@ class Search():
                 print(f"[LC] standard errors unavailable for this candidate: {exc}")
 
         aic = getattr(model, 'aic', float('inf'))
-        bic = getattr(model, 'bic', float('inf'))
+        bic_raw = getattr(model, 'bic', float('inf'))
         loglik = getattr(model, 'loglik', float('-inf'))
+
+        shares = getattr(model, 'class_probs', None)
+        shares = sorted(list(shares), reverse=True) if shares is not None else []
+        degenerate = False
+        if len(shares) >= 2:
+            smallest, second_smallest = shares[-1], shares[-2]
+            degenerate = smallest < 0.05 or (second_smallest > 0 and smallest / second_smallest < 0.2)
+
+        sol['class_shares']  = shares
+        sol['solution_flag'] = 'Degenerate (boundary solution)' if degenerate else ''
+        sol['bic_raw']       = bic_raw
+        bic = bic_raw * 1.5 if degenerate else bic_raw
 
         mae = float('inf')
 

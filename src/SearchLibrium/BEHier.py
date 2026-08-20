@@ -218,16 +218,19 @@ def _lrt_within_range(loglik_child, loglik_parent, df, alpha=0.05):
 
 
 def _build_lc_init_betas(search_instance, model, old_class_spec, new_class_spec):
-    """Per-class warm start: restrict each class's converged betas to the
-    variables that survive in `new_class_spec`, reusing `_match_betas`
-    (the same subsetting logic already used for K -> K+1 class growth)."""
-    new_betas = []
+    """Per-class warm start: {name: value} maps restricted to the variables
+    that survive in `new_class_spec`, sourced from model.varnames/_class_specs
+    (setup()'s resolved order) so it's correct regardless of old_class_spec's
+    own ordering."""
+    new_maps = []
     for c in range(len(new_class_spec)):
-        dom_vars  = old_class_spec[c]
-        dom_betas = model.class_betas[c]
-        new_vars  = new_class_spec[c]
-        new_betas.append(search_instance._match_betas(dom_vars, dom_betas, new_vars))
-    return new_betas
+        if getattr(model, 'varnames', None) is not None and getattr(model, '_class_specs', None) is not None:
+            names_c = [model.varnames[i] for i in model._class_specs[c]]
+        else:
+            names_c = list(old_class_spec[c])
+        dom_map = dict(zip(names_c, model.class_betas[c]))
+        new_maps.append(search_instance._match_betas(dom_map, new_class_spec[c]))
+    return new_maps
 
 
 def _behier_latent(search_instance, sol, max_passes=10):
@@ -254,12 +257,29 @@ def _behier_latent(search_instance, sol, max_passes=10):
         for _n, _p in zip(ref_model.coeff_names, beta_pvalues):
             print(f"    {_n:<30} p={float(_p):.4f}")
 
+        pval_dict = dict(zip(ref_model.coeff_names, beta_pvalues))
+        class_specs = ref_sol['class_params_spec']
+
         for name, pv in zip(ref_model.coeff_names, beta_pvalues):
             if float(pv) <= p_val:
                 continue
             kind, c_idx, var = _parse_lc_coeff_name(name)
-            if kind == 'class_fixed' and var not in ps_asvars:
-                out.append((kind, c_idx, var, float(pv)))
+            if kind != 'class_fixed' or var in ps_asvars or var.startswith('intercept.'):
+                continue
+            out.append((kind, c_idx, var, float(pv)))
+
+        # ASC: remove all jointly per class, or keep all — never partially.
+        for c_idx, spec in enumerate(class_specs):
+            asc_vars = [v for v in spec if str(v).startswith('intercept.') and v not in ps_asvars]
+            if not asc_vars:
+                continue
+            asc_pvals = [(v, float(pval_dict.get(f'class_{c_idx + 1}_{v}', 0.0))) for v in asc_vars]
+            if all(pv_ > p_val for _, pv_ in asc_pvals):
+                out.extend(('class_fixed', c_idx, v, pv_) for v, pv_ in asc_pvals)
+                print(f"    [Intercept] class {c_idx + 1}: all ASC insignificant — removing jointly.")
+            elif any(pv_ > p_val for _, pv_ in asc_pvals):
+                sig = [v for v, pv_ in asc_pvals if pv_ <= p_val]
+                print(f"    [Intercept] class {c_idx + 1}: {sig} still significant — keeping all ASC.")
 
         gamma_names = getattr(ref_model, 'gamma_names', None)
         gamma_names = [] if gamma_names is None else gamma_names
@@ -294,6 +314,8 @@ def _behier_latent(search_instance, sol, max_passes=10):
         old_class = ref_sol['class_params_spec']
         trial = search_instance.copy_solution(ref_sol)
         trial['class_params_spec']  = np.array(new_class,  dtype=object)
+        if not any(str(v).startswith('intercept.') for cls in new_class for v in cls):
+            trial['asc_ind'] = False  # every class lost its ASC this round — stop setup() from reinjecting        
         trial['member_params_spec'] = np.array(new_member, dtype=object) if new_member is not None else None
         trial['init_class_betas'] = _build_lc_init_betas(search_instance, ref_sol['model'], old_class, new_class)
         search_instance.param.num_classes = len(new_class)

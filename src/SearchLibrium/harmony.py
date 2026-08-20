@@ -170,10 +170,12 @@ class HarmonySearch(Search):
         self.hs_csv_file   = open(f"hs_track{suffix}.csv", "w", newline='')
         self.hs_csv_writer = csv.writer(self.hs_csv_file)
         self.hs_csv_writer.writerow([
-            'sol_num','iter','num_classes','harm_rate','pitch','origen', 'memory', 'chosen_sol_num','hmcr_moves',
-            'n_perturb','attempt_perturbations','real_perturbations','moves_detail',
-            'result','converged','bic','loglik','aic','asvars','isvars','randvars','bcvars',
-            'corvars','class_vars','member_vars','p_val_threshold','significant','not_significant',
+            'sol_num', 'iter', 'num_classes', 'memory', 'harm_rate', 'origen', 'chosen_sol_num', 'hmcr_moves', 'pitch',  
+            'n_perturb', 'attempt_perturbations','attempted_moves', 'real_perturbations','moves_detail',
+            'result', 'converged', 'loglik', 'bic','class_shares','solution_flag', 'bic_penalized','aic',
+            'class_vars','member_vars','p_val_threshold','significant','not_significant','asvars','isvars','randvars','bcvars',
+            'corvars',
+            
         ])
         run_header = (
             f"SearchLibrium — Harmony Search Run\n"
@@ -226,7 +228,7 @@ class HarmonySearch(Search):
             else:
             # {
                 opp_sol[key] = [v for v in opp_sol[key] if v not in sol[key]]  # Filter out elements in sol[key]
-                if self.param.ps_intercept is None:
+                if self.param.fit_intercept is None:
                     opp_sol['asc_ind'] = not sol['asc_ind']
             # }
         # }
@@ -398,10 +400,20 @@ class HarmonySearch(Search):
                     class_params_spec = copy.deepcopy(chosen_sol['class_params_spec'])
                     for ii, class_params in enumerate(class_params_spec):
                     # {
-                        class_params_index = self.param.generator.choice(bin, size=len(class_params), p=prob)
-                        class_params_spec[ii] = np.array([i for (i, v) in zip(class_params, class_params_index) if v],
-                                                         dtype=class_params.dtype)
+                        class_params = np.asarray(class_params, dtype=object)
+                        is_asc = np.array([str(v).startswith('intercept.') for v in class_params])
+                        asc_part, regular_part = class_params[is_asc], class_params[~is_asc]
+                        keep = self.param.generator.choice(bin, size=len(regular_part), p=prob)
+                        kept_regular = np.array([v for v, k in zip(regular_part, keep) if k], dtype=object)
+                        class_params_spec = list(class_params_spec)
+                        class_params_spec[ii] = np.concatenate([asc_part, kept_regular]) if len(asc_part) else kept_regular
                     # }
+
+                    fixed = np.empty(len(class_params_spec), dtype=object)
+                    for k, arr in enumerate(class_params_spec):
+                        fixed[k] = arr
+                    class_params_spec = fixed
+
                     self._hmcr_moves += self._diff_class_arrays(chosen_sol['class_params_spec'], class_params_spec, 'class_params')
                     new_sol['class_params_spec'] = class_params_spec
                 # }
@@ -540,9 +552,9 @@ class HarmonySearch(Search):
 
         hmcr_touched = adjusted_solution.get('hmcr_touched', set())
 
-        adjusted_solution, n_perturb, attempts, real_perturbations, moves_detail = self.perturb_round( adjusted_solution, choices=perturbations, latent=self.param.latent_class, max_attempts=20, pre_touched=hmcr_touched, pitch=pitch)
+        adjusted_solution, n_perturb, attempts, real_perturbations, moves_detail, attempted_moves = self.perturb_round( adjusted_solution, choices=perturbations, latent=self.param.latent_class, max_attempts=20, pre_touched=hmcr_touched, pitch=pitch)
 
-        self._csv_context.update({'n_perturb': n_perturb, 'attempts': attempts, 'real_perturbations': real_perturbations, 'moves_detail': moves_detail})
+        self._csv_context.update({'n_perturb': n_perturb, 'attempts': attempts, 'real_perturbations': real_perturbations, 'moves_detail': moves_detail, 'attempted_moves': attempted_moves})
 
         adjusted_solution['randvars'] = self.normalize_randvars(
             adjusted_solution['asvars'],
@@ -1654,7 +1666,7 @@ class HarmonySearch(Search):
         lgd = ax.legend(all_lines, labels, loc='upper right', bbox_to_anchor=(0.5, -0.1))
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
         latent_info = "_" + str(self.param.num_classes) + "_classes_" if (self.param.num_classes > 1) else "_"
-        plot_filename = self.code_name + "_" + latent_info + current_time + "_MOOF.png"
+        plot_filename = self.idnum + "_" + latent_info + current_time + "_MOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
 
@@ -1711,7 +1723,7 @@ class HarmonySearch(Search):
         ax.set_ylabel(f"{log_str} {crit[1]} - Testing dataset")
         lgd = ax.legend(lns, labs, loc='upper center', bbox_to_anchor=(0.5, -0.1))
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
-        plot_filename = self.code_name + "_" + current_time + "_MOOF.png"
+        plot_filename = self.idnum + "_" + current_time + "_MOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
 
@@ -1769,7 +1781,7 @@ class HarmonySearch(Search):
         ax1.set_ylabel(self.param.criterions[0][0])
         lgd = ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2)
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
-        plot_filename = self.code_name + "_multiclass_" + current_time + "_SOOF.png"
+        plot_filename = self.idnum + "_multiclass_" + current_time + "_SOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
 
@@ -1808,7 +1820,7 @@ class HarmonySearch(Search):
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
         num_classes = getattr(self.param, 'num_classes', 1)
         latent_info = "_" + str(num_classes) + "_classes_" if num_classes > 1 else "_"
-        plot_filename = self.code_name + "_" + latent_info + current_time + "_SOOF.png"
+        plot_filename = self.idnum + "_" + latent_info + current_time + "_SOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
 
@@ -1854,7 +1866,7 @@ class HarmonySearch(Search):
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
         num_classes = getattr(self.param, 'num_classes', 1)
         latent_info = "_" + str(num_classes) + "_classes_" if num_classes > 1 else "_"
-        plot_filename = self.code_name + "_" + latent_info + current_time + "_SOOF.png"
+        plot_filename = self.idnum + "_" + latent_info + current_time + "_SOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
     # }
 
