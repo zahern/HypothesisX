@@ -698,6 +698,7 @@ class Parameters:
         # ── Regularisation (primarily for latent class) ──────────────
         self.l1_penalty = kwargs.get('l1_penalty', 0.1)
         self.l2_penalty = kwargs.get('l2_penalty', 0.5)
+        self.purchase_var = kwargs.get('purchase_var', None)
 
         self.fit_intercept = fit_intercept
         self.base_alt = base_alt
@@ -5462,6 +5463,150 @@ class Search():
         return tuple
     # }
 
+    def fit_lcm_conditional(self, X, y, w, varnames, class_params_spec, member_params_spec=None,
+                            num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-6,
+                            gtol_membership_func=1e-5, avail=None, avail_latent=None,
+                            fit_intercept=True, weights=None, seed=None,
+                            alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None,
+                            betas0=None, n_init=10):
+        """Fit a Latent Class Conditional Logit (LCCM, Vij et al. 2020): choice
+        + purchase decision per occasion, sharing class-specific utility
+        coefficients. Same contract as fit_lcm, plus `w` (purchase indicator).
+        """
+        try:
+            from .latent_class import LatentClassConditional
+        except ImportError:
+            from SearchLibrium.latent_class import LatentClassConditional
+
+        optimise_membership = getattr(self, 'optimise_membership', False)
+        if optimise_membership and member_params_spec is None:
+            optimise_membership = False
+
+        model = LatentClassConditional(
+            n_classes=num_classes,
+            maxiter=maxiter,
+            tol=gtol,
+            random_state=seed if seed is not None else 0,
+            optimise_membership=optimise_membership,
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True
+        )
+
+        X_arr = X.values if hasattr(X, 'values') else np.asarray(X, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        w_arr = np.asarray(w, dtype=float)
+
+        model.setup(
+            X=X_arr, y=y_arr, w=w_arr,
+            varnames=list(varnames),
+            ids=ids,
+            ind_id=ind_id,
+            alts=alts if alts is not None else np.ones(len(y_arr), dtype=int),
+            avail=avail,
+            member_params_spec=member_params_spec,
+            base_class=getattr(self.param, 'base_class', None),
+            class_params_spec=class_params_spec, panels=panels, fit_intercept=fit_intercept, base_alt=base_alt
+        )
+        model.fit(betas0=betas0)
+        model.get_loglik_null()
+
+        return model
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Fit and Evaluate Latent Class Conditional Model  '''
+    ''' ---------------------------------------------------------- '''
+
+    def evaluate_lcc(self, sol):
+    # {
+        sol = self.apply_constraints(sol)
+
+        class_params_spec = sol.get('class_params_spec', None)
+        member_params_spec = sol.get('member_params_spec', None)
+        num_classes = getattr(self.param, 'num_classes', 2)
+        bc_vars = self.define_bc_vars(sol)
+
+        all_vars_set = self._all_vars_in_solution(sol)
+        all_vars = [var for var in self.param.varnames if var in all_vars_set]
+
+        # Defensive guard: drop any spec entry that no longer corresponds to
+        # an actual column in all_vars.
+        if class_params_spec is not None:
+            class_params_spec = [
+                [v for v in spec if v == '_inter' or v in all_vars]
+                for spec in class_params_spec
+            ]
+        if member_params_spec is not None:
+            member_params_spec = [
+                [v for v in spec if v == '_inter' or v in all_vars]
+                for spec in member_params_spec
+            ]
+
+        sol['asvars'] = sorted({str(v) for arr in class_params_spec for v in arr
+                                if str(v) != '_inter'}) if class_params_spec is not None else []
+        sol['isvars'] = sorted({str(v) for arr in member_params_spec for v in arr
+                                if str(v) != '_inter'}) if member_params_spec is not None else []
+
+        if class_params_spec is not None and len(class_params_spec) > 0:
+            all_vars_set = set()
+            for c in range(len(class_params_spec)):
+                if class_params_spec[c] is not None and len(class_params_spec[c]) > 0:
+                    for v in class_params_spec[c]:
+                        all_vars_set.add(str(v))
+            if member_params_spec is not None:
+                for arr in member_params_spec:
+                    if arr is not None:
+                        for v in arr:
+                            all_vars_set.add(str(v))
+            all_vars = [v for v in self.param.varnames if v in all_vars_set]
+        else:
+            all_vars = [var for var in self.param.varnames if var in (sol.get('asvars', []) + sol.get('isvars', []))]
+
+        X = self.param.df[all_vars].values
+        y = self.param.choices
+        w = self.param.df[self.param.purchase_var].values
+        ids = self.param.choice_id if self.param.choice_id is not None else self.param.ind_id
+        ind_id = self.param.ind_id if self.param.ind_id is not None else None
+        panels = self.param.panels
+        alts = self.param.alt_var
+        if alts is None:
+            alts = np.ones(len(y), dtype=int)
+
+        model = self.fit_lcm_conditional(
+            X=X, y=y, w=w, varnames=all_vars,
+            class_params_spec=class_params_spec,
+            member_params_spec=member_params_spec,
+            num_classes=num_classes,
+            ids=ids,
+            transvars=bc_vars,
+            maxiter=self.param.maxiter,
+            gtol=self.param.gtol,
+            avail=self.param.avail,
+            weights=self.param.weights,
+            alts=alts,
+            base_alt=self.param.base_alt, panels=panels,
+            ind_id=ind_id, betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10)
+        )
+
+        sol['model'] = model
+        sol['coeff'] = model.coeff_est
+        sol['model_n'] = 'latent_class'
+        converged = model.converged
+
+        if converged and getattr(model, 'pvalues', None) is None:
+            try:
+                model.compute_standard_errors()
+            except Exception as exc:
+                print(f"[LCC] standard errors unavailable for this candidate: {exc}")
+
+        aic = getattr(model, 'aic', float('inf'))
+        bic = getattr(model, 'bic', float('inf'))
+        loglik = getattr(model, 'loglik', float('-inf'))
+        mae = float('inf')
+
+        tuple_ = (aic, bic, loglik, mae, sorted(all_vars_set), [], {}, bc_vars, [], converged, sol)
+        return tuple_
+    # }
+
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Fit and Evaluate Latent Class Model              '''
@@ -5618,7 +5763,7 @@ class Search():
         degenerate = False
         if len(shares) >= 2:
             smallest, second_smallest = shares[-1], shares[-2]
-            degenerate = smallest < 0.05 or (second_smallest > 0 and smallest / second_smallest < 0.2)
+            degenerate = smallest < 0.05 and (second_smallest > 0 and smallest / second_smallest < 0.2)
 
         sol['class_shares']  = shares
         sol['solution_flag'] = 'Degenerate (boundary solution)' if degenerate else ''
@@ -6007,8 +6152,9 @@ class Search():
     def evaluate_model(self, sol):
     # {
         # ── Latent class override: if param says latent, do latent ──
-        if getattr(self.param, 'latent_class', False):
-            return self.evaluate_lc(sol)
+        if getattr(self.param, 'purchase_var', None) is not None:
+                return self.evaluate_lcc(sol)
+        return self.evaluate_lc(sol)
 
         model_n = sol.get('model_n', '')
 

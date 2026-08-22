@@ -2302,6 +2302,45 @@ class LatentClass(DiscreteChoiceModel):
         denom = jax.scipy.special.logsumexp(num, axis=1, keepdims=True)
         R = jnp.exp(num - denom)
         return R, jnp.sum(denom)
+    
+    def _build_kernels(self):
+        """Per-class kernel identical in structure to LatentClass._build_kernels(),
+        except the negative log-likelihood adds a Firth (Jeffreys-prior) penalty
+        over each class's full beta_active (beta_x + v_s) — same machinery
+        already used for the membership block: grad of (ll + 0.5*log|info|)
+        needs 3rd-order derivatives of the base log-lik (fine), but Newton
+        curvature reuses the *unpenalized* observed information directly
+        instead of hessian(value) (4th-order derivatives, NaN-prone).
+
+        Without this, quasi/complete separation in the purchase sub-model
+        (a binary logit nested inside each class) drives the whole beta
+        vector to +-inf in early EM iterations, before the posterior R has
+        stabilized enough to avoid separated subsets.
+        """
+        super()._build_kernels()
+
+        class_fgh = []
+        for c in range(self.n_classes):
+            def base_ll(beta, w, c=c):
+                return jnp.sum(w * self._class_ll(beta, c))
+
+            def base_nll(beta, w, base_ll=base_ll):
+                return -base_ll(beta, w)
+
+            if self.membership_correction:
+                def info(beta, w, base_ll=base_ll):
+                    H = hessian(lambda b: base_ll(b, w))(beta)
+                    return -H + jnp.eye(beta.shape[0], dtype=beta.dtype) * RIDGE
+
+                def value(beta, w, base_nll=base_nll, info=info):
+                    _, logdet = jnp.linalg.slogdet(info(beta, w))
+                    return base_nll(beta, w) - 0.5 * logdet
+
+                class_fgh.append((jax.jit(value), jax.jit(grad(value)), jax.jit(info)))
+            else:
+                class_fgh.append((jax.jit(base_nll), jax.jit(grad(base_nll)), jax.jit(hessian(base_nll))))
+
+        self._class_fgh = class_fgh
 
     # ------------------------------------------------------------------
     # NEWTON STEP (generic, with Armijo back-tracking). Takes a pre-built
@@ -2421,7 +2460,7 @@ class LatentClass(DiscreteChoiceModel):
         self._build_kernels()
         best = None
 
-        multistart_ll = []
+        multistart_ll = []        
 
         # When betas0 is provided, we do 10% exact + 30% jittered + 60% random initialisations. (For K+1 Class we use K betas)
 
@@ -2459,6 +2498,7 @@ class LatentClass(DiscreteChoiceModel):
             for it in range(1, self.maxiter + 1):
                 n_iter = it
                 b1, i1, g1, p1, ll1, R1 = self._em_step(betas, inter, gamma, pi)
+                #breakpoint()
                 b2, i2, g2, p2, ll2, R2 = self._em_step(b1, i1, g1, p1)
 
                 # SQUAREM extrapolation on the flat [betas|inter|gamma|pi] vector
@@ -2501,6 +2541,8 @@ class LatentClass(DiscreteChoiceModel):
                     converged = True
                     break
                 prev_ll = ll
+
+            print(f"[LC] init {init_idx + 1}/{self.n_init}  iter {it:4d}/{self.maxiter}  loglik = {ll:.6f}")
 
             if best is None or ll > best['loglik']:
                 best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
@@ -2692,3 +2734,197 @@ class LatentClass(DiscreteChoiceModel):
         real = self.panel_mask > 0
         self.loglik_null = float(-np.sum(np.log(avail_counts[real])))
         return self.loglik_null
+
+class LatentClassConditional(LatentClass):
+    """
+    Latent Class Conditional Logit (LCCM, Vij et al. 2020).
+
+    Extends LatentClass with a second, nested decision per choice occasion:
+    given the preferred scheme (choice, y), whether it is purchased (w).
+    Both decisions share the same class-specific utility coefficients beta_s;
+    the purchase decision adds one extra, X-independent parameter per class
+    (v_s, the "no_purchase" utility), appended after beta_s. Each class's
+    parameter vector therefore has length _Ks[c] (utility coeffs) + 1 (v_s).
+
+    Reused unmodified from LatentClass: _newton, _em_step, fit's EM/SQUAREM
+    core, multistart, monotonicity back-tracking, _compute_se, membership
+    kernels and M-step. Overridden here: setup (adds w), _class_ll (adds the
+    purchase term), get_loglik_null (adds the purchase null term),
+    _compute_prop_alts (drops v_s before computing choice shares), and
+    _finalise's coeff_names tail (parent's loop doesn't know about v_s).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.descr = "LCC-Newton"
+
+    # ------------------------------------------------------------------
+    # SETUP — delegates the panel construction of X/y/avail to
+    # LatentClass.setup(), then independently reconstructs the same
+    # (situation -> individual, slot) mapping from (ids, alts, ind_id) to
+    # place w on identical slots.
+    # ------------------------------------------------------------------
+    def setup(self, X, y, w, varnames, ids, alts, avail=None,
+              class_params_spec=None, member_params_spec=None,
+              base_class=None, panels=False, ind_id=None,
+              fit_intercept=False, base_alt=None, l1_penalty=None, l2_penalty=None):
+        """
+        w : purchase indicator, long format, constant within each choice
+            situation (1 = purchased, 0 = not purchased). Remaining
+            parameters: identical contract to LatentClass.setup().
+        """
+        ids = np.asarray(ids)
+        alts = np.asarray(alts)
+        w = np.asarray(w, dtype=float)
+
+        super().setup(
+            X=X, y=y, varnames=varnames, ids=ids, alts=alts, avail=avail,
+            class_params_spec=class_params_spec, member_params_spec=member_params_spec,
+            base_class=base_class, panels=panels, ind_id=ind_id,
+            fit_intercept=fit_intercept, base_alt=base_alt,
+            l1_penalty=l1_penalty, l2_penalty=l2_penalty,
+        )
+
+        ind_id_arr = np.asarray(ind_id) if ind_id is not None else ids
+        order = np.lexsort((alts, ids))
+        ids_s = ids[order]
+        ind_s = ind_id_arr[order]
+        w_s = w[order]
+
+        uniq_sit, counts = np.unique(ids_s, return_counts=True)
+        if np.any(counts != self.J):
+            raise ValueError("LatentClassConditional requires balanced long-format data by choice id.")
+        n_sit = len(uniq_sit)
+
+        w3 = w_s.reshape(n_sit, self.J)[:, 0]                # one value per situation
+        ind_per_sit = ind_s.reshape(n_sit, self.J)[:, 0]
+        _, inv = np.unique(ind_per_sit, return_inverse=True)
+
+        wp = np.zeros((self.N, self.P))
+        slot = np.zeros(self.N, dtype=int)
+        for s in range(n_sit):
+            i = inv[s]
+            t = slot[i]
+            wp[i, t] = w3[s]
+            slot[i] += 1
+
+        self.w = wp
+        self._wd = jnp.asarray(self.w)
+
+        # Reserve one extra, X-independent parameter per class for the
+        # purchase ("no_purchase") intercept v_s, appended after the
+        # existing utility coefficients.
+        self._Ks = self._Ks + 1
+
+        return self
+    
+
+    # ------------------------------------------------------------------
+    # KERNEL — choice (eq. 3) + purchase (eq. 7), sharing beta_x, with
+    # v_s as the last, X-independent entry of each class's beta vector.
+    # ------------------------------------------------------------------
+    def _class_ll(self, beta_active, c):
+        beta_x = beta_active[:-1]
+        v_s = beta_active[-1]
+
+        idx = jnp.asarray(self._class_specs[c])
+        Xc = jnp.take(self._Xd, idx, axis=3)                        # (N,P,J,Kc)
+        util = jnp.einsum('npjk,k->npj', Xc, beta_x)
+        util = jnp.where(self._avd > 0, util, -1e10)
+
+        # --- choice term: standard MNL over J alternatives ---
+        util_c = util - jnp.max(util, axis=2, keepdims=True)
+        expu = jnp.exp(util_c) * self._avd
+        denom = jnp.clip(jnp.sum(expu, axis=2, keepdims=True), MIN_COMP)
+        logp_choice = util_c - jnp.log(denom)
+        ll_choice = jnp.sum(self._yd * logp_choice, axis=2)         # (N,P)
+
+        # --- purchase term: binary logit, chosen-alt utility vs v_s ---
+        util_chosen = jnp.sum(self._yd * util, axis=2)              # (N,P)
+        m = jnp.maximum(util_chosen, v_s)
+        log_denom_w = m + jnp.log(jnp.exp(util_chosen - m) + jnp.exp(v_s - m))
+        logp_buy = util_chosen - log_denom_w
+        logp_nobuy = v_s - log_denom_w
+        ll_purchase = self._wd * logp_buy + (1.0 - self._wd) * logp_nobuy  # (N,P)
+
+        ll_np = ll_choice + ll_purchase
+        return jnp.sum(ll_np * self._maskd, axis=1)                 # (N,)
+
+    # ------------------------------------------------------------------
+    # NULL LOG-LIKELIHOOD — choice (equally-likely, panel-aware) +
+    # purchase (equally-likely binary), same "random choice" convention.
+    # ------------------------------------------------------------------
+    def get_loglik_null(self):
+        avail_counts = np.clip(np.asarray(self._avd).sum(axis=2), 1.0, None)  # (N,P)
+        real = np.asarray(self._maskd) > 0
+        ll_choice_null = -np.sum(np.log(avail_counts[real]))
+        ll_purchase_null = np.log(0.5) * int(real.sum())
+        self.loglik_null = float(ll_choice_null + ll_purchase_null)
+        return self.loglik_null
+
+    # ------------------------------------------------------------------
+    # PREDICTED / OBSERVED ALTERNATIVE SHARES — choice component only;
+    # v_s never enters the choice-share computation, so it's dropped
+    # from each class's beta before computing utilities.
+    # ------------------------------------------------------------------
+    def _compute_prop_alts(self, betas, posterior):
+        J = self.J
+        real = self.panel_mask > 0
+        total_real = max(float(real.sum()), 1.0)
+
+        obs = np.array([float(self.y[:, :, j][real].sum()) for j in range(J)]) / total_real
+
+        pred = np.zeros(J)
+        for c in range(self.n_classes):
+            idx = self._class_specs[c]
+            Xc = self.X[:, :, :, idx]                     # (N,P,J,Kc)
+            beta_x = np.asarray(betas[c])[:-1]             # drop v_s
+            util = np.einsum('npjk,k->npj', Xc, beta_x)
+            util = np.where(self.avail > 0, util, -1e10)
+            util = util - util.max(axis=2, keepdims=True)
+            expu = np.exp(util) * self.avail
+            denom = np.clip(expu.sum(axis=2, keepdims=True), 1e-300, None)
+            probs = expu / denom
+            w = posterior[:, c][:, None, None] * real[:, :, None]
+            pred += (probs * w).sum(axis=(0, 1))
+        pred = pred / total_real
+        return pred, obs
+
+    # ------------------------------------------------------------------
+    # SUMMARISE — the inherited _choice_model.summarise() rebuilds each
+    # coefficient's display name via self.varnames[self._class_specs[c][k]],
+    # looping k up to self._Ks[c] (bumped +1 for v_s). Since _class_specs[c]
+    # only holds the real X-column indices (unbumped, by design — see
+    # _class_ll), that lookup goes out of bounds on the last (v_s) slot.
+    # Temporarily extend both so the base method prints "no_purchase" like
+    # any other named coefficient, then restore the originals.
+    # ------------------------------------------------------------------
+    def summarise(self, file=None, dashboard=True):
+        extra_idx = len(self.varnames)
+        varnames_ext = list(self.varnames) + ["no_purchase"]
+        specs_ext = [np.append(np.asarray(spec), extra_idx) for spec in self._class_specs]
+
+        orig_varnames, orig_specs = self.varnames, self._class_specs
+        self.varnames, self._class_specs = varnames_ext, specs_ext
+        try:
+            return super().summarise(file=file, dashboard=dashboard)
+        finally:
+            self.varnames, self._class_specs = orig_varnames, orig_specs
+
+    # ------------------------------------------------------------------
+    # FINALISE — reuses LatentClass._finalise() entirely (class_betas,
+    # class_probs, loglik, num_params, aic, bic, _compute_se all key off
+    # self._Ks, already correctly bumped); only rebuilds coeff_names,
+    # since the parent's naming loop iterates self._class_specs[c]
+    # (X columns only) and misses the extra v_s appended last per class.
+    # ------------------------------------------------------------------
+    def _finalise(self, best, elapsed):
+        super()._finalise(best, elapsed)
+
+        self.coeff_names = []
+        for c in range(self.n_classes):
+            for v in [self.varnames[i] for i in self._class_specs[c]]:
+                self.coeff_names.append(f"class_{c + 1}_{v}")
+            self.coeff_names.append(f"class_{c + 1}_no_purchase")
+
+        return self
