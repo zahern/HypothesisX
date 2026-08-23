@@ -12,12 +12,27 @@ from addicty import Dict
 
 import os
 
+# ---------------------------------------------------------------------------
+# Console encoding safety net: the library's dashboards use box-drawing and
+# arrow characters that crash print() outright when stdout uses a non-UTF-8
+# codec (e.g. cp1252 Windows consoles / redirected output). Degrade gracefully
+# to '?' replacements instead of raising UnicodeEncodeError mid-search.
+# ---------------------------------------------------------------------------
+try:
+    import sys as _sys
+    _enc = getattr(_sys.stdout, "encoding", None)
+    if _sys.stdout is not None and _enc and _enc.lower().replace("-", "") not in ("utf8", "utf"):
+        if hasattr(_sys.stdout, "reconfigure"):
+            _sys.stdout.reconfigure(errors="replace")
+except Exception:
+    pass
+
 from . import misc
 
 try:
-    from banditsa import BanditSA, PerturbationBandit
-except ImportError:
     from .banditsa import BanditSA, PerturbationBandit
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from banditsa import BanditSA, PerturbationBandit
 
 def new_features():
     '''ADDICTY DICT'''
@@ -85,7 +100,6 @@ def print_version():
     """Print the current version of the package."""
     print(f"Current version: {__version__}")
 
-print_version()
 try:
     from . import _device as dev
 except ImportError:
@@ -122,6 +136,7 @@ try:
     from .sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
 
 except ImportError as e:
+    # Fallback for direct (non-package) execution; kept for backwards compatibility.
     from _choice_model import DiscreteChoiceModel
     from multinomial_logit import MultinomialLogit
     from logistic_regression import LogisticRegression
@@ -150,21 +165,26 @@ except ImportError as e:
 try:
     from .main import print_ascii_art_logo
 except Exception:
-    try:
-        from main import print_ascii_art_logo
-    except Exception:
-        print_ascii_art_logo = None
+    print_ascii_art_logo = None
 
 
-if print_ascii_art_logo is not None:
-    try:
-        print_ascii_art_logo()
-    except Exception:
-        print("SearchLibrium logo skipped; optional display dependencies are missing.")
-
-#print('loaded all')
-print('Welcome to SearchLibrium')
-new_features()
+__all__ = [
+    "__version__", "print_version", "new_features",
+    "DiscreteChoiceModel",
+    "MultinomialLogit", "LogisticRegression", "MixedLogit",
+    "NestedLogit", "MultiLayerNestedLogit", "MixedNested", "Halton",
+    "RandomRegret", "MixedRandomRegret", "OrderedLogit", "OrderedLogitLong",
+    "BinaryProbit", "HeckmanTwoStep",
+    "ZeroInflatedOrderedProbit", "ZeroInflatedProbit",
+    "LatentClassMixedLogit", "MDCEVFitResult", "MDCEVModel", "MultinomialProbit",
+    "MixedLogitGSE", "RandomParameters", "ConstraintBuilder", "create_constraints",
+    "Parameters", "misc",
+    "SAPBIL", "ProbabilityMatrix", "HSPBIL", "SparseEAAGDS", "BanditSA", "PerturbationBandit",
+    "call_search", "call_siman", "call_harmony", "call_harmony_pbil", "call_sapbil",
+    "call_banditsa", "call_parsa", "call_parcopsa", "call_agds", "estimate_ctrl",
+    "DestinationPredictor", "predict_destination_components", "predict_aggregate_destination_flows",
+    "load_electricity_data", "load_travel_mode_data", "load_swiss_metro_data", "preview_datasets",
+]
 
 
 

@@ -330,8 +330,12 @@ class SA(Search):
 
     #for testing
     verbose = True
-    def __init__(self, param:Parameters, init_sol, ctrl, idnum=generate_random_run_name(), **kwargs):
+    def __init__(self, param:Parameters, init_sol, ctrl, idnum=None, **kwargs):
     # {
+        # Generate a FRESH run name per instance (a mutable default evaluated at
+        # class-definition time would give every solver the same stale name).
+        if idnum is None:
+            idnum = generate_random_run_name()
         super().__init__(param, idnum, **kwargs)     # Call base class constructor
 
         tI, tF, max_temp_steps, max_iter = ctrl  # Extract form 'ctrl'
@@ -1238,7 +1242,9 @@ class SA(Search):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.t = self.rate * self.t  # Reduce the temperature accordingly
 
-        self.reset_current_solution()  # Reset current solution conditionally
+        # Pass the pre-loop archive size so handle_static_archive can detect a
+        # static archive (previously called with no args, so the check never fired).
+        self.reset_current_solution(size)
     # }
 
     def frozen(self):
@@ -1482,28 +1488,31 @@ class SA(Search):
         init_sol = None
         ctrl = (self.tI, self.tF, self.max_temp_steps, self.max_iter)
 
-        # Define and setup independent solvers
+        # Define and setup independent solvers.
+        # SA.__init__ signature is (param, init_sol, ctrl, ...): the previous
+        # call passed ctrl/init_sol in reverse order, which crashed when
+        # unpacking ctrl. Class counts start at 1 (0 classes is meaningless).
         self.solvers = []
-        for q in range(max_classes):
+        for q in range(1, max_classes + 1):
         # {
-            self.param.latent_class = False if q == 1 else True
+            self.param.latent_class = q > 1
             self.param.num_classes = q
-            solver_q = SA(self.param, ctrl, init_sol, idnum=q)
+            solver_q = SA(self.param, init_sol, ctrl, idnum=q)
             self.solvers.append(solver_q)
 
         # }
 
         with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self.solvers[q].run) for q in range(self.max_classes)]
+            futures = [executor.submit(solver.run) for solver in self.solvers]
 
         for future in as_completed(futures):
             result = future.result()  # This will wait until each task completes
 
-        for q in range(max_classes):
+        for q, solver in enumerate(self.solvers):
         # {
-            self.solvers[q].current_sol['class_num'] = q
-            self.solvers[q].best_sol['class_num'] = q
-            self.solvers[q].finalise()
+            solver.current_sol['class_num'] = q
+            solver.best_sol['class_num'] = q
+            solver.finalise()
         # }
 
     # }

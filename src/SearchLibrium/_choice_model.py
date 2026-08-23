@@ -151,6 +151,9 @@ class DiscreteChoiceModel(ABC):
         self.reg_penalty = 0.00  # L2 penalty strength (ridge)
         self.l1_penalty  = 0.1   # L1 penalty strength (lasso)
         self.pval_penalty = 5
+        # p-value threshold above which a coefficient counts as "non-significant"
+        # for the log-likelihood penalty applied in post_process.
+        self.pval_threshold = 0.05
         logging.info(f'pval penalty set to {self.pval_penalty}')
         # NOTE: The reg_penalty value is tricky to define. If too high, convergence is restricted.
         #  Set to zero to turn off. A value of 1 seems too high.
@@ -247,7 +250,8 @@ class DiscreteChoiceModel(ABC):
                 varnames = np.array(["intercept"], dtype="<U64")
                 #print("'_inter' added as the first item in varnames.")
         alts = np.asarray(alts) if alts is not None else None
-        isvars = np.asarray(isvars, dtype=object) if isvars is not None else np.array([])
+        # NB: an empty np.array([]) defaults to float64 and cannot hold 'intercept'
+        isvars = np.asarray(isvars, dtype=object) if isvars is not None else np.array([], dtype=object)
         if self.fit_intercept and "intercept" not in isvars:
             isvars = np.insert(isvars, 0, "intercept")
         transvars = np.asarray(transvars, dtype="<U64") if transvars is not None else []
@@ -363,7 +367,7 @@ class DiscreteChoiceModel(ABC):
                 self.stderr = np.sqrt(np.abs(diag_arr))
             # }
 
-            std_err_estimated = False if np.isnan(self.stderr).any else True
+            std_err_estimated = not np.isnan(self.stderr).any()
         # }
 
         if not std_err_estimated:
@@ -433,7 +437,7 @@ class DiscreteChoiceModel(ABC):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Compute Number of Non-Significant pvalues
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        non_sigs = self.num_of_exceeding_pvalues(self.pvalues, 0.0)
+        non_sigs = self.num_of_exceeding_pvalues(self.pvalues, getattr(self, 'pval_threshold', 0.05))
         #print('log like is before', self.loglik)
         self.loglik -= non_sigs*self.pval_penalty # penalise the non-sigs
         logging.info('applying pval')
@@ -879,6 +883,26 @@ class DiscreteChoiceModel(ABC):
                                             0, np.repeat(False, len(self.isvars)*(J - 1)))
         else:
             self.restate_idx(ispos, isvars, asvars)
+            # Repeat call on an already-fitted model (e.g. prediction): the
+            # index arrays were NOT re-expanded above (guarded by 'ispos'),
+            # which desynced them from the expanded design matrix. Top up the
+            # isvar/intercept block when it is missing. Idempotent.
+            if len(self.isvars) > 0 and hasattr(self, 'fxidx') \
+                    and len(self.fxidx) == len(self.asvars):
+                _nonbase_alts = [j for j in self.alts if j != self.base_alt]
+                _rand_keys = set(str(k) for k in getattr(self, 'randvars', []) or [])
+                _rand_block = np.array(
+                    [(str(iv) in _rand_keys) or ("{}.{}".format(iv, j) in _rand_keys)
+                     for iv in self.isvars for j in _nonbase_alts],
+                    dtype="bool_")
+                self.fxidx = np.insert(np.array(self.fxidx, dtype="bool_"), 0, ~_rand_block)
+                self.fxtransidx = np.insert(np.array(self.fxtransidx, dtype="bool_"), 0,
+                                            np.repeat(False, len(self.isvars) * (J - 1)))
+                if hasattr(self, 'rvidx'):
+                    self.rvidx = np.insert(np.array(self.rvidx, dtype="bool_"), 0, _rand_block)
+                if hasattr(self, 'rvtransidx'):
+                    self.rvtransidx = np.insert(np.array(self.rvtransidx, dtype="bool_"), 0,
+                                                np.repeat(False, len(self.isvars) * (J - 1)))
 
 
 
@@ -1142,7 +1166,7 @@ class DiscreteChoiceModel(ABC):
         _, obs_by_id = np.unique(ids, return_counts=True)
 
         """ An error is raised if the array of alternative indexes is incomplete. """
-        if not np.all(obs_by_id / len(uq_alt)):  # Multiple of J
+        if np.any(obs_by_id % len(uq_alt) != 0):  # Multiple of J
             raise ValueError('inconsistent alts and ids values in long format')
     # }
 
@@ -1223,7 +1247,7 @@ class DiscreteChoiceModel(ABC):
         lik =np.clip(lik, 0.00001, None)
         y_ = np.clip(y_, 0.00001, None)
         loglik = np.log(lik)  # Log each element
-        loglik = -2 * np.sum(loglik)  # Sum the elements => |loglik| = 1
+        loglik = np.sum(loglik)  # Sum the elements => LL of the null (equal-share) model
         return loglik
     # }
 
@@ -1736,7 +1760,8 @@ class DiscreteChoiceModel(ABC):
             text += f"MAE= {self.mae:0.3f};"
 
         loglik_null = self.get_loglik_null()
-        mcfadden_adj_r2 = 1 - (self.aic / loglik_null)   # equiv. 1-(LL-k)/LL_null
+        num_params = len(self.coeff_est) if self.coeff_est is not None else 0
+        mcfadden_adj_r2 = 1 - ((self.loglik - num_params) / loglik_null)   # equiv. 1-(LL-k)/LL_null
         self.adjust_lik_ratio = mcfadden_adj_r2
 
         text += f" McFadden Adj.R²: {mcfadden_adj_r2:.4f}"

@@ -1,12 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
 version = {file = "src/SearchLibrium/version.txt"}
 
-[tool.setuptools.packages]
-find = { where = ["src"] }
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["SearchLibrium*"]
+namespaces = false
 
 [tool.setuptools]
 include-package-data = true
@@ -17,9 +19,11 @@ SearchLibrium = ["data/*.csv"]
 [project]
 name = "SearchLibrium"
 dynamic = ["version"]
-description = "A Python package for econometric models driven by search"
+description = "Automated specification search for discrete choice models (logit, mixed logit, nested logit, RRM and more) using metaheuristic optimisation"
 readme = "README.md"
 requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Zeke Ahern", email = "z.ahern@qut.edu.au" },
     { name = "Mario Fernando Taco Morales" },
@@ -28,21 +32,31 @@ authors = [
     { name = "Robert Burdett" },
 ]
 keywords = [
-    "econometric models",
-    "search",
+    "econometrics",
     "discrete choice",
+    "choice modelling",
     "logit",
-    "probit",
+    "mixed logit",
+    "nested logit",
+    "random regret minimisation",
+    "model specification search",
+    "simulated annealing",
+    "metaheuristics",
+    "maximum likelihood",
+    "transport modelling",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 dependencies = [
     # Accept the whole numpy 2.x line. The old <2.3 cap forced pip to backtrack

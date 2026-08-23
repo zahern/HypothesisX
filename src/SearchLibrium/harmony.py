@@ -1097,10 +1097,13 @@ class HarmonySearch(Search):
 
             # Compute consideration rate and pitch value
             # This code introduces oscillations (a.k.a., variations) based on the iteration number.
-            # The result is scaled by the sine function only when its value is non-negative.
-            sine_iter = max(0, np.sign(math.sin(iter)))
-            self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * sine_iter
-            self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * sine_iter
+            # The previous gate used math.sin(iter) with iter in radians, whose sign flips every
+            # ~3 iterations — zeroing harm_rate/pitch (and thus disabling memory consideration
+            # and pitch adjustment) for about half of all iterations. Use a smooth full-run
+            # modulation in [0.5, 1.0] instead so the rates oscillate but never switch off.
+            _modulation = 0.75 + 0.25 * math.cos(2 * math.pi * iter / max(self.maxiter, 1))
+            self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * _modulation
+            self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * _modulation
 
             new_sol = self.build_solution(self.memory, self.harm_rate) # Create a single new solution and perform an adjustment
             curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)   # Perform additional perturbations

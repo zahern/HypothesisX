@@ -315,7 +315,6 @@ class MixedLogit(DiscreteChoiceModel):
         #  RESHAPE WEIGHTS (using panel data if necessary)
         self.weights = self.reshape_weights(weights, self.panels) if weights is not None else weights
         self.avail = self.reshape_avail(avail, self.panels) if avail is not None else avail
-
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # COMPUTE: self.obs_prob as np.mean(np.mean(np.mean(y, axis=3), axis=1), axis=0)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -460,7 +459,7 @@ class MixedLogit(DiscreteChoiceModel):
         # }
 
         betas = np.repeat(0.1, n_coeff) if self.init_coeff is None else self.init_coeff
-        if len(self.init_coeff) != n_coeff and not hasattr(self, 'class_params_spec'):
+        if self.init_coeff is not None and len(self.init_coeff) != n_coeff and not hasattr(self, 'class_params_spec'):
             self.init_coeff = None
             betas = np.repeat(0.1, n_coeff)
 
@@ -660,7 +659,7 @@ class MixedLogit(DiscreteChoiceModel):
 
                 self.X = np.concatenate((ones, self.X), axis=-1)
         args = (self.X, self.y, self.panel_info, draws, drawstrans, self.weights, self.avail, self.batch_size)
-        bounds = bnds if self.method == "L-BFGS-B" else None
+        bounds = bnds if self.method == "l-bfgs-b" else None
         options = {'gtol': self.gtol, 'maxiter': self.maxiter, 'disp': False}
         result = minimise_func(self.get_loglik_gradient, betas, jac=self.jac, method=self.method,
                                args=args, tol=self.ftol, bounds=bounds, options=options)
@@ -670,7 +669,7 @@ class MixedLogit(DiscreteChoiceModel):
                 print(f"[MXL] Minimization final betas first_values={np.asarray(result['x'])[:min(8, len(result['x']))]!r}")
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-        if hasattr(self, 'method') and self.method == "L-BFGS-B":  # {
+        if hasattr(self, 'method') and self.method == "l-bfgs-b":  # {
             H = self.get_hessian(result['x'], self._get_loglik_gradient)
             try:
                 result['hess_inv'] = np.linalg.inv(H)
@@ -1127,7 +1126,7 @@ class MixedLogit(DiscreteChoiceModel):
                     Xrtrans = X[:, :, :, self.rvtransidx].astype(float)
                     Xrtrans_lmda = self.trans_func(Xrtrans, rlmda)
 
-                    Brtrans = Brtrans_b[None, :, None] + drawstrans[:, 0:self.Krtrans, :] * Brtrans_w[None, :, None]
+                    Brtrans = Brtrans_b[None, :, None] + drawstrans_batch[:, 0:self.Krtrans, :] * Brtrans_w[None, :, None]
                     Brtrans = self.draws_generator.apply_distribution(Brtrans, self.rvtransdist)
 
                     grtrans_b = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xrtrans_lmda) * dertrans
@@ -1351,7 +1350,10 @@ class MixedLogit(DiscreteChoiceModel):
         for ii, var in enumerate(self.varnames):
             if self.rvtransidx[ii]:
                 if hasattr(self, 'correlated_vars') and self.correlated_vars:
-                    if var in self.correlated_vars:
+                    if hasattr(self.correlated_vars, 'append'):
+                        if var in self.correlated_vars:
+                            num_corr_rvtrans += 1
+                    else:
                         num_corr_rvtrans += 1
 
         num_rvtrans_total = self.Krtrans + num_corr_rvtrans
@@ -1374,7 +1376,7 @@ class MixedLogit(DiscreteChoiceModel):
         for ii, var in enumerate(ordered_varnames):  # TODO: BUGFIX
             # {
 
-            if var in 'intercept': continue  # ERROR HANDLING. SKIP REMAINING STEPS
+            if str(var) == 'intercept': continue  # ERROR HANDLING. SKIP REMAINING STEPS
 
             ii_offset = ii + inter_offset
             is_correlated = False
@@ -1636,6 +1638,39 @@ class MixedLogit(DiscreteChoiceModel):
         availbal = availbal if avail is not None else None
         return Xbal, ybal, availbal, panel_info
     # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Reshaping approach (mirrors mixed_logit.MixedLogit) '''
+    ''' ---------------------------------------------------------- '''
+    def reshape(self, arr, panels):
+        N, P, J = self.N, self.P, self.J
+        if panels is None:
+            arr = arr.reshape(N, J)
+        else:
+            # Same logic as _balance_panels: pad per-panel observation counts
+            _, p_obs = np.unique(panels, return_counts=True)
+            p_obs //= J
+            _temp = np.zeros((N, P, J))
+            cum_p = 0
+            for n, p in enumerate(p_obs):
+                _temp[n, 0:p, :] = arr[cum_p: cum_p + (p * J)].reshape((1, p, J))
+                cum_p += p
+            arr = _temp.reshape((N, P, J))
+        return arr
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Logic to reshape weights according to panels     '''
+    ''' ---------------------------------------------------------- '''
+    def reshape_weights(self, weights, panels):
+        scale = self.N / np.sum(weights)  # Normalize weights to sum to N
+        weights = weights * scale
+        return self.reshape(weights, panels)
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Logic to reshape avail according to panels       '''
+    ''' ---------------------------------------------------------- '''
+    def reshape_avail(self, avail, panels):
+        return self.reshape(avail, panels)
 
     ''' -------------------------------------------------------------------- '''
     ''' Function. Compute the derivatives based on the mixing distributions  '''

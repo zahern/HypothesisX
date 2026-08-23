@@ -282,6 +282,9 @@ class MultinomialLogit(DiscreteChoiceModel):
         self.ftol, self.gtol  = ftol, gtol
         self.return_grad, self.return_hess = return_grad, return_hess
         self.method = method
+        # Parameter bounds handed to scipy's L-BFGS-B (None = unbounded).
+        # Subclasses (e.g. nested logit) may override this.
+        self.bounds = None
         self.scipy_optimisation = scipy_optimisation
 
         HessianFunction = Callable[[np.ndarray], np.ndarray]
@@ -439,6 +442,11 @@ class MultinomialLogit(DiscreteChoiceModel):
         transformation = 'boxcox'
         if not hasattr(self, 'coeff_est'):
             raise ValueError("Model must be trained before predicting.")
+        # Snapshot fitted state: pre_process() below resets attributes, but
+        # prediction must not destroy the model the user just fitted.
+        _fitted_state = {name: getattr(self, name, None)
+                         for name in ('coeff_est', 'coeff_names', 'stderr', 'zvalues',
+                                      'pvalues', 'loglik', 'aic', 'bic')}
         if y is None:
             y = X_new.iloc[:, 0] ## dummy
         if ids is None:
@@ -448,10 +456,17 @@ class MultinomialLogit(DiscreteChoiceModel):
         if fit_intercept:
             self.fit_intercept = True
         X_new, y, varnames, alts, isvars, transvars, ids, weights, panels, avail_new = \
-            self.set_asarray(X_new, y, varnames, alts, isvars, transvars, ids, None, None, None)
+            self.set_asarray(X_new, y, varnames, alts, isvars, transvars, ids, None, None, avail_new)
 
         self.pre_process(alts, varnames, isvars, transvars, base_alt, fit_intercept, transformation, panels = panels)
 
+        # Restore fitted state wiped by pre_process (prediction must be side-effect free).
+        for name, val in _fitted_state.items():
+            setattr(self, name, val)
+
+        # Start from clean index arrays: after fit() these hold numpy bool arrays,
+        # and re-appending to them would either crash or corrupt the masks.
+        self.fxidx, self.fxtransidx = [], []
         for var in self.asvars:  # {
             is_transvar = var in self.transvars  # True or False state
             self.fxidx.append(not is_transvar)
@@ -474,11 +489,25 @@ class MultinomialLogit(DiscreteChoiceModel):
                 print(f'new {J} alternative')
             X_new = X_new.reshape((self.N, self.J, self.Kf))
             print(f"X_new must be 3D (N x J x K), got shape {X_new.shape}. Reshaping..")
-        if avail_new is not None and len(avail_new.shape) != 2:
-            print(f"avail_new must be 2D (N x J), got shape {avail_new.shape}.")
 
         # Update dimensions (N, J) for prediction
         self.N, self.J, _ = X_new.shape
+
+        # Accept availability in short format (N, J) or long format
+        # ((N*J,) flags, one per observation-alternative row); normalise to
+        # the (N, J) matrix expected by compute_probabilities.
+        if avail_new is not None:
+            if avail_new.ndim == 1 and avail_new.size == self.N * self.J \
+                    and avail_new.shape[0] != self.N:
+                avail_new = avail_new.reshape(self.N, self.J)
+            elif avail_new.ndim == 2 and avail_new.shape[0] != self.N \
+                    and avail_new.shape[0] == self.N * self.J:
+                col0 = avail_new[:, 0]
+                if avail_new.shape[1] > 1 and not np.allclose(col0[:, None], avail_new):
+                    raise ValueError(
+                        f"avail_new must have shape ({self.N}, {self.J}) "
+                        f"or ({self.N * self.J},); got {avail_new.shape}")
+                avail_new = np.asarray(col0).reshape(self.N, self.J)
 
         # Set default availability if none provided
         if avail_new is None:
@@ -564,10 +593,10 @@ class MultinomialLogit(DiscreteChoiceModel):
         if avail is not None:
             eXB = eXB*avail
 
-        p = eXB / np.sum(eXB, axis=1, keepdims=True)
+        div = np.sum(eXB, axis=1, keepdims=True)
+        # Guard against rows where every alternative is unavailable (sum = 0)
+        p = eXB / div if np.all(div) else np.divide(eXB, div, out=np.zeros_like(eXB), where=div != 0)
         if return_logsum:
-            print('attempting to return logsum')
-            #which one is the logsums??
             logsums = np.log(np.sum(eXB, axis=1)) + max_XB.flatten()
             #logsums = np.log(np.sum(eXB, axis=1))
             return p, logsums
@@ -648,9 +677,7 @@ class MultinomialLogit(DiscreteChoiceModel):
             # Compute individual contribution of trans to the gradient
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             if self.Kftrans > 0: # {
-                transpos = [self.varnames.tolist().index(i) for i in self.transvars]
-                X_trans = X[:, :, transpos]
-                X_trans = X_trans.reshape(self.N, len(self.alts), len(transpos))
+                X_trans = X[:, :, self.fxtransidx]  # Use expanded design-matrix indices (aligned with X)
                 lambdas = betas[Kmax:]  # Extract elements [Kmax+1:]
                 Xtrans_lmda = self.trans_func(X_trans, lambdas)
                 gtrans = np.einsum('nj,njk -> nk', ymp, Xtrans_lmda)
@@ -853,14 +880,16 @@ class MultinomialLogit(DiscreteChoiceModel):
             old_g = g
             Hinv_g = -Hinv.dot(g)
 
-            #  This code is a loop that iteratively adjusts the step size and updates
-            #  the betas variable until a certain condition is met.
+            #  This code is a loop that implements backtracking line search:
+            #  each trial step is re-evaluated FROM THE SAME base point with a
+            #  halved step size until the objective stops improving.
             step = 2
+            beta0 = betas.copy()  # Base point: rejected trial steps must not accumulate
             max_iterations = 1000  # Define a maximum number of iterations to prevent infinite loops
             for _ in range(max_iterations): # {
                 step /= 2       # i.e. step = step / 2
                 s = step * Hinv_g
-                betas += s
+                betas = beta0 + s
                 resnew, gnew, _ = self.get_loglik_and_gradient(betas, X, y, weights, avail)
                 if resnew <= res or step < 1e-10: break
             else:

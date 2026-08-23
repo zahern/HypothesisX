@@ -339,6 +339,11 @@ def call_siman(parameters, init_sol=None, ctrl=None, thorough=False, deep=False,
 
     id_num = kwargs.pop('id_num', None)
 
+    # Record whether the caller supplied an explicit ctrl BEFORE auto-estimation,
+    # so calibrate_tI can be enabled when it wasn't (the previous check ran after
+    # estimation, so it could never be True).
+    ctrl_was_provided = ctrl is not None
+
     if ctrl is None:
         ctrl = estimate_ctrl(parameters, algorithm='sa',
                              thorough=thorough, deep=deep)
@@ -353,7 +358,7 @@ def call_siman(parameters, init_sol=None, ctrl=None, thorough=False, deep=False,
 
     # When the user supplies an explicit ctrl tuple, respect its tI instead of
     # letting choose_starting_solution recompute (override) it from delta-E sampling.
-    kwargs.setdefault('calibrate_tI', ctrl is None)
+    kwargs.setdefault('calibrate_tI', not ctrl_was_provided)
     solver = SA(parameters, init_sol, ctrl, id_num, **kwargs)
     solver.run()
     solver.close_files()

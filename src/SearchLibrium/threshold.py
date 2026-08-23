@@ -478,7 +478,8 @@ class TA(Search):
         self.report_progress()  # Report to the screen
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.reduce_threshold()  # Reduce the threshold accordingly
-        self.reset_current_solution()  # Reset current solution conditionally
+        # Pass the pre-loop archive size so handle_static_archive can detect a static archive
+        self.reset_current_solution(size)
     # }
 
     def complete(self):

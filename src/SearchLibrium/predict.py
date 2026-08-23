@@ -17,6 +17,8 @@ except ImportError:
     from mixedrrm import MixedRandomRegret
     from multinomial_nested import NestedLogit
 
+import inspect
+
 import numpy as np
 import pandas as pd
 from typing import Optional, Union
@@ -106,6 +108,21 @@ class DestinationPredictor:
             raise RuntimeError(
                 "Model does not support predict(). "
                 "Ensure the model was fitted with a supported estimator."
+            )
+
+        # Only models exposing the simple (betas, X, avail, return_logsum)
+        # signature can be evaluated here. Simulation-based models (e.g.
+        # MixedLogit) require draws/panel_info and cannot use this path.
+        try:
+            _sig_params = set(inspect.signature(self.model.compute_probabilities).parameters)
+        except (TypeError, ValueError):
+            _sig_params = {'betas', 'X', 'avail'}
+        if not {'betas', 'X', 'avail'}.issubset(_sig_params):
+            raise RuntimeError(
+                f"{type(self.model).__name__} does not support the DestinationPredictor "
+                "manual probability path (its compute_probabilities() requires "
+                "simulation inputs). Use a MultinomialLogit model, or rely on the "
+                "model's own ind_pred_prob attribute."
             )
 
         probs, logsums = self.model.compute_probabilities(

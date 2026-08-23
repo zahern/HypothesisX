@@ -526,13 +526,13 @@ def setup_df(df, ind_id, val_share):
 # {
     if ind_id is None:
     # {
-        if 'id' in df.values(): key = 'id'
-        elif 'ID' in df.values(): key = 'ID'
+        if 'id' in df.columns: key = 'id'
+        elif 'ID' in df.columns: key = 'ID'
         else:
             raise ValueError('id and ID were not found')
 
         uniq = np.unique(df[key].values)
-        training_size = int(val_share * len(uniq))
+        training_size = int((1 - val_share) * len(uniq))  # val_share is the validation share
         ref = df[key]
     # }
     else: # i.e., if ind_id is not None
@@ -541,9 +541,11 @@ def setup_df(df, ind_id, val_share):
         training_size = int((1 - val_share) * len(uniq))
         ref = ind_id
     # }
-    ids = np.random.choice(len(uniq), training_size, replace=False)
-    train_idx = [i for i, val in enumerate(ref) if val in ids]
-    test_idx = [i for i, val in enumerate(ref) if val not in ids]
+    # Sample actual ID values (not positions) so membership tests below are meaningful
+    ids = uniq[np.random.choice(len(uniq), training_size, replace=False)]
+    ids_set = set(np.asarray(ids).tolist())
+    train_idx = [i for i, val in enumerate(ref) if val in ids_set]
+    test_idx = [i for i, val in enumerate(ref) if val not in ids_set]
     df_train = df.loc[train_idx, :]
     df_test = df.loc[test_idx, :]
     return df_train, df_test, train_idx, test_idx
@@ -941,7 +943,12 @@ class Parameters:
                 # }
             # }
 
-            uniq = np.unique(alt_var)
+            # Use the TEST alternative vector (consistent with chosen_alts_test above);
+            # fall back to the test dataframe when no explicit array was supplied.
+            ref_alt_var = self.test_alt_var
+            if ref_alt_var is None and self.df_test is not None and 'alt' in self.df_test.columns:
+                ref_alt_var = self.df_test['alt'].values
+            uniq = np.unique(ref_alt_var)
             self.obs_freq = np.zeros(len(uniq))
             for i, alt in enumerate(uniq):
             # {
@@ -984,10 +991,6 @@ class Parameters:
                 setattr(self, key, value)
             else:
                 print(f"[WARNING]: Unexpected keyword argument '{key}' passed to __init__.")
-                try:
-                    print(f"does key: {self.key} exist and is inititiated")
-                except:
-                    print('[WARNING] key not set..')
 
         self.cleanup_active = False # Flag to indicate whether Backward Elimination with Hierarchical will be applied 
         #sol = BEHier(self, sol, max_passes=10)
@@ -1012,7 +1015,7 @@ class Parameters:
 
 
         # Binary indicators representing individual-specific variables prespecified by the user
-        self.ps_isvar_ind = list_of_zeros(n)
+        self.ps_isvar_ind = list_of_zeros(len(self.isvarnames))
 
         # Variables which are modlled with random paramaters by the modeller
         self.ps_randvars_ind = make_list("any", n)
@@ -2354,8 +2357,8 @@ class Search():
             state = Dict({'all_vars': all_vars,
                 'alt_vars': asvars,
                 'nest_vars': isvars,
-                'ps_nest_vars': ps_alt_vars,
-                'ps_alt_vars': ps_nest_vars}
+                'ps_nest_vars': ps_nest_vars,
+                'ps_alt_vars': ps_alt_vars}
             )
         else:
             state = None
@@ -2964,7 +2967,7 @@ class Search():
     # {
         # Compute and store the scaled solutions.
         # The scale function produces a list of |solns| values
-        if self.nb_crit >+2:
+        if self.nb_crit >= 2:
             norm = [scale(solns, self.param.crit(i), self.param.sign_crit(i) == 1) for i in range(self.nb_crit)]
         else:
             norm = [scale(solns, self.param.crit(i), 'single') for i in range(self.nb_crit)]
@@ -3151,7 +3154,7 @@ class Search():
             return solution
 
         if rem_asvar in solution['randvars']:
-            solution['randvars'] = {var: val for var, val in solution['randvars'].items() if var not in rem_asvar}
+            solution['randvars'] = {var: val for var, val in solution['randvars'].items() if var != rem_asvar}
             solution['corvars'] = [var for var in solution['corvars'] if
                                var not in self.param.ps_bcvars and var in list(solution['randvars'].keys())]
             
@@ -3174,8 +3177,8 @@ class Search():
         if len(solution['asvars']) >1:
             rem_asvar = self.random_choice(solution['asvars'])    # Randomly choose one
 
-            #solution = self.remove_asvar(rem_asvar, solution)
-            solution['asvars'].remove(rem_asvar)
+            # Route through remove_asvar so randvars/bcvars/corvars are cleaned up too
+            solution = self.remove_asvar(rem_asvar, solution)
         return solution
     # }
 
@@ -3252,7 +3255,13 @@ class Search():
         LINE = "=" * 60
 
         def p(text=""):
-            print(text)
+            try:
+                print(text)
+            except UnicodeEncodeError:
+                # Console codec cannot represent some symbols (e.g. arrows on cp1252):
+                # degrade instead of crashing mid-search.
+                enc = __import__('sys').stdout.encoding or 'ascii'
+                print(text.encode(enc, errors='replace').decode(enc))
 
         def section(title):
             p(LINE)
@@ -4175,7 +4184,9 @@ class Search():
         for var in self.param.ps_corvars:
         # {
             if var in rem_asvars and var not in rem_rand_vars.keys():
-                rem_rand_vars.update({var: np.random.choice(remove_rv)})
+                # Assign a valid distribution (remove_rv holds variable NAMES, not codes)
+                available_distr = [d for d in self.param.distr if d != 'f']
+                rem_rand_vars.update({var: np.random.choice(available_distr)})
         # }
 
         return rem_rand_vars
@@ -4704,8 +4715,6 @@ class Search():
         #print(fit_intercept)
         if 'intercept' in isvars:
             fit_intercept = True
-        else:
-            fit_intercept = False
 
         isvars, varnames, fit_intercept = self.process_variables(isvars, varnames, None)
 
@@ -4960,7 +4969,6 @@ class Search():
         as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
         bc_vars = self.define_bc_vars(sol)
         all_vars = as_vars + is_vars
-        asc_ind = False
 
         all_vars = [var for var in self.param.varnames if var in all_vars]
         X, y = self.param.df[all_vars].values, self.param.choices
@@ -5050,7 +5058,8 @@ class Search():
         
         all_vars = [var for var in self.param.varnames if var in all_vars]
         X, y = self.param.df[all_vars], self.param.choices
-        asc_ind = False
+        # Honour the searched intercept flag (previously hard-overridden to False,
+        # which wasted search budget on a no-op dimension).
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         model = self.fit_mxl(X, y, varnames=all_vars, alts=self.param.alt_var, isvars=is_vars, transvars=bc_vars,
                     ids=self.param.choice_id, panels=self.param.ind_id, randvars=rand_vars,  corvars=cor_vars,
@@ -5521,9 +5530,12 @@ class Search():
         # COMPUTE MAE
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
-            #df_test = self.param.df_test[all_vars]
-            X_test, y_test = self.param.df_test[all_vars], self.param.choices
-            test_model = self.fit_ordered_logit(X=X_test, y=y_test, ids = self.param.choice_id, varnames = all_vars)
+            # Use the TEST targets/ids (previously reused the training arrays,
+            # which mismatched the test design matrix).
+            X_test = self.param.df_test[all_vars]
+            y_test = self.param.test_choices if getattr(self.param, 'test_choices', None) is not None else self.param.choices
+            ids_test = self.param.test_choice_id if getattr(self.param, 'test_choice_id', None) is not None else self.param.choice_id
+            test_model = self.fit_ordered_logit(X=X_test, y=y_test, ids=ids_test, varnames=all_vars)
             model.mae = self.compute_mae(test_model)
         else:
             mae = None
@@ -5537,9 +5549,13 @@ class Search():
 
     def fit_ordered_logit(self, X, y, ids, varnames, choices, transvars=None):
 
+        # Accept both DataFrames and ndarrays for X/y (choices is often passed
+        # as df["CHOICE"].values, i.e. an ndarray with no .values attribute)
+        X_arr = np.asarray(X.values if hasattr(X, 'values') else X)
+        y_arr = np.asarray(y.values if hasattr(y, 'values') else y)
 
-        moll = OrderedLogitLong(X=X.values,
-                                y=y.values,
+        moll = OrderedLogitLong(X=X_arr,
+                                y=y_arr,
                                 varnames=varnames,
                                 ids=ids,
                                 J=choices,

@@ -57,6 +57,16 @@ class HSPBIL(HarmonySearch):
     # ------------------------------------------------------------------
 
     def create_output_files(self, param, **kwargs):
+        # Close any handles opened by HarmonySearch.__init__ before reopening,
+        # otherwise the originals leak and empty stub files are left behind.
+        for attr in ('results_file', 'progress_file'):
+            fh = getattr(self, attr, None)
+            if fh is not None and not getattr(fh, 'closed', True):
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+
         run_id = kwargs.get('idnum', 0)
         ts = _time.strftime("%Y%m%d_%H%M%S")
         run_name = f"hspbil_{run_id}_{ts}" if run_id else f"hspbil_{ts}"
@@ -234,9 +244,11 @@ class HSPBIL(HarmonySearch):
     def improvise(self):
         best, current = [], []
         for iter in range(self.maxiter):
-            sine_iter = max(0, np.sign(math.sin(iter)))
-            self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * sine_iter
-            self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * sine_iter
+            # Smooth full-run modulation in [0.5, 1.0] (see HarmonySearch.improvise);
+            # the old sin(iter) gate zeroed the rates every other iteration.
+            _modulation = 0.75 + 0.25 * math.cos(2 * math.pi * iter / max(self.maxiter, 1))
+            self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * _modulation
+            self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * _modulation
 
             new_sol = self.build_solution(self.memory, self.harm_rate)
             curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)
