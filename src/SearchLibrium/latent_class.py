@@ -1637,7 +1637,9 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             pass
 
         # ── Inference ─────────────────────────────────────────────────────
-        t_stats  = np.where(se > 1e-12, params / se, 0.0)
+        # NB: np.where evaluates both branches eagerly, so params / se would
+        # raise divide-by-zero warnings for zero SEs (degenerate classes).
+        t_stats = np.divide(params, se, out=np.zeros_like(params), where=se > 1e-12)
         p_values = 2.0 * (1.0 - _scipy_norm.cdf(np.abs(t_stats)))
         ci_lo    = params - 1.96 * se
         ci_hi    = params + 1.96 * se
