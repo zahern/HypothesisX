@@ -1,0 +1,8 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : run_0824_0753_zuxw
+Started      : 20260824_075317
+Output dir   : sa_runs\sa_run_0824_0753_zuxw_20260824_075317
+Criterions   : [('bic', -1), ('nsig', -1)]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=2, iter/step=2
+────────────────────────────────────────────────────────────

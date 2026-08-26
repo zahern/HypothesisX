@@ -1,0 +1,9 @@
+asvars   =  ['gcost', 'wait']
+isvars   =  ['income']
+randvars =  {}
+bcvars   =  []
+corvars  =  []
+bctrans  =  False
+asc_ind  =  False
+model    =  multinomial
+model descr = MNL

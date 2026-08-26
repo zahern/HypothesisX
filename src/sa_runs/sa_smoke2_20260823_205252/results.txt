@@ -1,0 +1,57 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : smoke2
+Started      : 20260823_205252
+Output dir   : sa_runs\sa_smoke2_20260823_205252
+Criterions   : [('bic', -1)]
+Models       : ['multinomial']
+tI=100, tF=0.01, steps=3, iter/step=2
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = 537.1059
+
+Model Statistics:
+----------------------------------------------------------------------
+  Model Summary: MNL
+  Time: 0.2s
+  Individuals: 210
+----------------------------------------------------------------------
+  Proportion of Alternatives
+                    air    train      bus      car
+  Observed:       0.276    0.300    0.143    0.281
+  Predicted:      0.255    0.206    0.136    0.403
+----------------------------------------------------------------------
+  Variable         Distr      Coeff        SE      z-val        p-val
+----------------------------------------------------------------------
+  FIXED PARAMETERS
+--------------------
+  income.air                  0.0417     0.0078     5.380     0.000 (***)
+  income.train                0.0232     0.0074     3.122     0.002 (**)
+  income.bus                  0.0119     0.0079     1.491     0.136 (-) 
+  gcost                      -0.0093     0.0041    -2.262     0.024 (*) 
+  wait                       -0.0329     0.0051    -6.505     0.000 (***)
+----------------------------------------------------------------------
+  GOODNESS OF FIT
+----------------------------------------------------------------------
+  In-Sample
+  LOGLIK = -255  |  AIC = 520  |  BIC = 537  |  McFadden Adj.R²: = 0.123
+----------------------------------------------------------------------
+  Significance:  0 '(***)' 0.001 '(**)' 0.01 '(*)' 0.05 '(.)' 0.1 '(-)' 1
+----------------------------------------------------------------------
+
+Specification:
+asvars   =  ['gcost', 'wait']
+isvars   =  ['income']
+randvars =  {}
+bcvars   =  []
+corvars  =  []
+bctrans  =  False
+asc_ind  =  True
+model    =  multinomial
+model descr = MNL
+
+SA[smoke2] step       1/3 | T=     100 | curr=550.9342 | best=537.1059 | acc=2 | t=1.5s
+SA[smoke2] step       2/3 | T=       1 | curr=550.9342 | best=537.1059 | acc=2 | t=1.7s
+SA[smoke2] step       3/3 | T=    0.01 | curr=550.9342 | best=537.1059 | acc=2 | t=1.7s
