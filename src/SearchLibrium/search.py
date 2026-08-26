@@ -3997,6 +3997,21 @@ class Search():
     ''' ---------------------------------------------------------- '''
     ''' Function. Set sol.data['obj'][i] = sol[crit[i]]             '''
     ''' ---------------------------------------------------------- '''
+    def compute_objective(self, metric, sol):
+        # {
+        """Hook for criteria that are not stored on the solution dict.
+
+        Subclasses (or assigned callables) can supply problem-specific
+        objectives such as out-of-sample error computed from the fitted
+        model.  Default behaviour reproduces the previous KeyError so the
+        change is backwards compatible.
+        """
+        raise KeyError(metric)
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Set sol.data['obj'][i] = sol[crit[i]]             '''
+    ''' ---------------------------------------------------------- '''
     def update_objectives(self, crit, sol):
     # {
         # Soft doctor penalty: worsen the objective of an over-specified /
@@ -4010,7 +4025,10 @@ class Search():
                   "mae": 0.05}
         for i in range(self.nb_crit):
             metric = crit[i][0]
-            val = sol[metric]
+            try:
+                val = sol[metric]
+            except (KeyError, TypeError):
+                val = self.compute_objective(metric, sol)
             if pen > 0.0 and val is not None:
                 try:
                     sign = crit[i][1]          # +1 maximise, -1 minimise

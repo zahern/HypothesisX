@@ -1261,6 +1261,94 @@ class DiscreteChoiceModel(ABC):
             return self.coeff_est
 # }
 
+    ''' ------------------------------------------------------------------
+    Function. Out-of-sample calibration metrics computed directly from the
+    estimated coefficient vector (no .predict() required).  Utilities are
+    rebuilt on a long-format hold-out dataframe and top-1 accuracy plus
+    aggregate share RMSE are returned.
+
+    Supported coefficient-name forms:
+        'var'          -> AS-dummy / plain column `var`
+        'var.alt'      -> column `var` active on rows of alternative `alt`
+        'intercept.a'  -> constant on rows of alternative `a`
+    sd.*/lambda.*/chol.* prefixed names are ignored (they parameterise the
+    mixing distribution, not the utility level).
+    ------------------------------------------------------------------ '''
+    def oos_metrics(self, df_test, alt_col="alt", choice_col="choice",
+                    id_col="ind_id"):
+        # {
+        import numpy as _np
+
+        if self.coeff_est is None:
+            warnings.warn("The current model has not been yet estimated",
+                          UserWarning)
+            return None
+        cn = [str(x) for x in _np.asarray(
+            getattr(self, "coeff_names",
+                    getattr(self, "labels", []))).ravel()]
+        bv = _np.asarray(getattr(self, "coeff_est",
+                                 getattr(self, "beta", [])),
+                         dtype=float).ravel()
+        if not cn or len(cn) != len(bv):
+            return None
+
+        df = df_test
+        alt_v = df[alt_col].values
+        U = _np.zeros(len(df), dtype=float)
+        for c, b in zip(cn, bv):
+            if c.startswith(("sd.", "lambda.", "chol.")):
+                continue
+            if c.startswith("intercept"):
+                a = c.split(".", 1)[1] if "." in c else ""
+                U = U + b * (alt_v == a)
+            elif "." in c:
+                v, a = c.rsplit(".", 1)
+                if v in df.columns:
+                    U = U + b * df[v].values * (alt_v == a)
+            elif c in df.columns:
+                U = U + b * df[c].values
+
+        grp = df[id_col].values
+        order = _np.argsort(grp, kind="stable")
+        U_s, g_s = U[order], grp[order]
+        ch = df[choice_col].values[order]
+        alt_sorted = alt_v[order]
+        bounds = _np.flatnonzero(
+            _np.r_[True, g_s[1:] != g_s[:-1]]).tolist() + [len(g_s)]
+
+        alt_names = list(dict.fromkeys(alt_v.tolist()))
+        aidx = {a: i for i, a in enumerate(alt_names)}
+        n_alts = len(alt_names)
+        acc_hits, n_obs = 0, 0
+        pred_sh = _np.zeros(n_alts)
+        obs_sh = _np.zeros(n_alts)
+        for s0, s1 in zip(bounds[:-1], bounds[1:]):
+            u = U_s[s0:s1]
+            c_blk = ch[s0:s1]
+            k = int(_np.argmax(c_blk))
+            acc_hits += 1 if int(_np.argmax(u)) == k else 0
+            e = _np.exp(u - u.max())
+            p = e / e.sum()
+            for j in range(len(p)):
+                pred_sh[aidx[alt_sorted[s0 + j]]] += p[j]
+                if j == k:
+                    obs_sh[aidx[alt_sorted[s0 + j]]] += 1
+            n_obs += 1
+
+        acc = acc_hits / max(n_obs, 1)
+        obs_sh /= max(n_obs, 1)
+        pred_sh /= max(n_obs, 1)
+        share_rmse = float(_np.sqrt(_np.mean((pred_sh - obs_sh) ** 2)))
+        return dict(acc=float(acc), test_mae=float(1.0 - acc),
+                    share_rmse=share_rmse,
+                    observed_share=dict(zip(alt_names,
+                                            obs_sh.round(6).tolist())),
+                    predicted_share=dict(zip(alt_names,
+                                             pred_sh.round(6).tolist())),
+                    n_obs=int(n_obs))
+    # }
+
+
     def summarise(self, file=None, dashboard=True):
     # {
         LINE = "-" * 70
