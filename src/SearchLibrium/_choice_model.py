@@ -434,6 +434,7 @@ class DiscreteChoiceModel(ABC):
 
         self.aic = 2 * num_params - 2 * self.loglik
         self.bic = np.log(sample_size) * num_params - 2 * self.loglik
+       
 
 
     # }
@@ -1197,26 +1198,47 @@ class DiscreteChoiceModel(ABC):
                 row = "  ".join(f"{v:.1f} (x{c})" for v, c in ordered)
                 p(f"  {kind_labels[kind_key]:<18}{row}")
 
-        # Convergence warning
-        if not self.converged:
+        # Convergence diagnostics — latent class: always shown (step, delta_ll,
+        # Hessian condition number); other models: only shown on failure (old
+        # gtol/ftol behaviour, unchanged).
+        if is_latent_class:
+            p(LINE)
+            p("  Convergence Diagnostics" + ("" if self.converged else "  [NOT CONVERGED]"))
+            gc = getattr(self, 'final_grad_choice', [])
+            gm = getattr(self, 'final_grad_member', np.array([]))
+            grad_choice_max = max((np.max(np.abs(v)) for v in gc if v.size), default=float('nan'))
+            grad_member_max = np.max(np.abs(gm)) if gm.size else float('nan')
+            ll_ok = "OK" if abs(getattr(self, 'final_delta_ll', np.inf)) < self.tol else "X"
+            gc_ok = "OK" if grad_choice_max < self.tol else "X"
+            gm_ok = "OK" if grad_member_max < self.tol else "X"
+            lbl_w = len("Membership Level:")            
+            p(f"  {'Log-likelihood':<{lbl_w}} ftol={self.tol:<10.0e}|  Final ΔLL: {getattr(self, 'final_delta_ll', float('nan')):<10.2e}{ll_ok}")
+            p(f"  {'Choice Level:':<{lbl_w}} gtol={self.tol:<10.0e}|  Grad Norm: {grad_choice_max:<10.2e}{gc_ok}")
+            p(f"  {'Membership Level:':<{lbl_w}} gtol={self.tol:<10.0e}|  Grad Norm: {grad_member_max:<10.2e}{gm_ok}")
+            cr = getattr(self, 'class_ratio_min', None)
+            if cr is not None and np.isfinite(cr).any():
+                p(f"  Hessian Condition Number (Worst Class): {1.0/np.nanmin(cr):.2e}")
+            if not self.converged:
+                p("  WARNING: Convergence was not reached. Estimates may not be reliable.")
+                p(f"  EM iterations: {self.total_iter}  (maxiter reached)")
+                if gc_ok == "X":
+                    p("  Parameters not meeting grad tolerance (choice):")
+                    coeff_class = np.concatenate([np.full(int(k), c) for c, k in enumerate(self._Ks)])
+                    idx = 0
+                    for c, v in enumerate(gc):
+                        for k in range(len(v)):
+                            if abs(v[k]) > self.tol:
+                                p(f"    {self.coeff_names[idx]:<30}  grad = {v[k]:.4e}")
+                            idx += 1
+                if gm_ok == "X":
+                    p("  Parameters not meeting grad tolerance (membership):")
+                    for k in range(len(gm)):
+                        if abs(gm[k]) > self.tol and k < len(self.gamma_names):
+                            p(f"    {self.gamma_names[k]:<30}  grad = {gm[k]:.4e}")       
+        elif not self.converged:
             p(LINE)
             p("  WARNING: Convergence was not reached. Estimates may not be reliable.")
-            if is_latent_class:
-                p(f"  EM iterations: {self.total_iter}  (maxiter reached)")
-                if hasattr(self, "gtol_res") and hasattr(self, "grad_vector"):
-                    gtol_ok = "OK" if self.gtol_res < self.tol else "X"
-                    p(f"  gtol: {self.tol}  |  Final gradient norm: {self.gtol_res:.2e}  {gtol_ok}")
-                    if gtol_ok == "X":
-                        names = getattr(self, "coeff_names_grad", None)
-                        if names is not None:
-                            failing = [(names[k], self.grad_vector[k])
-                                       for k in range(len(names))
-                                       if abs(self.grad_vector[k]) > self.tol]
-                            if failing:
-                                p("  Parameters not meeting gtol threshold:")
-                                for name, gval in failing:
-                                    p(f"    {name:<30}  grad = {gval:.4e}")
-            elif hasattr(self, "gtol_res") and hasattr(self, "ftol_res"):
+            if hasattr(self, "gtol_res") and hasattr(self, "ftol_res"):
                 gtol_ok = "OK" if self.gtol_res < self.gtol else "X"
                 ftol_ok = "OK" if self.ftol_res < self.ftol else "X"
                 p(f"  gtol: {self.gtol}  |  Final gradient norm: {self.gtol_res:.2e}  {gtol_ok}")
@@ -1269,6 +1291,19 @@ class DiscreteChoiceModel(ABC):
                 return next(s for thr, s in sig_map.items() if pv < thr)
             except StopIteration:
                 return ""
+            
+        fs = getattr(self, 'firth_summary', None)
+        show_diag = bool(fs.get('needed_correction', False)) if isinstance(fs, dict) else False
+
+        def vp_str(share_arr, idx):
+            if not show_diag or share_arr is None or idx >= len(share_arr) or not np.isfinite(share_arr[idx]):
+                return ""
+            return f"  VP={share_arr[idx]:>5.2f}"
+
+        def id_tag(flag_arr, idx):
+            if not show_diag or flag_arr is None or idx >= len(flag_arr):
+                return ""
+            return "  [NEAR-UNIDENTIFIED]" if flag_arr[idx] else ""
 
         # ══════════════════════════════════════════════════════════════════
         # LATENT CLASS BRANCH 
@@ -1337,13 +1372,23 @@ class DiscreteChoiceModel(ABC):
                 section(label)
                 p(LINE)
 
+                cr = getattr(self, 'class_ratio_min', None)
+                if show_diag and cr is not None and c < len(cr) and np.isfinite(cr[c]):
+                    abs_f = getattr(self, 'class_ratio_min_abs_flag', [False]*C)[c]
+                    rel_f = getattr(self, 'class_ratio_min_rel_flag', [False]*C)[c]
+                    crit = ("abs" if abs_f else "") + ("+rel" if rel_f else "")
+                    p(f"  ratio_min={cr[c]:.2e}" + (f"  [{crit}]" if crit else ""))
+
                 p("  Class Parameters")
                 p(LINE2)
                 idx = self._class_specs[c]
                 for k in range(K_c):
                     vname = self.varnames[idx[k]].replace("intercept.", "ASC_", 1)
                     pi = offset_cum + k
-                    p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])))
+
+                    row_vp = vp_str(getattr(self, 'collin_share', None), pi)
+                    row_tag = id_tag(getattr(self, 'collin_flag', None), pi)
+                    p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])) + row_vp + row_tag)
                 offset_cum += K_c
             
                 if has_gamma:
@@ -1359,9 +1404,11 @@ class DiscreteChoiceModel(ABC):
                             var_name = gname[len(var_tag):]
                         else:
                             continue
+                        row_vp = vp_str(getattr(self, 'gamma_collin_share', None), gi)
+                        row_tag = id_tag(getattr(self, 'gamma_collin_flag', None), gi)
                         p(fmt.format(var_name[:16], "", self.gamma_params[gi], self.gamma_se[gi],
                                     self.gamma_t_stats[gi], self.gamma_p_values[gi],
-                                    sig(self.gamma_p_values[gi])))
+                                    sig(self.gamma_p_values[gi])) + row_vp + row_tag)
             p()
             section("GOODNESS OF FIT")
             p(LINE)
@@ -1577,6 +1624,24 @@ class DiscreteChoiceModel(ABC):
         #if file is None and dashboard:         
             #generate_est_dashboard(model=self)
     # }
+
+    def _firth_tag(self, se_raw, se_pen, idx, correction_active, ratio_threshold=3.0):
+        """Marker for summarise(): SE from the raw (unpenalized) Fisher
+        info vs. the SE actually reported, in both regimes (score_z branch
+        removed — verified empirically inert regardless of separation).
+        info_raw stays near-singular along a separating direction even at
+        a correction-active optimum, so this ratio discriminates whether
+        correction is on or off. `correction_active` only picks the label."""
+        if se_raw is None or idx >= len(se_raw):           
+            return ""
+        raw = se_raw[idx]
+        pen = se_pen[idx] if se_pen is not None and idx < len(se_pen) else float('nan')
+        ratio = raw / pen if (np.isfinite(raw) and np.isfinite(pen) and pen > 0) else float('nan')        
+        if not np.isfinite(raw) or not np.isfinite(pen) or pen <= 0:
+            return ""
+        if ratio <= ratio_threshold:
+            return ""
+        return "  [Firth]" if correction_active else "  [SEPARATED]"
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Print the coefficients and estimation outputs    '''

@@ -2015,7 +2015,7 @@ class LatentClass(DiscreteChoiceModel):
 
     def __init__(self, n_classes=2, maxiter=200, newton_inner_iter=5, tol=1e-6,
                  random_state=0, n_init=1, base_class=None,
-                 optimise_membership=True, l2_penalty=0.5, l1_penalty=0.0,membership_correction=False,
+                 optimise_membership=True, l2_penalty=0.5, l1_penalty=0.0,membership_correction=True, choice_correction=True,
                  verbose=1):
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
@@ -2051,8 +2051,13 @@ class LatentClass(DiscreteChoiceModel):
         self.total_iter = 0
         self.num_params = None
         self.se_computation_error = None
-        self.membership_correction = bool(membership_correction)
-        self.descr = "LC-Newton-Firth" if self.membership_correction else "LC-Newton"
+        self.membership_correction = bool(membership_correction)        
+        self.choice_correction = bool(choice_correction)
+        self.descr = "LC-Newton"
+        if self.membership_correction:
+            self.descr += "-Firth(mem)"
+        if self.choice_correction:
+            self.descr += "-Firth(choice)"
 
     # ------------------------------------------------------------------
     # SETUP
@@ -2246,16 +2251,8 @@ class LatentClass(DiscreteChoiceModel):
         self._member_mask_d = jnp.asarray(self._member_mask)
 
         self.class_x_names_ = None  # not used by this engine
-        return self
-    
-    def _firth_penalty(self, ll_fn, v):
-        """0.5 * log|Fisher information(v)| — Jeffreys prior penalty.
-
-        ll_fn must return the (unpenalized) log-likelihood, not its negative.
-        """
-        info = -hessian(ll_fn)(v)          # observed Fisher information
-        _, logdet = jnp.linalg.slogdet(info)
-        return 0.5 * logdet
+        return self    
+   
 
     # ------------------------------------------------------------------
     # KERNELS (built fresh per fit(), since they close over device arrays)
@@ -2301,46 +2298,7 @@ class LatentClass(DiscreteChoiceModel):
         num = ll_c + logH
         denom = jax.scipy.special.logsumexp(num, axis=1, keepdims=True)
         R = jnp.exp(num - denom)
-        return R, jnp.sum(denom)
-    
-    def _build_kernels(self):
-        """Per-class kernel identical in structure to LatentClass._build_kernels(),
-        except the negative log-likelihood adds a Firth (Jeffreys-prior) penalty
-        over each class's full beta_active (beta_x + v_s) — same machinery
-        already used for the membership block: grad of (ll + 0.5*log|info|)
-        needs 3rd-order derivatives of the base log-lik (fine), but Newton
-        curvature reuses the *unpenalized* observed information directly
-        instead of hessian(value) (4th-order derivatives, NaN-prone).
-
-        Without this, quasi/complete separation in the purchase sub-model
-        (a binary logit nested inside each class) drives the whole beta
-        vector to +-inf in early EM iterations, before the posterior R has
-        stabilized enough to avoid separated subsets.
-        """
-        super()._build_kernels()
-
-        class_fgh = []
-        for c in range(self.n_classes):
-            def base_ll(beta, w, c=c):
-                return jnp.sum(w * self._class_ll(beta, c))
-
-            def base_nll(beta, w, base_ll=base_ll):
-                return -base_ll(beta, w)
-
-            if self.membership_correction:
-                def info(beta, w, base_ll=base_ll):
-                    H = hessian(lambda b: base_ll(b, w))(beta)
-                    return -H + jnp.eye(beta.shape[0], dtype=beta.dtype) * RIDGE
-
-                def value(beta, w, base_nll=base_nll, info=info):
-                    _, logdet = jnp.linalg.slogdet(info(beta, w))
-                    return base_nll(beta, w) - 0.5 * logdet
-
-                class_fgh.append((jax.jit(value), jax.jit(grad(value)), jax.jit(info)))
-            else:
-                class_fgh.append((jax.jit(base_nll), jax.jit(grad(base_nll)), jax.jit(hessian(base_nll))))
-
-        self._class_fgh = class_fgh
+        return R, jnp.sum(denom)   
 
     # ------------------------------------------------------------------
     # NEWTON STEP (generic, with Armijo back-tracking). Takes a pre-built
@@ -2379,12 +2337,35 @@ class LatentClass(DiscreteChoiceModel):
     def _build_kernels(self):
         """Build and JIT-compile, once per fit() call, a (value, grad,
         hessian) triple per class (class index baked into the closure, so
-        no static_argnums juggling) and one for the membership block."""
+        no static_argnums juggling) and one for the membership block.
+        Raw (unpenalized) triples are always kept too, under *_raw — used
+        by post-fit Firth-shift diagnostics regardless of which correction
+        flags were active during estimation."""
         class_fgh = []
+        class_fgh_raw = []
         for c in range(self.n_classes):
             def nll(beta, w, c=c):
                 return -jnp.sum(w * self._class_ll(beta, c))
-            class_fgh.append((jax.jit(nll), jax.jit(grad(nll)), jax.jit(hessian(nll))))
+            raw_triple = (jax.jit(nll), jax.jit(grad(nll)), jax.jit(hessian(nll)))
+            class_fgh_raw.append(raw_triple)
+
+            if self.choice_correction:
+                def class_info(beta, w, c=c):
+                    """Unpenalized (ridge-stabilized) observed Fisher information."""
+                    H = hessian(lambda b: -nll(b, w, c=c))(beta)
+                    return -H + jnp.eye(beta.shape[0], dtype=beta.dtype) * RIDGE
+
+                def class_value(beta, w, c=c):
+                    info = class_info(beta, w, c=c)
+                    _, logdet = jnp.linalg.slogdet(info)
+                    return nll(beta, w, c=c) - 0.5 * logdet
+
+                # Curvature: classical Firth-Newton practice — unpenalized
+                # Fisher information, not hessian(class_value). Avoids
+                # 4th-order derivatives (same NaN risk as the membership block).
+                class_fgh.append((jax.jit(class_value), jax.jit(grad(class_value)), jax.jit(class_info)))
+            else:
+                class_fgh.append(raw_triple)
 
         n_inter, Km, C = self._n_inter, self.K_membership, self.n_classes
 
@@ -2394,10 +2375,15 @@ class LatentClass(DiscreteChoiceModel):
             logH = self._membership_log_probs(inter, gamma)
             return jnp.sum(R * logH)
 
+        def mem_nll(v, R):
+            return -mem_ll(v, R)
+
         def mem_info(v, R):
             """Unpenalized (ridge-stabilized) observed Fisher information."""
             H = hessian(lambda vv: mem_ll(vv, R))(v)
             return -H + jnp.eye(v.shape[0], dtype=v.dtype) * RIDGE
+
+        mem_fgh_raw = (jax.jit(mem_nll), jax.jit(grad(mem_nll)), jax.jit(hessian(mem_nll)))
 
         if self.membership_correction:
             def mem_value(v, R):
@@ -2414,12 +2400,12 @@ class LatentClass(DiscreteChoiceModel):
             # derivatives (the source of the NaNs).
             mem_fgh = (jax.jit(mem_value), mem_grad, jax.jit(mem_info))
         else:
-            def mem_nll(v, R):
-                return -mem_ll(v, R)   
-            mem_fgh = (jax.jit(mem_nll), jax.jit(grad(mem_nll)), jax.jit(hessian(mem_nll)))
+            mem_fgh = mem_fgh_raw
 
         self._class_fgh = class_fgh
+        self._class_fgh_raw = class_fgh_raw
         self._mem_fgh = mem_fgh
+        self._mem_fgh_raw = mem_fgh_raw
 
     def _joint_negll(self, betas, inter, gamma, pi):
         _, ll = self._estep(betas, inter, gamma, pi)
@@ -2537,6 +2523,38 @@ class LatentClass(DiscreteChoiceModel):
                         betas, inter, gamma, pi, ll = b2, i2, g2, p2, ll2
                     R_last, _ = self._estep(betas, inter, gamma, pi)
 
+                theta_after = flat(betas, inter, gamma, pi)
+                step_norm = float(jnp.linalg.norm(theta_after - th0))
+                delta_ll = ll - prev_ll
+
+                grad_choice_vecs = []
+                for c, beta_c in enumerate(betas):
+                    _, g_active_c, _ = self._class_fgh[c]
+                    w_c = jnp.asarray(R_last[:, c])
+                    grad_choice_vecs.append(np.asarray(g_active_c(beta_c, w_c)))
+                grad_choice_norms = [float(np.max(np.abs(v))) if v.size else 0.0
+                                    for v in grad_choice_vecs]
+
+                if self._has_membership:
+                    v_dense = jnp.concatenate([inter, gamma.ravel()])
+                    _, g_active_m, _ = self._mem_fgh
+                    grad_member_vec = np.asarray(g_active_m(v_dense, jnp.asarray(R_last)))
+                else:
+                    grad_member_vec = np.array([])
+                grad_member_norm = float(np.max(np.abs(grad_member_vec))) if grad_member_vec.size else 0.0
+
+                if not hasattr(self, 'grad_history'):
+                    self.grad_history = []
+                self.grad_history.append((it, ll, grad_choice_norms, grad_member_norm))
+
+                if getattr(self, 'verbose_trace', False):
+                    if it == 1:
+                        gc_hdr = "".join(f" |g_ch|_C{c+1:<3}" for c in range(len(betas)))
+                        print(f"{'it':>4} | {'ll':>11} | {'d_ll':>10} | {'step':>8} |{gc_hdr} | |g_mem|")
+                        print("-" * (4 + 11 + 10 + 8 + len(betas) * 13 + 12))
+                    gc_str = "".join(f" {g:>11.3e}" for g in grad_choice_norms)
+                    print(f"{it:4d} | {ll:11.3f} | {delta_ll:10.3e} | {step_norm:8.3e} |{gc_str} | {grad_member_norm:.3e}")
+
                 if abs(ll - prev_ll) < self.tol:
                     converged = True
                     break
@@ -2544,11 +2562,26 @@ class LatentClass(DiscreteChoiceModel):
 
             print(f"[LC] init {init_idx + 1}/{self.n_init}  iter {it:4d}/{self.maxiter}  loglik = {ll:.6f}")
 
-            if best is None or ll > best['loglik']:
+
+            is_degen = self._is_degenerate_candidate(betas, pi)
+            better = (
+                best is None
+                or (best['degenerate'] and not is_degen)
+                or (is_degen == best['degenerate'] and ll > best['loglik'])
+            )
+            if better:
                 best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
-                            converged=converged, n_iter=n_iter, posterior=R_last)
+                            converged=converged, n_iter=n_iter, posterior=R_last,
+                            degenerate=is_degen, final_step=step_norm, final_delta_ll=delta_ll,
+                            grad_choice_vecs=grad_choice_vecs, grad_member_vec=grad_member_vec)
+                
             multistart_ll.append(ll)
 
+        if best['degenerate']:
+            print("[LC] WARNING: every multistart candidate looked degenerate "
+                  "(collapsed class share or a coefficient beyond the sanity "
+                  "bound) — the selected winner is the least-bad one. Consider "
+                  "more inits or a warm start.")
         self._finalise(best, time.time() - t_fit0)
         self.multistart_loglik = multistart_ll
         self.multistart_kind = multistart_kind
@@ -2572,6 +2605,10 @@ class LatentClass(DiscreteChoiceModel):
         self.converged = bool(best['converged'])
         self.total_iter = int(best['n_iter'])
         self.estim_time_sec = float(elapsed)
+        self.final_step = float(best.get('final_step', np.nan))
+        self.final_delta_ll = float(best.get('final_delta_ll', np.nan))
+        self.final_grad_choice = best.get('grad_choice_vecs', [])
+        self.final_grad_member = best.get('grad_member_vec', np.array([]))
         self.pred_prob, self.obs_prob = self._compute_prop_alts(betas, posterior)
 
         n_inter, Km = self._n_inter, self.K_membership
@@ -2602,6 +2639,7 @@ class LatentClass(DiscreteChoiceModel):
             self.num_params = n_beta + n_phi
         self.aic = 2 * self.num_params - 2 * self.loglik
         self.bic = np.log(self.sample_size) * self.num_params - 2 * self.loglik
+        
 
         # ---- exact joint Hessian for SE, over [phi | betas | inter | gamma_dense]
         try:
@@ -2725,6 +2763,169 @@ class LatentClass(DiscreteChoiceModel):
         self.gamma_names = gamma_names
 
         self.class_gammas = gamma_theta  # flat [inter | gamma C*Km] dense, for parity/debug
+
+        self.se_raw = np.full_like(theta, np.nan)
+        self.collin_share = np.full_like(theta, np.nan)
+        self.collin_flag = np.zeros_like(theta, dtype=bool)
+        self.class_ratio_min = np.full(C, np.nan)
+        self.class_ratio_min_abs_flag = np.zeros(C, dtype=bool)
+        self.class_ratio_min_rel_flag = np.zeros(C, dtype=bool)
+
+        H_list, se_raw_blocks = [], []
+        for c, beta_c in enumerate(betas):
+            _, g_raw, h_raw = self._class_fgh_raw[c]
+            beta_j = jnp.asarray(beta_c)
+            w_j = jnp.asarray(self.posterior[:, c])
+            H = np.asarray(h_raw(beta_j, w_j) + jnp.eye(beta_j.shape[0], dtype=beta_j.dtype) * RIDGE)
+            H_list.append(H)
+            info_inv = np.linalg.inv(H)
+            se_raw_blocks.append(np.sqrt(np.clip(np.diag(info_inv), 0, None)))
+            self.class_ratio_min[c] = np.linalg.eigvalsh(H).min() / np.linalg.eigvalsh(H).max()
+
+        rel_thresh = self._relative_thresholds(self.class_ratio_min)
+
+        offset = n_phi
+        for c, beta_c in enumerate(betas):
+            share_abs, flag_abs, _ = self._collinearity_diag(H_list[c], ratio_thresh=1e-3)
+            if rel_thresh[c] > 0:
+                share_rel, flag_rel, _ = self._collinearity_diag(H_list[c], ratio_thresh=rel_thresh[c])
+            else:
+                share_rel, flag_rel = np.zeros_like(share_abs), np.zeros_like(flag_abs)
+            self.class_ratio_min_abs_flag[c] = flag_abs.any()
+            self.class_ratio_min_rel_flag[c] = flag_rel.any()
+            kc = beta_c.shape[0]
+            self.se_raw[offset:offset + kc] = se_raw_blocks[c]
+            self.collin_share[offset:offset + kc] = np.maximum(share_abs, share_rel)
+            self.collin_flag[offset:offset + kc] = flag_abs | flag_rel
+            offset += kc
+
+        gamma_se_raw_dense = np.full(n_inter + n_gamma_dense, np.nan)
+        gamma_collin_dense = np.full(n_inter + n_gamma_dense, np.nan)
+        gamma_flag_dense = np.zeros(n_inter + n_gamma_dense, dtype=bool)
+        if self._has_membership and gamma_se_raw_dense.size > 0:
+            _, g_raw, h_raw = self._mem_fgh_raw
+            v_j = jnp.asarray(gamma_theta)
+            R_j = jnp.asarray(self.posterior)
+            H_full = np.asarray(h_raw(v_j, R_j) + jnp.eye(v_j.shape[0], dtype=v_j.dtype) * RIDGE)
+
+            # Restrict to the ACTIVE submatrix: most of the dense [inter |
+            # gamma C*Km] vector is masked (never enters the likelihood for
+            # that class), so its curvature is pure RIDGE and would hijack
+            # the smallest eigenvalue, hiding real active-parameter issues.
+            active_idx = list(range(n_inter))
+            for c in range(C):
+                for k in range(Km):
+                    if self._member_mask[c, k] > 0:
+                        active_idx.append(n_inter + c * Km + k)
+            active_idx = np.array(active_idx, dtype=int)
+
+            H_active = H_full[np.ix_(active_idx, active_idx)]
+            info_inv_active = np.linalg.inv(H_active)
+            se_raw_active = np.sqrt(np.clip(np.diag(info_inv_active), 0, None))
+            share_active, flag_active, _ = self._collinearity_diag(H_active)
+
+            gamma_se_raw_dense[active_idx] = se_raw_active
+            gamma_collin_dense[active_idx] = share_active
+            gamma_flag_dense[active_idx] = flag_active
+
+        gsr, gsc, gsf = [], [], []
+        for i in range(n_inter):
+            gsr.append(gamma_se_raw_dense[i])
+            gsc.append(gamma_collin_dense[i])
+            gsf.append(gamma_flag_dense[i])
+        for c in range(C):
+            for k in range(Km):
+                if self._member_mask[c, k] > 0:
+                    idx = n_inter + c * Km + k
+                    gsr.append(gamma_se_raw_dense[idx])
+                    gsc.append(gamma_collin_dense[idx])
+                    gsf.append(gamma_flag_dense[idx])
+        self.gamma_se_raw = np.array(gsr)
+        self.gamma_collin_share = np.array(gsc)
+        self.gamma_collin_flag = np.array(gsf, dtype=bool)
+
+        # ── Model-level summary: did Firth actually do real corrective
+        # work anywhere in this model, or was it just insurance? Uses the
+        # RELATIVE flag (calibrated against this dataset's own classes),
+        # not the fixed 1e-3 absolute one — already shown to flag 100% of
+        # classes indiscriminately at this dataset's natural curvature
+        # scale, so it carries no model-level signal here.
+        classes_flagged = [c for c in range(C) if self.class_ratio_min_rel_flag[c]]
+        coeff_class = np.concatenate([np.full(int(k), c) for c, k in enumerate(self._Ks)])
+        vars_flagged = [self.coeff_names[i] for i in range(len(self.coeff_names))
+                         if coeff_class[i] in classes_flagged and self.collin_flag[n_phi + i]]
+        gamma_vars_flagged = [self.gamma_names[i] for i in range(len(self.gamma_collin_flag))
+                               if self.gamma_collin_flag[i]]
+        self.firth_summary = {
+            "needed_correction": bool(classes_flagged or gamma_vars_flagged),
+            "classes_flagged": classes_flagged,
+            "choice_vars_flagged": vars_flagged,
+            "membership_vars_flagged": gamma_vars_flagged,
+        }
+        self.descr = "LCCM-Firth" if self.firth_summary["needed_correction"] else "LCCM"
+
+    @staticmethod
+    def _is_degenerate_candidate(betas, pi, min_share=0.01, max_abs_beta=30.0):
+        """Cheap, no-extra-estimation screen for the classic near-empty-class
+        EM local optimum (see class_ratio_min discussion): a class collapsed
+        to almost no weighted individuals lets its own coefficients diverge
+        with no real contradicting cases to stop them, producing a spuriously
+        HIGHER raw loglik than a healthy solution. Uses only `betas`/`pi`,
+        already computed for every multistart candidate — no Hessian, no
+        re-estimation. `max_abs_beta` is a sanity bound, not a hard science:
+        it should sit well above any plausible coefficient for the model's
+        variable scales; NaN/inf always count as degenerate regardless."""
+        pi_np = np.asarray(pi)
+        if not np.all(np.isfinite(pi_np)) or np.any(pi_np < min_share):
+            return True
+        for b in betas:
+            b_np = np.asarray(b)
+            if not np.all(np.isfinite(b_np)) or np.any(np.abs(b_np) > max_abs_beta):
+                return True
+        return False
+    @staticmethod
+    def _collinearity_diag(H, ratio_thresh=1e-3, vdp_thresh=0.5):
+        """Cole (2020) / Gimenez et al. (2004) 'Hessian method': flag a
+        direction as near non-identified when lambda_k/lambda_max falls
+        below `ratio_thresh` (raw, unscaled eigen-decomposition — scaling
+        to a correlation matrix would hide univariate separation). For
+        every flagged direction, attribute it to parameters via the
+        Belsley-Kuh-Welsch (1980) variance-decomposition proportion:
+        share_j = (v_kj^2/lambda_k) / Var(theta_j); share_j > vdp_thresh
+        (0.5, the standard BKW cutoff) marks parameter j as implicated.
+        Returns (share, flag) arrays aligned with H's row/column order."""
+        lam, V = np.linalg.eigh(H)
+        lam = np.clip(lam, 1e-300, None)
+        ratio = lam / lam.max()
+        var_j = np.sum(V ** 2 / lam[None, :], axis=1)
+        p = H.shape[0]
+        share = np.zeros(p)
+        flag = np.zeros(p, dtype=bool)
+        for k in range(p):
+            if ratio[k] < ratio_thresh:
+                vdp_k = (V[:, k] ** 2 / lam[k]) / var_j
+                share = np.maximum(share, vdp_k)
+                flag |= vdp_k > vdp_thresh
+        return share, flag, float(ratio.min())
+
+    @staticmethod
+    def _relative_thresholds(ratio_mins, gap_factor=100.0, min_siblings=3):
+        """Per-run threshold derived from a class's OWN sibling classes
+        (leave-one-out median / gap_factor), instead of a fixed textbook
+        constant: routine correlation among ASC-type parameters produces a
+        similar ratio_min across most classes of the same model/dataset,
+        while genuine separation stands out as an outlier against THAT
+        background. Entries with fewer than `min_siblings` comparison
+        points get 0.0 (relative check disabled there)."""
+        ratio_mins = np.asarray(ratio_mins, dtype=float)
+        n = len(ratio_mins)
+        thresh = np.zeros(n)
+        for i in range(n):
+            others = np.delete(ratio_mins, i)
+            others = others[np.isfinite(others)]
+            if len(others) >= min_siblings:
+                thresh[i] = np.median(others) / gap_factor
+        return thresh
 
     # ------------------------------------------------------------------
     # Panel-aware null log-likelihood (only real occasions count)

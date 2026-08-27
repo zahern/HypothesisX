@@ -4807,7 +4807,8 @@ class Search():
         attempt whose tabu-key was already touched this round."""
 
         #n_perturb = self.param.generator.randint(1, 10) # Number of random perturbations
-        n_perturb = self.param.generator.randint(1, math.ceil(9 - (9 - 1) * pitch))
+        #n_perturb = self.param.generator.randint(1, math.ceil(9 - (9 - 1) * pitch))
+        n_perturb = self.param.generator.randint(1, math.ceil(9 - (9 - 1) * (self._improv_iter / self.maxiter)))
         new_sol = self.copy_solution(sol)
         touched, moves_detail = set(pre_touched or ()), [] # Seed with upstream (HMCR) keys, then track this round's own
         attempts, real = 0, 0 # Track how many attempts were made and how many were actually applied
@@ -5200,10 +5201,10 @@ class Search():
     # }
 
     def fit_lcm(self, X, y, varnames, class_params_spec, member_params_spec=None,
-                num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-6,
+                num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-20,
                 gtol_membership_func=1e-5, avail=None, avail_latent=None,
                 fit_intercept=True, weights=None, seed=None,
-                alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None, betas0=None, n_init=10):
+                alts=None, ftol_lccm=1e-20, base_alt=None, ind_id=None, panels=None, betas0=None, n_init=10):
         """Fit a latent class multinomial logit model with optional membership equation.
 
         Uses the modern ``LatentClassMixedLogit`` from ``latent_class.py``.
@@ -5226,7 +5227,7 @@ class Search():
             optimise_membership=optimise_membership,
             #membership_maxiter=100,
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True, choice_correction=True
         )
 
         membership_vars = None
@@ -5489,7 +5490,7 @@ class Search():
             random_state=seed if seed is not None else 0,
             optimise_membership=optimise_membership,
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True, choice_correction=True
         )
 
         X_arr = X.values if hasattr(X, 'values') else np.asarray(X, dtype=float)
@@ -5523,6 +5524,7 @@ class Search():
         class_params_spec = sol.get('class_params_spec', None)
         member_params_spec = sol.get('member_params_spec', None)
         num_classes = getattr(self.param, 'num_classes', 2)
+        asc_ind = sol.get('asc_ind', False)
         bc_vars = self.define_bc_vars(sol)
 
         all_vars_set = self._all_vars_in_solution(sol)
@@ -5584,7 +5586,7 @@ class Search():
             weights=self.param.weights,
             alts=alts,
             base_alt=self.param.base_alt, panels=panels,
-            ind_id=ind_id, betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10)
+            ind_id=ind_id, betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10), fit_intercept=asc_ind
         )
 
         sol['model'] = model
