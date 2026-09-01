@@ -4934,7 +4934,8 @@ class Search():
         model.setup(X=X, y=y, varnames=varnames, isvars=isvars, alts=alts,
             ids=ids, transvars=transvars, fit_intercept=fit_intercept, init_coeff=init_coeff,
             weights=weights, avail=avail, base_alt=base_alt, maxiter=maxiter, ftol=ftol, gtol=gtol,
-            l2_penalty=2.0, l1_penalty=0.5)
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.1))
         model.fit()
     
         return model
@@ -5051,8 +5052,7 @@ class Search():
                 isvars = [i for i in isvars if i not in randvars.keys()]
 
         return isvars, varnames, fit_intercept
-
-    def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars, corvars,
+def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars, corvars,
             fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params,
             halton_opts=None):
     # {
@@ -5063,6 +5063,7 @@ class Search():
         # repair the model..
         isvars, varnames, fit_intercept = self.process_variables(isvars, varnames, randvars)
 
+
         model.setup(X=X, y=y, varnames=varnames, isvars=isvars, alts=alts, transvars=transvars, ids=ids,
             randvars=randvars, panels=panels, fit_intercept=fit_intercept, correlated_vars=corvars, n_draws=n_draws,
             init_coeff=init_coeff, weights=weights, avail=avail,  base_alt=base_alt, maxiter=maxiter,
@@ -5072,7 +5073,9 @@ class Search():
             de_maxiter=getattr(self.param, 'de_maxiter', 3),
             de_tol=getattr(self.param, 'de_tol', 0.5),
             de_polish=getattr(self.param, 'de_polish', False),
-            sd_penalty=getattr(self.param, 'sd_penalty', 0.001))
+            sd_penalty=getattr(self.param, 'sd_penalty', 0.001),
+            reg_penalty=getattr(self.param, 'l2_penalty', 0.5),
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.1))
         model.fit()
         
         return model
@@ -5638,12 +5641,17 @@ class Search():
             model = RandomRegret()
             model.setup(X=X, y=y, varnames=all_vars, alts=alts, ids=ids,
                         transvars=[v for v in transvars if v in all_vars])
+            # Apply shrinkage parameters from search parameters
+            model.reg_penalty = getattr(self.param, 'l2_penalty', 0.5)
+            model.l1_penalty = getattr(self.param, 'l1_penalty', 0.1)
             if use_jax:
                 model.fit_jax()
             else:
                 model.fit()
         else:
             model = RandomRegret(df=df, short=False, normalize=True)
+            model.reg_penalty = getattr(self.param, 'l2_penalty', 0.5)
+            model.l1_penalty = getattr(self.param, 'l1_penalty', 0.1)
             if use_jax:
                 model.fit_jax()
             else:
@@ -5745,9 +5753,7 @@ class Search():
         # COMPUTE MAE
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
-            # Use the TEST targets/ids (previously reused the training arrays,
-            # which mismatched the test design matrix).
-            X_test = self.param.df_test[all_vars]
+            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
             y_test = self.param.test_choices if getattr(self.param, 'test_choices', None) is not None else self.param.choices
             ids_test = self.param.test_choice_id if getattr(self.param, 'test_choice_id', None) is not None else self.param.choice_id
             test_model = self.fit_ordered_logit(X=X_test, y=y_test, ids=ids_test, varnames=all_vars)
@@ -5779,6 +5785,10 @@ class Search():
                                 normalize=False,
                                 fit_intercept=False,
                                 transvars=transvars or [])
+
+        # Apply shrinkage parameters from search parameters
+        moll.reg_penalty = getattr(self.param, 'l2_penalty', 0.5)
+        moll.l1_penalty = getattr(self.param, 'l1_penalty', 0.1)
 
         moll.fit(method='BFGS')
         moll.report()

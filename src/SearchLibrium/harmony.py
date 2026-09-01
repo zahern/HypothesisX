@@ -255,106 +255,96 @@ class HarmonySearch(Search):
     ''' A new solution, could either be built from an existing one '''
     ''' or constructed randomly.                                   '''
     ''' ---------------------------------------------------------- '''
-    def build_solution(self, memory, prop):
+    def build_solution(self, memory, harm_rate):
     # {
-        """ This function decides whether to build a new solution from an existing solution
-        in the harmony memory or to generate a completely new solution, based on a random number and the
-        Harmony Memory Consideration Rate (HMCR). If the random number is less than or equal to prop,
-        it selects a proportion of the features from a randomly chosen existing solution to build the new solution.
-        Otherwise, it generates a completely new solution """
+        """ Build a new solution using Harmony Memory Consideration.
 
+        For each candidate variable, with probability harm_rate (HMCR), copy
+        the value from a randomly selected harmony in memory; otherwise
+        generate a random value. This is the standard HS approach.
+        """
+        new_sol = Solution(nb_crit=self.nb_crit)
 
-        bin = [0,1] # Binary values
-        prob = [1-prop, prop]  # Range
-        new_sol = Solution(nb_crit=self.nb_crit)    # Create a new solution object
+        # Collect all candidate variables
+        all_as_candidates = list(self.param.asvarnames or [])
+        all_is_candidates = list(self.param.isvarnames or [])
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # IS THIS NECESSARY?
-        '''fronts, pareto = None, None
-        if nb_crit > 1: # {
-            memory = self.non_dominant_sorting(memory)
-            fronts = self.get_fronts(memory)
-            pareto = self.get_pareto(fronts, memory)
-        # }'''
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        if self.param.generator.rand() > prop:
-            new_sol = self.generate_solution()  # Generate a new solution
-        else:
-        # {
-            choice = self.param.generator.choice(len(memory)) # Choose one of the member solutions
-            chosen_sol = memory[choice] # Define reference to the chosen member solution
+        # --- AS variables: for each, decide via HMCR ---
+        new_asvars = []
+        for var in all_as_candidates:
+            if self.param.generator.rand() <= harm_rate:
+                # Copy from memory: randomly pick a harmony and take its value for this var
+                if memory:
+                    chosen = self.param.generator.choice(len(memory))
+                    if var in memory[chosen].get('asvars', []):
+                        new_asvars.append(var)
+            else:
+                # Random generation: include with some base probability
+                if self.param.generator.rand() < 0.3:  # base inclusion probability
+                    new_asvars.append(var)
 
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            # OPTIONAL CODE.
-            # size = len(chosen_sol['asvars'])
-            # new_asvars_index = self.param.generator.choice(bin, size=size, p=prob)
-            # new_asvars = [i for (i, v) in zip(chosen_sol['asvars'], new_asvars_index) if v]
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Enforce pre-specified
+        new_asvars = sorted(list(set().union(new_asvars, self.param.ps_asvars or [])))
+        new_asvars = self.remove_redundant_asvars(new_asvars, self.param.trans_asvars, self.param.asvarnames)
+        new_asvars = self.remove_collinear_vars(new_asvars)
+        new_asvars = self._apply_mutual_exclusion_filter(new_asvars)
+        new_sol['asvars'] = new_asvars
 
-            # Randomly select a subset of the variables from the chosen solution
-            size = int((len(chosen_sol['asvars'])) * prop)
-            new_asvars = list(self.param.generator.choice(chosen_sol['asvars'], size=size, replace=False))
-            n_asvars = sorted(list(set().union(new_asvars, self.param.ps_asvars)))
-            new_asvars = self.remove_redundant_asvars(n_asvars, self.param.trans_asvars, self.param.asvarnames)
-            new_asvars = self.remove_collinear_vars(new_asvars)
-            new_asvars = self._apply_mutual_exclusion_filter(new_asvars)
-            new_sol['asvars'] = new_asvars
+        # --- IS variables: same HMCR logic ---
+        new_isvars = []
+        for var in all_is_candidates:
+            if self.param.generator.rand() <= harm_rate:
+                if memory:
+                    chosen = self.param.generator.choice(len(memory))
+                    if var in memory[chosen].get('isvars', []):
+                        new_isvars.append(var)
+            else:
+                if self.param.generator.rand() < 0.3:
+                    new_isvars.append(var)
 
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            # Randomly select a subset of the variables from the chosen solution
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            size = int((len(chosen_sol['isvars'])) * prop)
-            new_isvars = list(self.param.generator.choice(chosen_sol['isvars'], size=size, replace=False))
-            new_isvars = sorted(list(set().union(new_isvars, self.param.ps_isvars)))
-            new_isvars = self.remove_collinear_vars(new_isvars)
-            new_isvars = self._apply_mutual_exclusion_filter(new_isvars)
-            new_sol['isvars'] = new_isvars
+        new_isvars = sorted(list(set().union(new_isvars, self.param.ps_isvars or [])))
+        new_isvars = self.remove_collinear_vars(new_isvars)
+        new_isvars = self._apply_mutual_exclusion_filter(new_isvars)
+        new_sol['isvars'] = new_isvars
 
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            # Include variables in new solution based on the chosen solution
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            new_randvars = {k: v for k, v in chosen_sol['randvars'].items() if k in new_asvars}
+        # --- Derived features (randvars, bcvars, corvars) from chosen harmony ---
+        # Pick one reference harmony for derived features
+        if memory and (new_asvars or new_isvars):
+            ref_sol = memory[self.param.generator.choice(len(memory))]
+
+            # Random coefficients: only for variables that are in asvars
+            new_randvars = {k: v for k, v in ref_sol.get('randvars', {}).items() if k in new_asvars}
             new_sol['randvars'] = new_randvars
 
-            new_bcvars = [var for var in chosen_sol['bcvars']
-                            if var in new_asvars and var not in self.param.ps_corvars]
+            # Box-Cox: only for vars in asvars, not in corvars
+            ref_bcvars = ref_sol.get('bcvars', [])
+            new_bcvars = [v for v in ref_bcvars if v in new_asvars and v not in self.param.ps_corvars]
             new_sol['bcvars'] = new_bcvars
 
-            new_corvars = chosen_sol['corvars']
-            if new_corvars:
-                new_corvars = [var for var in chosen_sol['corvars']
-                                if var in new_randvars.keys() and var not in new_bcvars]
-            new_sol['corvars'] = new_corvars
+            # Correlation: only for randvars, not bcvars
+            ref_corvars = ref_sol.get('corvars', [])
+            if ref_corvars:
+                new_corvars = [v for v in ref_corvars if v in new_randvars and v not in new_bcvars]
+                new_sol['corvars'] = new_corvars
+            else:
+                new_sol['corvars'] = []
 
-            # Take fit_intercept from chosen solution
-            new_sol['asc_ind'] = chosen_sol['asc_ind']
+            # Intercept
+            new_sol['asc_ind'] = ref_sol.get('asc_ind', False)
 
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Latent class specs
             if getattr(self.param, 'allow_latent_corvars', False):
-                if chosen_sol['class_params_spec'] is not None:
-                # {
-                    class_params_spec = copy.deepcopy(chosen_sol['class_params_spec'])
-                    for ii, class_params in enumerate(class_params_spec):
-                    # {
-                        class_params_index = self.param.generator.choice(bin, size=len(class_params), p=prob)
-                        class_params_spec[ii] = np.array([i for (i, v) in zip(class_params, class_params_index) if v],
-                                                         dtype=class_params.dtype)
-                    # }
-                    new_sol['class_params_spec'] = class_params_spec
-                # }
-                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                if chosen_sol['member_params_spec'] is not None:
-                # {
-                    member_params_spec = copy.deepcopy(chosen_sol['member_params_spec'])
-                    for ii, member_params in enumerate(member_params_spec):
-                    # {
-                        member_params_index = self.param.generator.choice(bin, size=len(member_params), p=prob)
-                        member_params_spec[ii] = np.array([i for (i, v) in zip(member_params, member_params_index) if v],
-                                                          dtype=member_params.dtype)
-                    # }
-                    new_sol['member_params_spec'] = member_params_spec
-                # }
-            # }
+                if ref_sol.get('class_params_spec') is not None:
+                    new_sol['class_params_spec'] = copy.deepcopy(ref_sol['class_params_spec'])
+                if ref_sol.get('member_params_spec') is not None:
+                    new_sol['member_params_spec'] = copy.deepcopy(ref_sol['member_params_spec'])
+        else:
+            new_sol['randvars'] = {}
+            new_sol['bcvars'] = []
+            new_sol['corvars'] = []
+            new_sol['asc_ind'] = False
+            new_sol['class_params_spec'] = None
+            new_sol['member_params_spec'] = None
 
         self._enforce_mutual_exclusion(new_sol)
         return new_sol
@@ -425,33 +415,79 @@ class HarmonySearch(Search):
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Performs the pitch adjustment operation to       '''
-    ''' fine-tune a given solution. The process includes adding    '''
-    ''' new features or removing existing ones based on a binary   '''
-    ''' indicator. The resulting solution is evaluated and inserted'''
-    ''' The solutions in memory are then filtered                  '''
+    ''' fine-tune a given solution. In classic HS, this is a       '''
+    ''' small perturbation (x_new = x_old +- bw * rand()). For     '''
+    ''' discrete model specification, we make SMALL changes:       '''
+    ''' toggle one variable, change one distribution, etc.         '''
     ''' ---------------------------------------------------------- '''
     def pitch_adjustment(self, sol, pitch):
     # {
         adjusted_solution = copy.deepcopy(sol)
-        perturbations = [self.perturb_asfeature, self.perturb_isfeature, self.perturb_model_t]
 
-        if self.param.allow_random:
-            perturbations.append(self.perturb_randfeature)
-            if adjusted_solution['randvars']:
-                perturbations.append(self.perturb_distribution)
+        # Bandwidth controls how many small changes to make
+        # In standard HS: x_new = x_old + bw * randn()
+        # Here: bw ~ pitch, make 0-2 small changes
+        n_changes = 0
+        if self.param.generator.rand() < pitch:
+            n_changes = 1
+            if self.param.generator.rand() < pitch:
+                n_changes = 2
 
+        # Build list of SMALL adjustment operations
+        small_adjustments = []
+
+        # AS variable: add one missing or remove one present (small toggle)
+        if self.param.asvarnames:
+            missing_as = [v for v in self.param.asvarnames if v not in adjusted_solution.get('asvars', [])]
+            present_as = [v for v in adjusted_solution.get('asvars', []) if v not in self.param.ps_asvars]
+            if missing_as:
+                small_adjustments.append(('add_as', lambda s: self._add_one_asvar(s, missing_as)))
+            if present_as:
+                small_adjustments.append(('rem_as', lambda s: self._remove_one_asvar(s, present_as)))
+
+        # IS variable: similar
+        if self.param.isvarnames:
+            missing_is = [v for v in self.param.isvarnames if v not in adjusted_solution.get('isvars', [])]
+            present_is = [v for v in adjusted_solution.get('isvars', []) if v not in self.param.ps_isvars]
+            if missing_is:
+                small_adjustments.append(('add_is', lambda s: self._add_one_isvar(s, missing_is)))
+            if present_is:
+                small_adjustments.append(('rem_is', lambda s: self._remove_one_isvar(s, present_is)))
+
+        # Random coefficient: change distribution of ONE random var
+        if self.param.allow_random and adjusted_solution.get('randvars'):
+            small_adjustments.append(('chg_dist', self.perturb_distribution))
+
+        # Box-Cox: add/remove one
         if self.param.allow_bcvars:
-            perturbations.append(self.perturb_bcfeature)
+            missing_bc = [v for v in adjusted_solution.get('asvars', [])
+                         if v not in adjusted_solution.get('bcvars', []) and v not in self.param.ps_corvars]
+            present_bc = [v for v in adjusted_solution.get('bcvars', []) if v not in self.param.ps_bcvars]
+            if missing_bc:
+                small_adjustments.append(('add_bc', lambda s: self._add_one_bcvar(s, missing_bc)))
+            if present_bc:
+                small_adjustments.append(('rem_bc', lambda s: self._remove_one_bcvar(s, present_bc)))
 
-        if self.param.allow_corvars and adjusted_solution['randvars']:
-            perturbations.append(self.perturb_corfeature)
+        # Correlation: add/remove one (needs >=2 randvars)
+        if self.param.allow_corvars and len(adjusted_solution.get('randvars', {})) >= 2:
+            missing_cor = [v for v in adjusted_solution.get('randvars', {})
+                          if v not in adjusted_solution.get('corvars', []) and v not in adjusted_solution.get('bcvars', [])]
+            present_cor = [v for v in adjusted_solution.get('corvars', []) if v not in self.param.ps_corvars]
+            if missing_cor:
+                small_adjustments.append(('add_cor', lambda s: self._add_one_corvar(s, missing_cor)))
+            if present_cor:
+                small_adjustments.append(('rem_cor', lambda s: self._remove_one_corvar(s, present_cor)))
 
-        perturbation_count = 1 + int(self.param.generator.rand() < max(0.0, min(1.0, pitch)))
-        perturbation_count = min(perturbation_count, len(perturbations))
-        selected_perturbations = self.param.generator.choice(perturbations, size=perturbation_count, replace=False)
+        # Model type change (rare)
+        if self.param.avail_models is not None and len(self.param.avail_models) > 1:
+            small_adjustments.append(('chg_model', self.perturb_model_t))
 
-        for perturbation in np.atleast_1d(selected_perturbations):
-            adjusted_solution = perturbation(adjusted_solution)
+        # Apply n_changes small adjustments
+        for _ in range(n_changes):
+            if not small_adjustments:
+                break
+            _, adj_fn = self.param.generator.choice(small_adjustments)
+            adjusted_solution = adj_fn(adjusted_solution)
 
         adjusted_solution['randvars'] = self.normalize_randvars(
             adjusted_solution['asvars'],
@@ -462,6 +498,39 @@ class HarmonySearch(Search):
         adjusted_solution, converged = self.evaluate_solution(adjusted_solution)
         return adjusted_solution, converged
     # }
+
+    # --- Helper methods for small single-variable adjustments ---
+    def _add_one_asvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_add_asfeature(sol) if hasattr(self, 'perturb_add_asfeature') else sol
+
+    def _remove_one_asvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_remove_asfeature(sol) if hasattr(self, 'perturb_remove_asfeature') else sol
+
+    def _add_one_isvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_add_isfeature(sol) if hasattr(self, 'perturb_add_isfeature') else sol
+
+    def _remove_one_isvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_remove_isfeature(sol) if hasattr(self, 'perturb_remove_isfeature') else sol
+
+    def _add_one_bcvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_add_bcfeature(sol) if hasattr(self, 'perturb_add_bcfeature') else sol
+
+    def _remove_one_bcvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_remove_bcfeature(sol) if hasattr(self, 'perturb_remove_bcfeature') else sol
+
+    def _add_one_corvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_add_corfeature(sol) if hasattr(self, 'perturb_add_corfeature') else sol
+
+    def _remove_one_corvar(self, sol, candidates):
+        var = self.param.generator.choice(candidates)
+        return self.perturb_remove_corfeature(sol) if hasattr(self, 'perturb_remove_corfeature') else sol
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Extracts the best features                       '''
