@@ -95,6 +95,8 @@ def estimate_ctrl(parameters, algorithm='sa', thorough=False, deep=False):
     tuple
         SA  : (tI, tF, max_temp_steps, max_iter)
         HS  : (max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)
+        AGDS: (pop_size, maxiter, pc0, pm0)
+        TA  : (max_threshold, max_steps, max_iter)
     """
     ps = _problem_size(parameters)
     c  = ps['complexity']
@@ -132,13 +134,13 @@ def estimate_ctrl(parameters, algorithm='sa', thorough=False, deep=False):
     elif algorithm == 'hs':
         # Harmony memory size and improvisation iterations scale with complexity
         if c < 50:
-            max_mem, maxiter  = max(10,  10 * scale),  max(100,  100 * scale)
+            max_mem, maxiter  = max(20,  20 * scale),  max(100,  100 * scale)
         elif c < 200:
-            max_mem, maxiter  = max(15,  15 * scale),  max(300,  300 * scale)
+            max_mem, maxiter  = max(25,  25 * scale),  max(300,  300 * scale)
         elif c < 600:
-            max_mem, maxiter  = max(20,  20 * scale),  max(500,  500 * scale)
+            max_mem, maxiter  = max(30,  30 * scale),  max(500,  500 * scale)
         else:
-            max_mem, maxiter  = max(25,  25 * scale),  max(800,  800 * scale)
+            max_mem, maxiter  = max(40,  40 * scale),  max(800,  800 * scale)
 
         # Harmony/pitch rates adapt: wider exploration band for bigger problems
         if deep or thorough:
@@ -164,8 +166,34 @@ def estimate_ctrl(parameters, algorithm='sa', thorough=False, deep=False):
         pc0 = 0.9
         ctrl = (pop_size, maxiter, pc0, None)
 
+    elif algorithm == 'ta':
+        # Threshold Accepting: threshold decreases linearly from max_threshold to 0
+        # over max_steps, with max_iter evaluations per step
+        if c < 50:
+            max_threshold = max(500,  500 * scale)
+            max_steps     = max(50,   50 * scale)
+            max_iter      = max(30,   30 * scale)
+        elif c < 200:
+            max_threshold = max(1000, 1000 * scale)
+            max_steps     = max(100,  100 * scale)
+            max_iter      = max(50,   50 * scale)
+        elif c < 600:
+            max_threshold = max(2000, 2000 * scale)
+            max_steps     = max(150,  150 * scale)
+            max_iter      = max(80,   80 * scale)
+        else:
+            max_threshold = max(5000, 5000 * scale)
+            max_steps     = max(200,  200 * scale)
+            max_iter      = max(100,  100 * scale)
+
+        if deep:
+            max_threshold = max(max_threshold, 10000)
+            max_steps = max(max_steps, 300)
+
+        ctrl = (max_threshold, max_steps, max_iter)
+
     else:
-        raise ValueError(f"Unknown algorithm '{algorithm}'. Use 'sa', 'hs' or 'agds'.")
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Use 'sa', 'hs', 'agds', or 'ta'.")
 
     return ctrl
 
@@ -179,6 +207,13 @@ def _describe_ctrl(ctrl, algorithm):
             'final temperature    — lower  = more exploitation',
             'number of cooling steps',
             'evaluations per cooling step',
+        )
+    elif algorithm == 'ta':
+        names = ('max_threshold', 'max_steps', 'max_iter')
+        hints = (
+            'initial threshold  — higher = more exploration',
+            'number of threshold reduction steps',
+            'evaluations per threshold step',
         )
     elif algorithm == 'agds':
         names = ('pop_size', 'maxiter', 'pc0', 'pm0')
@@ -326,6 +361,9 @@ def call_siman(parameters, init_sol=None, ctrl=None, thorough=False, deep=False,
         Maximum search depth for production runs.
     **kwargs
         ``id_num``  — run identifier (int, used in log file names).
+        ``max_time`` — maximum wall-clock time in seconds (default: inf).
+        ``max_total_iter`` — maximum total temperature steps (default: 100000).
+        ``calibrate_tI`` — whether to auto-calibrate initial temperature (default: True if ctrl not provided).
         Any other kwargs are forwarded to the SA constructor.
 
     Returns
@@ -383,6 +421,11 @@ def call_sapbil(parameters, init_sol=None, ctrl=None, **kwargs):
         If omitted the values are estimated from the problem size.
     **kwargs
         ``id_num`` — run identifier (int, used in log file names).
+        ``pbil_l_bounds`` — dict of learning rate bounds per decision type
+            (default: thesis-based values from Taco-Morales 2026).
+            Example: {"inclusion": (0.02, 0.25), "random": (0.02, 0.15), ...}
+        ``pbil_p_low`` — minimum probability clamp (default: 0.05).
+        ``pbil_p_high`` — maximum probability clamp (default: 0.95).
         Any other kwargs are forwarded to the SAPBIL constructor.
 
     Returns
@@ -430,6 +473,9 @@ def call_banditsa(parameters, init_sol=None, ctrl=None, **kwargs):
         If omitted the values are estimated from the problem size.
     **kwargs
         ``id_num``  - run identifier (int, used in log file names).
+        ``bandit_prior_alpha`` — Thompson sampling prior alpha (default: 1.0).
+        ``bandit_prior_beta`` — Thompson sampling prior beta (default: 1.0).
+        ``bandit_epsilon`` — epsilon for epsilon-greedy exploration (default: 0.05).
         Any other kwargs are forwarded to the BanditSA constructor.
 
     Returns
@@ -485,6 +531,10 @@ def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=Fals
         Overrides thorough. Default False.
     **kwargs
         ``id_num`` — run identifier.
+        ``prop_local`` — proportion of iterations before local search (default: 0.8).
+        ``threshold`` — convergence threshold (default: 15).
+        ``generate_plots`` — whether to generate convergence plots (default: False).
+        Any other kwargs are forwarded to the HarmonySearch constructor via set_control_parameters.
 
     Returns
     -------
@@ -509,6 +559,9 @@ def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=Fals
     print()
 
     solver = HarmonySearch(parameters, ctrl=ctrl, idnum=id_num)
+    # Forward remaining kwargs to set_control_parameters
+    if kwargs:
+        solver.set_control_parameters(**kwargs)
     existing = [init_sol] if init_sol is not None else None
     solver.run_search(existing_sols=existing)
     solver.close_files()
@@ -539,6 +592,9 @@ def call_agds(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, 
         Scale up population / generations for a more thorough search.
     **kwargs
         ``id_num`` — run identifier.
+        ``ref_divisions`` — NSGA-III reference point divisions (default: 12).
+        ``generate_plots`` — whether to generate convergence plots (default: False).
+        Any other kwargs are forwarded to the SparseEAAGDS constructor via set_control_parameters.
 
     Returns
     -------
@@ -563,6 +619,9 @@ def call_agds(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, 
     print()
 
     solver = SparseEAAGDS(parameters, ctrl=ctrl, idnum=id_num)
+    # Forward remaining kwargs to set_control_parameters
+    if kwargs:
+        solver.set_control_parameters(**kwargs)
     existing = [init_sol] if init_sol is not None else None
     solver.run_search(existing_sols=existing)
     solver.close_files()
@@ -589,6 +648,14 @@ def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
         If omitted the values are estimated from the problem size.
     **kwargs
         ``id_num`` — run identifier.
+        ``pbil_l_bounds`` — dict of learning rate bounds per decision type
+            (default: thesis-based values from Taco-Morales 2026).
+        ``pbil_p_low`` — minimum probability clamp (default: 0.05).
+        ``pbil_p_high`` — maximum probability clamp (default: 0.95).
+        ``prop_local`` — proportion of iterations before local search (default: 0.8).
+        ``threshold`` — convergence threshold (default: 15).
+        ``generate_plots`` — whether to generate convergence plots (default: False).
+        Any other kwargs are forwarded to the HSPBIL constructor.
 
     Returns
     -------
@@ -610,7 +677,7 @@ def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
     print(_describe_ctrl(ctrl, 'hs'))
     print()
 
-    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num)
+    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num, **kwargs)
     existing = [init_sol] if init_sol is not None else None
     solver.run_search(existing_sols=existing)
     solver.close_files()
@@ -659,6 +726,7 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, thorough=F
     >>> best = call_search(params)                        # SA, auto ctrl
     >>> best = call_search(params, algorithm='banditsa')  # BanditSA, auto ctrl
     >>> best = call_search(params, algorithm='hs')        # HS, auto ctrl
+    >>> best = call_search(params, algorithm='ta')        # TA, auto ctrl
     >>> best = call_search(params, thorough=True)         # Thorough SA
     >>> best = call_search(params, algorithm='hs', deep=True)  # Deep HS
     >>> best = call_search(params, ctrl=(500,0.001,80,15))# SA, manual ctrl
@@ -678,11 +746,61 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, thorough=F
                             thorough=thorough, deep=deep, **kwargs)
     elif algorithm in ('hspbil', 'harmony_pbil', 'hs_pbil', 'hs+pbil'):
         return call_harmony_pbil(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
+    elif algorithm in ('ta', 'threshold', 'threshold_accepting'):
+        return call_threshold(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     else:
         raise ValueError(
             f"Unknown algorithm '{algorithm}'. "
-            f"Choose 'sa', 'sapbil', 'banditsa', 'hs', or 'hspbil'."
+            f"Choose 'sa', 'sapbil', 'banditsa', 'hs', 'hspbil', or 'ta'."
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Threshold Accepting
+# ─────────────────────────────────────────────────────────────────────────────
+
+def call_threshold(parameters, init_sol=None, ctrl=None, **kwargs):
+    """
+    Run Threshold Accepting search.
+
+    Parameters
+    ----------
+    parameters : Parameters
+        Problem definition.
+    init_sol : Solution, optional
+        Warm-start solution.
+    ctrl : tuple, optional
+        ``(max_threshold, max_steps, max_iter)``. If omitted the values are estimated
+        from the problem size.
+    **kwargs
+        ``id_num`` — run identifier.
+
+    Returns
+    -------
+    Solution
+        Best solution found.
+    """
+    if ctrl is None:
+        ctrl = kwargs.pop('ctrl', None)
+
+    id_num = kwargs.pop('id_num', None)
+
+    if ctrl is None:
+        ctrl = estimate_ctrl(parameters, algorithm='ta')
+        print(f"[TA] Auto-estimated hyperparameters (problem complexity "
+              f"= {_problem_size(parameters)['complexity']}):")
+    else:
+        print("[TA] Using provided hyperparameters:")
+
+    print(_describe_ctrl(ctrl, 'ta'))
+    print()
+
+    solver = TA(parameters, init_sol, ctrl, id_num, **kwargs)
+    solver.run()
+    solver.close_files()
+    best = solver.return_best()
+    _print_dashboard(solver, best, algorithm='TA')
+    return best
 
 
 # ─────────────────────────────────────────────────────────────────────────────

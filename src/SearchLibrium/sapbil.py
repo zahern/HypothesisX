@@ -54,7 +54,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Learning-rate bounds  (Table 1 from Taco-Morales 2026)
 # ---------------------------------------------------------------------------
-_L_BOUNDS = {
+_DEFAULT_L_BOUNDS = {
     "inclusion":    (0.02, 0.25),
     "random":       (0.02, 0.15),
     "distribution": (0.01, 0.05),
@@ -62,8 +62,8 @@ _L_BOUNDS = {
     "boxcox":       (0.02, 0.15),
 }
 
-_P_LOW  = 0.05   # minimum probability clamp
-_P_HIGH = 0.95   # maximum probability clamp
+_DEFAULT_P_LOW  = 0.05   # minimum probability clamp
+_DEFAULT_P_HIGH = 0.95   # maximum probability clamp
 
 
 # ---------------------------------------------------------------------------
@@ -79,12 +79,25 @@ class ProbabilityMatrix:
         All candidate variable names (typically param.asvarnames).
     distributions : list[str]
         Available random-coefficient distributions (e.g. ['n','ln','tn','u','t']).
+    l_bounds : dict[str, tuple[float, float]], optional
+        Learning rate bounds per decision type (min, max). Defaults to thesis-based
+        values from Taco-Morales (2026). Keys: "inclusion", "random", "distribution",
+        "correlation", "boxcox".
+    p_low : float, optional
+        Minimum probability clamp (default: 0.05).
+    p_high : float, optional
+        Maximum probability clamp (default: 0.95).
     """
 
-    def __init__(self, varnames, distributions):
+    def __init__(self, varnames, distributions, l_bounds=None, p_low=None, p_high=None):
         self.varnames      = list(varnames)
         self.distributions = list(distributions)
         n_distr = max(len(distributions), 1)
+
+        # Learning rate bounds (thesis-based defaults, overridable)
+        self._l_bounds = l_bounds or _DEFAULT_L_BOUNDS
+        self._p_low  = p_low  if p_low is not None else _DEFAULT_P_LOW
+        self._p_high = p_high if p_high is not None else _DEFAULT_P_HIGH
 
         # Scalar decisions — initialised at 0.5 (uninformative prior)
         self.p_inclusion = {v: 0.5 for v in varnames}
@@ -106,27 +119,29 @@ class ProbabilityMatrix:
 
         Clipped to [l_min, l_max] for numeric safety.
         """
-        l_min, l_max = _L_BOUNDS[decision_type]
+        l_min, l_max = self._l_bounds[decision_type]
         if tI <= 0:
             return l_max
         progress = max(0.0, min(1.0, 1.0 - t / tI))
         return l_min + (l_max - l_min) * progress
 
     @staticmethod
-    def _clamp(p):
-        return max(_P_LOW, min(_P_HIGH, float(p)))
+    def _clamp(p, p_low, p_high):
+        return max(p_low, min(p_high, float(p)))
 
     # ------------------------------------------------------------------
     def update_inclusion(self, var, indicator, t, tI):
         lr = self.learning_rate("inclusion", t, tI)
         self.p_inclusion[var] = self._clamp(
-            (1.0 - lr) * self.p_inclusion[var] + lr * indicator
+            (1.0 - lr) * self.p_inclusion[var] + lr * indicator,
+            self._p_low, self._p_high
         )
 
     def update_random(self, var, indicator, t, tI):
         lr = self.learning_rate("random", t, tI)
         self.p_random[var] = self._clamp(
-            (1.0 - lr) * self.p_random[var] + lr * indicator
+            (1.0 - lr) * self.p_random[var] + lr * indicator,
+            self._p_low, self._p_high
         )
 
     def update_distribution(self, var, distr, indicator, t, tI):
@@ -134,19 +149,22 @@ class ProbabilityMatrix:
             return
         lr = self.learning_rate("distribution", t, tI)
         self.p_distr[var][distr] = self._clamp(
-            (1.0 - lr) * self.p_distr[var][distr] + lr * indicator
+            (1.0 - lr) * self.p_distr[var][distr] + lr * indicator,
+            self._p_low, self._p_high
         )
 
     def update_correlation(self, var, indicator, t, tI):
         lr = self.learning_rate("correlation", t, tI)
         self.p_corr[var] = self._clamp(
-            (1.0 - lr) * self.p_corr[var] + lr * indicator
+            (1.0 - lr) * self.p_corr[var] + lr * indicator,
+            self._p_low, self._p_high
         )
 
     def update_boxcox(self, var, indicator, t, tI):
         lr = self.learning_rate("boxcox", t, tI)
         self.p_bc[var] = self._clamp(
-            (1.0 - lr) * self.p_bc[var] + lr * indicator
+            (1.0 - lr) * self.p_bc[var] + lr * indicator,
+            self._p_low, self._p_high
         )
 
     # ------------------------------------------------------------------
@@ -188,14 +206,27 @@ class SAPBIL(SA):
         Run identifier for log files.
     **kwargs
         Forwarded to the :class:`SA` base class constructor.
+        PBIL-specific kwargs:
+        ``pbil_l_bounds`` — dict of learning rate bounds per decision type
+            (default: thesis-based values from Taco-Morales 2026).
+        ``pbil_p_low`` — minimum probability clamp (default: 0.05).
+        ``pbil_p_high`` — maximum probability clamp (default: 0.95).
     """
 
     def __init__(self, param, init_sol, ctrl, idnum=0, **kwargs):
+        # Extract PBIL-specific kwargs before passing to parent
+        pbil_l_bounds = kwargs.pop('pbil_l_bounds', None)
+        pbil_p_low = kwargs.pop('pbil_p_low', None)
+        pbil_p_high = kwargs.pop('pbil_p_high', None)
+
         super().__init__(param, init_sol, ctrl, idnum=idnum, **kwargs)
 
         varnames      = list(param.asvarnames or [])
         distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])
-        self.prob_matrix = ProbabilityMatrix(varnames, distributions)
+        self.prob_matrix = ProbabilityMatrix(varnames, distributions,
+                                              l_bounds=pbil_l_bounds,
+                                              p_low=pbil_p_low,
+                                              p_high=pbil_p_high)
 
         # Protected (pre-specified) variables — PBIL does NOT update these
         self._ps_asvars   = set(getattr(param, "ps_asvars",  []) or [])

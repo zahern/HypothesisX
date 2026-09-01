@@ -34,14 +34,40 @@ class HSPBIL(HarmonySearch):
 
     Overrides the standard uniform-random pitch perturbations with
     probability-weighted decisions that learn from accepted solutions.
+
+    Parameters
+    ----------
+    param : Parameters
+        Problem definition (from search.py).
+    init_sol : Solution or None
+        Optional warm-start solution.
+    ctrl : tuple
+        ``(max_mem, maxiter, max_harm, min_harm, max_pitch, min_pitch)``
+    idnum : int or str
+        Run identifier for log files.
+    **kwargs
+        Forwarded to the :class:`HarmonySearch` base class constructor.
+        PBIL-specific kwargs:
+        ``pbil_l_bounds`` — dict of learning rate bounds per decision type
+            (default: thesis-based values from Taco-Morales 2026).
+        ``pbil_p_low`` — minimum probability clamp (default: 0.05).
+        ``pbil_p_high`` — maximum probability clamp (default: 0.95).
     """
 
     def __init__(self, param, init_sol, ctrl, idnum=0, **kwargs):
+        # Extract PBIL-specific kwargs before passing to parent
+        pbil_l_bounds = kwargs.pop('pbil_l_bounds', None)
+        pbil_p_low = kwargs.pop('pbil_p_low', None)
+        pbil_p_high = kwargs.pop('pbil_p_high', None)
+
         super().__init__(param, ctrl=ctrl, idnum=idnum)
 
         varnames = list(param.asvarnames or [])
         distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])
-        self.prob_matrix = ProbabilityMatrix(varnames, distributions)
+        self.prob_matrix = ProbabilityMatrix(varnames, distributions,
+                                              l_bounds=pbil_l_bounds,
+                                              p_low=pbil_p_low,
+                                              p_high=pbil_p_high)
 
         self._ps_asvars = set(getattr(param, "ps_asvars", []) or [])
         self._ps_randvars = set(

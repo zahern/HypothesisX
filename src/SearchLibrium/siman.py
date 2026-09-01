@@ -351,7 +351,7 @@ class SA(Search):
         self.tF = tF                # Final temperature
         self.max_temp_steps = max_temp_steps    # Maximum number of temperature steps
         self.max_iter = max_iter    # Maximum number of iterations at each temperature step
-        self.max_no_impr = 100        # Max number of steps permitted without improvements
+        self.max_no_impr = kwargs.get('max_no_impr', max(10, max_temp_steps // 10))
         # True = let choose_starting_solution recompute tI from delta-E sampling
         # (defaults to False so an explicitly supplied ctrl tuple is respected;
         # callers wanting auto-calibration pass calibrate_tI=True explicitly).

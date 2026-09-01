@@ -723,11 +723,12 @@ class Parameters:
         ind_id=None, test_ind_id=None, isvarnames=None, asvarnames=None, trans_asvars=None,
         ftol=1e-6, gtol=1e-6, gtol_membership_func=1e-5, pre_spec_constraints = None,
         maxiter=2000, n_draws=1000, p_val=0.05, chosen_alts_test=None,
-        test_weight_var=None, allow_random=False, allow_random_isvars=False, allow_bcvars=False,  allow_corvars=False, models = None,
+        test_weight_var=None, allow_random=True, allow_random_isvars=False, allow_bcvars=False,  allow_corvars=False, models = None,
         de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5, de_polish=False,
         sd_penalty=0.001,
         var_attrition_limit=40, min_candidates_after_attrition=6,
-        intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False, *args, **kwargs):
+        intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False,
+        orthogonal_groups=None, *args, **kwargs):
 
         
         if models is None:
@@ -853,6 +854,11 @@ class Parameters:
         # Default False keeps the classic asvar-only behaviour unchanged.
         self.allow_random_isvars = allow_random_isvars
         self.allow_bcvars, self.allow_corvars = allow_bcvars, allow_corvars
+
+        # Orthogonalization groups — list of lists of variable names that should
+        # be orthogonalized together (e.g., [['var1', 'var2'], ['var3', 'var4', 'var5']]).
+        # Uses modified Gram-Schmidt process on the design matrix columns.
+        self.orthogonal_groups = orthogonal_groups or []
 
         # Heterogeneity in means/variances for random parameters
         self.allow_het_mean = kwargs.get('allow_het_mean', False)
@@ -4163,6 +4169,81 @@ class Search():
     # }
 
     ''' ---------------------------------------------------------- '''
+    ''' Function. Apply Gram-Schmidt orthogonalization to variable groups '''
+    ''' ---------------------------------------------------------- '''
+    def orthogonalize_groups(self, df, varlist, groups):
+        """
+        Apply modified Gram-Schmidt orthogonalization to specified variable groups
+        in the dataframe. This decorrelates variables within each group while
+        preserving the linear span.
+
+        Args:
+            df: pandas DataFrame containing the variables
+            varlist: list of variable names in the current model
+            groups: list of lists, where each inner list contains variable names
+                   to be orthogonalized together
+
+        Returns:
+            tuple: (modified_df, new_varlist) where columns in orthogonal groups
+                   are replaced with orthogonalized versions named {var}_orth_{i}
+        """
+        import numpy as np
+        import pandas as pd
+
+        if not groups:
+            return df, varlist
+
+        df = df.copy()
+        new_varlist = list(varlist)
+
+        for group_idx, group in enumerate(groups):
+            # Filter to variables that are in both the group and the current model
+            group_vars = [v for v in group if v in df.columns and v in varlist]
+            if len(group_vars) < 2:
+                continue  # Need at least 2 variables to orthogonalize
+
+            # Extract the submatrix
+            X = df[group_vars].values.astype(float)
+            n_obs, n_vars = X.shape
+
+            # Modified Gram-Schmidt process
+            Q = np.zeros_like(X)
+            for j in range(n_vars):
+                v = X[:, j].copy()
+                for i in range(j):
+                    v -= np.dot(Q[:, i], X[:, j]) * Q[:, i]
+                norm = np.linalg.norm(v)
+                if norm > 1e-10:
+                    Q[:, j] = v / norm
+                else:
+                    # Variable is linearly dependent on previous ones
+                    Q[:, j] = 0.0
+
+            # Replace original columns with orthogonalized versions
+            ortho_names = [f"{v}_orth_{group_idx}" for v in group_vars]
+            df[ortho_names] = Q
+
+            # Update varlist: replace original vars with orthogonalized names
+            for orig, ortho in zip(group_vars, ortho_names):
+                if orig in new_varlist:
+                    idx = new_varlist.index(orig)
+                    new_varlist[idx] = ortho
+
+        return df, new_varlist
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Get orthogonalized design matrix for model fitting   '''
+    ''' ---------------------------------------------------------- '''
+    def _get_orthogonalized_X(self, all_vars):
+        """
+        Return orthogonalized design matrix X and updated variable list for
+        the given variable set, applying any user-specified orthogonal groups.
+        """
+        df, new_vars = self.orthogonalize_groups(self.param.df, all_vars, self.param.orthogonal_groups)
+        X = df[new_vars].values
+        return X, new_vars
+
+    ''' ---------------------------------------------------------- '''
     ''' Function.  No longer required                                                '''
     ''' ---------------------------------------------------------- '''
     '''def identify_insignificant_variables(self, coeff_names, pval, pval_member, sol):
@@ -5103,7 +5184,8 @@ class Search():
         all_vars = as_vars + is_vars
 
         all_vars = [var for var in self.param.varnames if var in all_vars]
-        X, y = self.param.df[all_vars].values, self.param.choices
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         model = self.fit_mnl(X=X, y=y, varnames=all_vars, isvars=is_vars, alts=self.param.alt_var,
                 ids=self.param.choice_id, transvars=bc_vars, fit_intercept=asc_ind, init_coeff=None,
@@ -5127,7 +5209,7 @@ class Search():
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
         # {
-            X_test = self.param.df_test[all_vars].values
+            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
             y_test = self.param.test_choices
 
             # QUERY: Maybe call model.setup(...) and model.fit() rather than create test_model?
@@ -5189,7 +5271,8 @@ class Search():
         all_vars = list(set(as_vars + is_vars + rand_var_names + cor_var_names))  # Make sure all the names are in vars
         
         all_vars = [var for var in self.param.varnames if var in all_vars]
-        X, y = self.param.df[all_vars], self.param.choices
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
         # Honour the searched intercept flag (previously hard-overridden to False,
         # which wasted search budget on a no-op dimension).
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -5214,7 +5297,7 @@ class Search():
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
         # {
-            X_test = self.param.df_test[all_vars].values
+            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
             y_test = self.param.test_choices
 
             # QUERY: Maybe call model.setup(...) and model.fit() rather than create test_model?
@@ -5279,7 +5362,7 @@ class Search():
         else:
             all_vars = [var for var in self.param.varnames if var in (as_vars + is_vars)]
 
-        X = self.param.df[all_vars].values
+        X, all_vars = self._get_orthogonalized_X(all_vars)
         y = self.param.choices
         ids = self.param.choice_id if self.param.choice_id is not None else self.param.ind_id
 
@@ -5351,8 +5434,9 @@ class Search():
         # covariates at all, so treat missing/None as "no nest variables".
         nest_vars = [var for var in (getattr(self.param, 'varnest', None) or []) if var in all_vars]
 
-        X, y = self.param.df[all_vars].values, self.param.choices
+        X, all_vars = self._get_orthogonalized_X(all_vars)
         X_nest = self.param.df[nest_vars]
+        y = self.param.choices
 
         model = NestedLogit(_jax=getattr(self.param, '_jax', True))
         model.setup(X=X, X_nest=X_nest, y=y, varnames=all_vars, isvars=is_vars,
@@ -5405,7 +5489,7 @@ class Search():
             raise ValueError('need at least one variable for MixedNested evaluation')
         all_vars = [var for var in self.param.varnames if var in all_vars]
 
-        X = self.param.df[all_vars].values
+        X, all_vars = self._get_orthogonalized_X(all_vars)
         y = self.param.choices
 
         model = MixedNested(_jax=getattr(self.param, '_jax', True))
@@ -5452,7 +5536,8 @@ class Search():
             raise ValueError('need a variable: todo debug why')
         all_vars = [var for var in self.param.varnames if var in all_vars]
 
-        X, y = self.param.df[all_vars].values, self.param.choices
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
 
         model = MultiLayerNestedLogit()
         model.setup(X=X, y=y, varnames=all_vars, isvars=is_vars,
@@ -5602,7 +5687,8 @@ class Search():
         all_vars = list(dict.fromkeys(as_vars + is_vars + list(rand_vars.keys())))
         all_vars = [v for v in self.param.varnames if v in all_vars]
 
-        X, y = self.param.df[all_vars], self.param.choices
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
 
         model = MixedRandomRegret(distributions=list(set(rand_vars.values())))
         try:
@@ -5642,11 +5728,8 @@ class Search():
 
         all_vars = [var for var in self.param.varnames if var in all_vars]
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        #df_long = misc.wide_to_long(self.param.df, id_col='id', alt_list=self.param.alt_var, alt_name='alt')
-        #X = df_long[all_vars]
-        #y = df_long['choice']
-        X, y = self.param.df[all_vars], self.param.choices
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
         J = len(np.unique(self.param.alt_var))
         model = self.fit_ordered_logit(X=X, y=y, ids=self.param.choice_id,
                                        varnames=all_vars, choices=J,
