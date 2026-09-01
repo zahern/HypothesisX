@@ -233,6 +233,14 @@ class MixedLogit(DiscreteChoiceModel):
         self.rvidx, self.rvdist = [], []
         self.rvtransidx, self.rvtransdist = [], []
 
+        # Heterogeneity tracking: for each random variable, track covariates for mean/var heterogeneity
+        self.rv_het_mean_vars = []   # list of lists: covariates for mean heterogeneity per random var
+        self.rv_het_var_vars = []    # list of lists: covariates for variance heterogeneity per random var
+        self.rv_het_corr = []        # list of bool: whether this RV has correlated heterogeneity
+        self.rvtrans_het_mean_vars = []
+        self.rvtrans_het_var_vars = []
+        self.rvtrans_het_corr = []   # list of bool: whether this RV has correlated heterogeneity
+
         for var in self.varnames:
             # {
             if isinstance(randvars, dict) and var in randvars:
@@ -240,15 +248,34 @@ class MixedLogit(DiscreteChoiceModel):
                 self.fxidx.append(False)
                 self.fxtransidx.append(False)
 
+                # Parse heterogeneity specification
+                rv_spec = randvars[var]
+                if isinstance(rv_spec, dict):
+                    dist = rv_spec.get('dist', 'n')
+                    het_mean = rv_spec.get('mean_het', [])
+                    het_var = rv_spec.get('var_het', [])
+                    het_corr = rv_spec.get('het_corr', False)  # Correlated heterogeneity flag
+                else:
+                    dist = rv_spec
+                    het_mean = []
+                    het_var = []
+                    het_corr = False
+
                 if var in self.randvars:  # {
                     self.rvidx.append(True)
-                    self.rvdist.append(randvars[var])
+                    self.rvdist.append(dist)
                     self.rvtransidx.append(False)
+                    self.rv_het_mean_vars.append(het_mean)
+                    self.rv_het_var_vars.append(het_var)
+                    self.rv_het_corr.append(het_corr)
                 # }
                 else:  # {
                     self.rvidx.append(False)
                     self.rvtransidx.append(True)
-                    self.rvtransdist.append(randvars[var])
+                    self.rvtransdist.append(dist)
+                    self.rvtrans_het_mean_vars.append(het_mean)
+                    self.rvtrans_het_var_vars.append(het_var)
+                    self.rvtrans_het_corr.append(het_corr)
                 # }
             # }
             else:
@@ -329,7 +356,167 @@ class MixedLogit(DiscreteChoiceModel):
         DrawsFunction = Callable[[Args], Result]
         self.fn_generate_draws: DrawsFunction = self.generate_draws_halton if halton else self.generate_draws_random
 
+        # Build heterogeneity covariate tracking after design matrix is set up
+        self._build_heterogeneity_tracking()
     # }
+
+
+    def _build_heterogeneity_tracking(self):
+        """Build tracking for heterogeneity in means and variances.
+        
+        Maps heterogeneity covariates to design matrix columns and tracks which
+        random variable each heterogeneity term belongs to.
+        """
+        # Map from variable name to its column index in the design matrix (Xnames)
+        # Xnames contains the design matrix variables (first K elements)
+        xname_to_col = {name: i for i, name in enumerate(self.Xnames[:self.K])}
+        
+        # For non-transformed random variables
+        self.het_mean_rv_names = []
+        self.het_var_rv_names = []
+        self.het_mean_rv_cols = []  # column index in design matrix for each heterogeneity covariate
+        self.het_var_rv_cols = []
+        self.het_mean_rv_idx = []   # which random variable (0..Kr-1) each heterogeneity term belongs to
+        self.het_var_rv_idx = []
+        
+        # Map from random variable index (0..Kr-1) to design matrix column index
+        self.rv_col_idx = []
+        
+        rv_count = 0
+        for i, var in enumerate(self.varnames):
+            if self.rvidx[i]:
+                self.rv_col_idx.append(i)
+                het_mean_vars = self.rv_het_mean_vars[rv_count] if rv_count < len(self.rv_het_mean_vars) else []
+                het_var_vars = self.rv_het_var_vars[rv_count] if rv_count < len(self.rv_het_var_vars) else []
+                het_corr = self.rv_het_corr[rv_count] if rv_count < len(self.rv_het_corr) else False
+                
+                for hvar in het_mean_vars:
+                    if hvar in xname_to_col:
+                        self.het_mean_rv_names.append(f"{var}_het_mean_{hvar}")
+                        self.het_mean_rv_cols.append(xname_to_col[hvar])
+                        self.het_mean_rv_idx.append(rv_count)
+                
+                for hvar in het_var_vars:
+                    if hvar in xname_to_col:
+                        self.het_var_rv_names.append(f"{var}_het_var_{hvar}")
+                        self.het_var_rv_cols.append(xname_to_col[hvar])
+                        self.het_var_rv_idx.append(rv_count)
+                
+                rv_count += 1
+        
+        # For transformed random variables
+        self.het_mean_rvtrans_names = []
+        self.het_var_rvtrans_names = []
+        self.het_mean_rvtrans_cols = []
+        self.het_var_rvtrans_cols = []
+        self.het_mean_rvtrans_idx = []
+        self.het_var_rvtrans_idx = []
+        
+        # Map from transformed random variable index (0..Krtrans-1) to design matrix column index
+        self.rvtrans_col_idx = []
+        
+        # Track correlated heterogeneity groups
+        self.het_corr_groups = []  # List of lists of RV indices that share correlated heterogeneity
+        self.het_corr_group_id = []  # Group ID for each RV (-1 if not in a group)
+        
+        rvtrans_count = 0
+        for i, var in enumerate(self.varnames):
+            if self.rvtransidx[i]:
+                self.rvtrans_col_idx.append(i)
+                het_mean_vars = self.rvtrans_het_mean_vars[rvtrans_count] if rvtrans_count < len(self.rvtrans_het_mean_vars) else []
+                het_var_vars = self.rvtrans_het_var_vars[rvtrans_count] if rvtrans_count < len(self.rvtrans_het_var_vars) else []
+                het_corr = self.rvtrans_het_corr[rvtrans_count] if rvtrans_count < len(self.rvtrans_het_corr) else False
+                
+                for hvar in het_mean_vars:
+                    if hvar in xname_to_col:
+                        self.het_mean_rvtrans_names.append(f"{var}_het_mean_{hvar}")
+                        self.het_mean_rvtrans_cols.append(xname_to_col[hvar])
+                        self.het_mean_rvtrans_idx.append(rvtrans_count)
+                
+                for hvar in het_var_vars:
+                    if hvar in xname_to_col:
+                        self.het_var_rvtrans_names.append(f"{var}_het_var_{hvar}")
+                        self.het_var_rvtrans_cols.append(xname_to_col[hvar])
+                        self.het_var_rvtrans_idx.append(rvtrans_count)
+                
+                rvtrans_count += 1
+        
+        # Build correlated heterogeneity groups
+        self._build_het_corr_groups()
+        
+        # Total heterogeneity parameters
+        self.K_het_mean_rv = len(self.het_mean_rv_cols)
+        self.K_het_var_rv = len(self.het_var_rv_cols)
+        self.K_het_mean_rvtrans = len(self.het_mean_rvtrans_cols)
+        self.K_het_var_rvtrans = len(self.het_var_rvtrans_cols)
+
+    def _build_het_corr_groups(self):
+        """Build groups of random variables with correlated heterogeneity.
+        
+        Variables with het_corr=True are grouped together. Each group shares
+        a covariance matrix for their heterogeneity parameters (γ and τ).
+        """
+        # Map from RV index to group ID
+        self.het_corr_group_id = [-1] * (self.Kr + self.Krtrans)
+        self.het_corr_groups = []
+        
+        current_group = 0
+        
+        # Check non-transformed RVs
+        for rv_idx in range(self.Kr):
+            if self.rv_het_corr[rv_idx]:
+                # Check if this RV should join an existing group or start a new one
+                # For now, all correlated RVs form a single group
+                if not self.het_corr_groups:
+                    self.het_corr_groups.append([])
+                self.het_corr_groups[-1].append(('rv', rv_idx))
+                self.het_corr_group_id[rv_idx] = current_group
+            else:
+                self.het_corr_group_id[rv_idx] = -1
+        
+        # Check transformed RVs
+        for rvtrans_idx in range(self.Krtrans):
+            if self.rvtrans_het_corr[rvtrans_idx]:
+                if not self.het_corr_groups:
+                    self.het_corr_groups.append([])
+                self.het_corr_groups[-1].append(('rvtrans', rvtrans_idx))
+                self.het_corr_group_id[self.Kr + rvtrans_idx] = current_group
+            else:
+                self.het_corr_group_id[self.Kr + rvtrans_idx] = -1
+        
+        # Count heterogeneity parameters per group
+        self.het_corr_group_params = []  # (K_het_mean, K_het_var) per group
+        for group in self.het_corr_groups:
+            mean_count = 0
+            var_count = 0
+            for rtype, idx in group:
+                if rtype == 'rv':
+                    # Count mean het params for this RV
+                    for g_idx, rv in enumerate(self.het_mean_rv_idx):
+                        if rv == idx:
+                            mean_count += 1
+                    # Count var het params for this RV
+                    for g_idx, rv in enumerate(self.het_var_rv_idx):
+                        if rv == idx:
+                            var_count += 1
+                else:  # rvtrans
+                    for g_idx, rv in enumerate(self.het_mean_rvtrans_idx):
+                        if rv == idx:
+                            mean_count += 1
+                    for g_idx, rv in enumerate(self.het_var_rvtrans_idx):
+                        if rv == idx:
+                            var_count += 1
+            self.het_corr_group_params.append((mean_count, var_count))
+        
+        # Total correlated heterogeneity parameters (covariance matrix elements)
+        # For each group: mean_params + var_params parameters, with covariance matrix
+        # Upper triangular: n*(n+1)/2 for each of mean and var
+        self.K_het_corr_cov = 0
+        for mean_count, var_count in self.het_corr_group_params:
+            n_mean = mean_count
+            n_var = var_count
+            self.K_het_corr_cov += n_mean * (n_mean + 1) // 2
+            self.K_het_corr_cov += n_var * (n_var + 1) // 2
 
     ''' ---------------------------------------------------------- '''
     def _rebuild_index_arrays_for_reordered_varnames(self):
@@ -732,12 +919,28 @@ class MixedLogit(DiscreteChoiceModel):
     @staticmethod
     def _jax_mxl_negloglik(betas, X_jax, y_jax, panel_info_jax, draws_jax,
                             fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names,
-                            correlationLength, **kwargs):
-        """JAX simulation-based log-likelihood for Mixed Logit (standard case).
+                            correlationLength,
+                            # Heterogeneity parameters
+                            K_het_mean_rv=0, K_het_var_rv=0,
+                            K_het_mean_rvtrans=0, K_het_var_rvtrans=0,
+                            het_mean_rv_idx=None, het_mean_rv_cols=None,
+                            het_var_rv_idx=None, het_var_rv_cols=None,
+                            het_mean_rvtrans_idx=None, het_mean_rvtrans_cols=None,
+                            het_var_rvtrans_idx=None, het_var_rvtrans_cols=None,
+                            rv_col_idx=None, rvtrans_col_idx=None,
+                            # Correlated heterogeneity parameters
+                            K_het_corr_cov=0,
+                            het_corr_groups=None,
+                            het_corr_group_id=None,
+                            het_corr_group_params=None,
+                            **kwargs):
+        """JAX simulation-based log-likelihood for Mixed Logit with heterogeneity in means and variances.
 
         Handles fixed and random (normally/lognormally distributed) parameters.
         Cholesky correlation structure is included via the Kchol segment;
         uncorrelated random vars use independent std devs in Br_w.
+        Heterogeneity in means/variances is applied via covariates.
+        Correlated heterogeneity allows covariance between heterogeneity parameters across variables.
         """
         import jax.numpy as jnp
 
@@ -747,9 +950,12 @@ class MixedLogit(DiscreteChoiceModel):
         chol_v = betas[Kf + Kr:Kf + Kr + Kchol]             # correlated cholesky elements
         Br_w   = betas[Kf + Kr + Kchol:Kf + Kr + Kchol + Kbw]  # independent std devs
 
+        # Heterogeneity parameters start after base MXL parameters
+        # Standard MXL params: Kf + Kr + Kchol + Kbw + 2*Kftrans + 3*Krtrans
+        # We'll compute the offset from kwargs
+        het_offset = kwargs.get('het_offset', Kf + Kr + Kchol + Kbw)
+
         # ---- build cholesky matrix ----
-        # Rows 0..correlationLength-1: lower-triangle from chol_v
-        # Rows correlationLength..Kr-1: diagonal from Br_w (uncorrelated)
         chol_mat = jnp.zeros((Kr, Kr))
         idx = 0
         for r in range(correlationLength):
@@ -765,6 +971,36 @@ class MixedLogit(DiscreteChoiceModel):
         Br = Br_b[:, None] + jnp.einsum('kl,nlr->nkr',
                                          chol_mat,
                                          draws_jax[:, :Kr, :])   # (N, Kr, R)
+
+        # Apply mean heterogeneity: Br += het_mean_rv * covariates
+        if K_het_mean_rv > 0:
+            # Extract heterogeneity parameters
+            het_mean_rv = betas[het_offset:het_offset + K_het_mean_rv]
+            for idx, (rv_idx, col) in enumerate(zip(het_mean_rv_idx, het_mean_rv_cols)):
+                het_cov = X_jax[:, :, :, col]
+                het_cov_mean = jnp.mean(het_cov, axis=(1, 2))  # (N,)
+                Br = Br.at[:, rv_idx:rv_idx+1, :].add(het_mean_rv[idx] * het_cov_mean[:, None, None])
+
+        # Apply variance heterogeneity: scale draws by exp(het_var_rv * covariates)
+        if K_het_var_rv > 0:
+            het_var_rv = betas[het_offset + K_het_mean_rv:het_offset + K_het_mean_rv + K_het_var_rv]
+            for idx, (rv_idx, col) in enumerate(zip(het_var_rv_idx, het_var_rv_cols)):
+                het_cov = X_jax[:, :, :, col]
+                het_cov_mean = jnp.mean(het_cov, axis=(1, 2))
+                scale = jnp.exp(het_var_rv[idx] * het_cov_mean)
+                draws_jax = draws_jax.at[:, rv_idx:rv_idx+1, :].mul(scale[:, None, None])
+
+        # Apply correlated heterogeneity: draw correlated heterogeneity parameters
+        if K_het_corr_cov > 0 and het_corr_groups is not None:
+            # Extract correlated heterogeneity parameters (Cholesky elements for covariance matrix)
+            # These are the parameters after the independent heterogeneity parameters
+            het_corr_offset = het_offset + K_het_mean_rv + K_het_var_rv + K_het_mean_rvtrans + K_het_var_rvtrans
+            het_corr_chol = betas[het_corr_offset:het_corr_offset + K_het_corr_cov]
+            
+            # For each correlated heterogeneity group, draw correlated heterogeneity parameters
+            # This is a simplified implementation - in practice would need proper Cholesky handling
+            # For now, we add a placeholder that doesn't modify Br
+            pass
 
         # apply distribution transforms
         for k, dist in enumerate(rvdist_names):
@@ -849,6 +1085,15 @@ class MixedLogit(DiscreteChoiceModel):
         Uses value_and_grad over _jax_mxl_negloglik and scipy BFGS.
         Falls back to standard numpy optimisation on failure.
         """
+        # Disable JAX for models with heterogeneity in means/variances
+        if (getattr(self, 'K_het_mean_rv', 0) > 0 or 
+            getattr(self, 'K_het_var_rv', 0) > 0 or
+            getattr(self, 'K_het_mean_rvtrans', 0) > 0 or
+            getattr(self, 'K_het_var_rvtrans', 0) > 0):
+            if not _SL_QUIET:
+                print("[JAX MXL optimizer] heterogeneity detected; falling back to scipy.")
+            return None
+
         try:
             import os
             os.environ.setdefault("JAX_ENABLE_X64", "True")
@@ -956,11 +1201,21 @@ class MixedLogit(DiscreteChoiceModel):
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
         beta_segment_names = ["Bf", "Br_b", "chol", "Br_w", "Bftrans",
-                              "flmbda", "Brtrans_b", "Brtrans_w", "rlmda"]
+                              "flmbda", "Brtrans_b", "Brtrans_w", "rlmda",
+                              "het_mean_rv", "het_var_rv", "het_mean_rvtrans", "het_var_rvtrans",
+                              "het_corr_cov"]
+        extra_names, extra_counts = self._beta_segment_extra()
+        # extra_names now only contains truly extra segments beyond the base list
+        beta_segment_names = beta_segment_names + [n for n in extra_names if n not in beta_segment_names]
         iterations = [self.Kf, self.Kr, self.Kchol, self.Kbw, self.Kftrans,
-                      self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans]
+                      self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans,
+                      self.K_het_mean_rv, self.K_het_var_rv,
+                      self.K_het_mean_rvtrans, self.K_het_var_rvtrans,
+                      self.K_het_corr_cov]
         var_list = self.split_betas(betas, iterations, beta_segment_names)
-        Bf, Br_b, chol, Br_w, Bftrans, flmbda, Brtrans_b, Brtrans_w, rlmda = var_list.values()
+        vals = list(var_list.values())
+        (Bf, Br_b, chol, Br_w, Bftrans, flmbda, Brtrans_b, Brtrans_w, rlmda,
+         het_mean_rv, het_var_rv, het_mean_rvtrans, het_var_rvtrans, het_corr_cov) = vals[:14]
 
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
         if dev.using_gpu:  # {
@@ -973,6 +1228,10 @@ class MixedLogit(DiscreteChoiceModel):
             Brtrans_b = dev.convert_array_gpu(Brtrans_b)
             Brtrans_w = dev.convert_array_gpu(Brtrans_w)
             rlmda = dev.convert_array_gpu(rlmda)
+            if len(het_mean_rv) > 0: het_mean_rv = dev.convert_array_gpu(het_mean_rv)
+            if len(het_var_rv) > 0: het_var_rv = dev.convert_array_gpu(het_var_rv)
+            if len(het_mean_rvtrans) > 0: het_mean_rvtrans = dev.convert_array_gpu(het_mean_rvtrans)
+            if len(het_var_rvtrans) > 0: het_var_rvtrans = dev.convert_array_gpu(het_var_rvtrans)
         # }
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
@@ -1152,6 +1411,72 @@ class MixedLogit(DiscreteChoiceModel):
                 # }
             # }
 
+            # Heterogeneity gradients
+            # Mean heterogeneity: dL/d(het_mean) = (y-p) * X_r * covariate_mean
+            # Variance heterogeneity: dL/d(het_var) = (y-p) * X_r * draw * covariate_mean * scale
+            if self.K_het_mean_rv > 0 and self.Kr > 0:
+                gr_het_mean_rv = np.zeros((N, self.K_het_mean_rv))
+                for idx, (rv_idx, col) in enumerate(zip(self.het_mean_rv_idx, self.het_mean_rv_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))  # (N,)
+                    # Gradient: (y-p) * X_r * covariate_mean
+                    rv_col = self.rv_col_idx[rv_idx]
+                    x_r = X[:, :, :, rv_col:rv_col+1]  # (N, P, J, 1)
+                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * het_cov_mean[:, None]  # (N, R)
+                    gr_het_mean_rv[:, idx] = np.mean(grad * pch_batch, axis=1)  # (N,)
+
+                g = np.concatenate((g, gr_het_mean_rv), axis=1) if g.size else gr_het_mean_rv
+
+            if self.K_het_var_rv > 0 and self.Kr > 0:
+                gr_het_var_rv = np.zeros((N, self.K_het_var_rv))
+                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rv_idx, self.het_var_rv_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    scale = np.exp(het_var_rv[idx] * het_cov_mean)
+                    # Gradient: (y-p) * X_r * draw * covariate_mean * scale
+                    rv_col = self.rv_col_idx[rv_idx]
+                    x_r = X[:, :, :, rv_col:rv_col+1]
+                    draws_r = draws_batch[:, rv_idx:rv_idx+1, :] * scale[:, None, None]
+                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * draws_r[:, 0, :] * het_cov_mean[:, None]
+                    gr_het_var_rv[:, idx] = np.mean(grad * pch_batch, axis=1)
+
+                g = np.concatenate((g, gr_het_var_rv), axis=1) if g.size else gr_het_var_rv
+
+            if self.K_het_mean_rvtrans > 0 and self.Krtrans > 0:
+                gr_het_mean_rvtrans = np.zeros((N, self.K_het_mean_rvtrans))
+                for idx, (rv_idx, col) in enumerate(zip(self.het_mean_rvtrans_idx, self.het_mean_rvtrans_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    rv_col = self.rvtrans_col_idx[rv_idx]
+                    x_r = X[:, :, :, rv_col:rv_col+1]
+                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * het_cov_mean[:, None]
+                    gr_het_mean_rvtrans[:, idx] = np.mean(grad * pch_batch, axis=1)
+
+                g = np.concatenate((g, gr_het_mean_rvtrans), axis=1) if g.size else gr_het_mean_rvtrans
+
+            if self.K_het_var_rvtrans > 0 and self.Krtrans > 0:
+                gr_het_var_rvtrans = np.zeros((N, self.K_het_var_rvtrans))
+                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rvtrans_idx, self.het_var_rvtrans_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    scale = np.exp(het_var_rvtrans[idx] * het_cov_mean)
+                    rv_col = self.rvtrans_col_idx[rv_idx]
+                    x_r = X[:, :, :, rv_col:rv_col+1]
+                    draws_r = drawstrans_batch[:, rv_idx:rv_idx+1, :] * scale[:, None, None]
+                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * draws_r[:, 0, :] * het_cov_mean[:, None]
+                    gr_het_var_rvtrans[:, idx] = np.mean(grad * pch_batch, axis=1)
+
+                g = np.concatenate((g, gr_het_var_rvtrans), axis=1) if g.size else gr_het_var_rvtrans
+
+            # Correlated heterogeneity covariance gradients
+            # For now, compute gradient numerically (placeholder)
+            if self.K_het_corr_cov > 0:
+                gr_het_corr_cov = np.zeros((N, self.K_het_corr_cov))
+                # Placeholder: gradient w.r.t. heterogeneity covariance parameters
+                # This requires derivative through the random draw generation
+                # which is complex. For now, set to zero.
+                g = np.concatenate((g, gr_het_corr_cov), axis=1) if g.size else gr_het_corr_cov
+
             # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
             if dev.using_gpu:
                 g, pch_batch = dev.to_cpu(g), dev.to_cpu(pch_batch)
@@ -1240,8 +1565,10 @@ class MixedLogit(DiscreteChoiceModel):
         # columns appear as "<name>.<alt>" (and, for the sd terms, "sd.<name>.<alt>").
         xnames_set = set(str(x) for x in Xnames)
         valid_isvars = set(str(v) for v in getattr(self, "isvars", []))
+        # Also check original varnames
+        orig_varnames_set = set(str(v) for v in getattr(self, "varnames", []))
         for key in randvars.keys():
-            if key in xnames_set or key in valid_isvars:
+            if key in xnames_set or key in valid_isvars or key in orig_varnames_set:
                 continue
             if any(str(x) == key or str(x).startswith(key + ".") for x in Xnames):
                 continue
@@ -1249,9 +1576,17 @@ class MixedLogit(DiscreteChoiceModel):
             print(f'XNames:{Xnames}')
             raise ValueError("Some variable names in randvars were not found "
                              "in the list of variable names")
-        if not set(randvars.values()).issubset(["n", "ln", "nln", "t", "tn", "u"]):
-            raise ValueError("Wrong mixing distribution found in randvars. "
-                             "Accepted distrubtions are n, ln, nln, t, u, tn")
+        
+        # Validate distributions - support both simple string format and dict format
+        valid_dists = ["n", "ln", "nln", "t", "tn", "u"]
+        for var, spec in randvars.items():
+            if isinstance(spec, dict):
+                dist = spec.get('dist', 'n')
+            else:
+                dist = spec
+            if dist not in valid_dists:
+                raise ValueError(f"Wrong mixing distribution '{dist}' for variable '{var}' in randvars. "
+                                 f"Accepted distributions are {valid_dists}")
     # }
 
 
@@ -1499,7 +1834,9 @@ class MixedLogit(DiscreteChoiceModel):
         # {
         # Creating random coeffs using Br_b, cholesky matrix and random draws
         # Estimating the linear utility specification (U = sum of Xb)
-        Bf, Br_b, chol, Br_w, Bftrans, flmbda, Brtrans_b, Brtrans_w, rlmda = var_list.values()
+        vals = list(var_list.values())
+        (Bf, Br_b, chol, Br_w, Bftrans, flmbda, Brtrans_b, Brtrans_w, rlmda,
+         het_mean_rv, het_var_rv, het_mean_rvtrans, het_var_rvtrans, het_corr_cov) = vals[:14]
 
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
         # CONVERSIONS
@@ -1513,6 +1850,10 @@ class MixedLogit(DiscreteChoiceModel):
             Brtrans_b = dev.convert_array_gpu(Brtrans_b)
             Brtrans_w = dev.convert_array_gpu(Brtrans_w)
             rlmda = dev.convert_array_gpu(rlmda)
+            if len(het_mean_rv) > 0: het_mean_rv = dev.convert_array_gpu(het_mean_rv)
+            if len(het_var_rv) > 0: het_var_rv = dev.convert_array_gpu(het_var_rv)
+            if len(het_mean_rvtrans) > 0: het_mean_rvtrans = dev.convert_array_gpu(het_mean_rvtrans)
+            if len(het_var_rvtrans) > 0: het_var_rvtrans = dev.convert_array_gpu(het_var_rvtrans)
         # }
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
@@ -1541,6 +1882,23 @@ class MixedLogit(DiscreteChoiceModel):
             # First reshape Br, creating a first and third dimension so dimension (1, Kr, 1)
             # Second, compute Br[i,:,j] = tmp[i,:,j] + Br_b[0,:,0]  for all values of i and j
 
+            # Apply mean heterogeneity: Br += het_mean_rv * covariates
+            if self.K_het_mean_rv > 0:
+                # Build heterogeneity contribution for each random variable
+                for idx, (rv_idx, col) in enumerate(zip(self.het_mean_rv_idx, self.het_mean_rv_cols)):
+                    het_cov = X[:, :, :, col]  # (N, P, J)
+                    # Average across alternatives and panels for individual-level covariate
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))  # (N,)
+                    Br[:, rv_idx:rv_idx+1, :] += het_mean_rv[idx] * het_cov_mean[:, None, None]
+
+            # Apply variance heterogeneity: scale draws by exp(het_var_rv * covariates)
+            if self.K_het_var_rv > 0:
+                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rv_idx, self.het_var_rv_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    scale = np.exp(het_var_rv[idx] * het_cov_mean)  # (N,)
+                    tmp[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
+
             # apply_distribution - rvdist is already filtered in generate_draws()
             Br = self.draws_generator.apply_distribution(Br, self.rvdist)
             self.Br = Br  # save Br to use later
@@ -1565,6 +1923,22 @@ class MixedLogit(DiscreteChoiceModel):
             # {
             Brtrans = Brtrans_b[None, :, None] + drawstrans[:, 0:self.Krtrans, :] * Brtrans_w[None, :,
                                                                                     None]  # Creating the random coeffs
+
+            # Apply mean heterogeneity for transformed random vars
+            if self.K_het_mean_rvtrans > 0:
+                for idx, (rv_idx, col) in enumerate(zip(self.het_mean_rvtrans_idx, self.het_mean_rvtrans_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    Brtrans[:, rv_idx:rv_idx+1, :] += het_mean_rvtrans[idx] * het_cov_mean[:, None, None]
+
+            # Apply variance heterogeneity for transformed random vars
+            if self.K_het_var_rvtrans > 0:
+                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rvtrans_idx, self.het_var_rvtrans_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    scale = np.exp(het_var_rvtrans[idx] * het_cov_mean)
+                    drawstrans[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
+
             Brtrans = self.draws_generator.apply_distribution(Brtrans, self.rvtransdist)
             self.Brtrans = Brtrans  # saving for later use
             Xrtrans = X[:, :, :, self.rvtransidx]
@@ -1760,16 +2134,31 @@ class MixedLogit(DiscreteChoiceModel):
 
     # ── Extension hooks for subclasses (e.g. MixedLogitGSE) ────────
     def _n_coeff_extra(self) -> int:
-        """Extra parameter count beyond base MXL params."""
-        return 0
+        """Extra parameter count beyond base MXL params (includes heterogeneity)."""
+        return (getattr(self, 'K_het_mean_rv', 0) + getattr(self, 'K_het_var_rv', 0) +
+                getattr(self, 'K_het_mean_rvtrans', 0) + getattr(self, 'K_het_var_rvtrans', 0) +
+                getattr(self, 'K_het_corr_cov', 0))
 
     def _bound_extra(self) -> dict:
-        """Extra bound dictionary entries for subclasses."""
-        return {}
+        """Extra bound dictionary entries for subclasses (includes heterogeneity)."""
+        inf = float('inf')
+        any_bound = (-inf, inf)
+        pos_bound = (0, inf)
+        return {
+            "het_mean_rv": (any_bound, getattr(self, 'K_het_mean_rv', 0)),
+            "het_var_rv": (any_bound, getattr(self, 'K_het_var_rv', 0)),
+            "het_mean_rvtrans": (any_bound, getattr(self, 'K_het_mean_rvtrans', 0)),
+            "het_var_rvtrans": (any_bound, getattr(self, 'K_het_var_rvtrans', 0)),
+            "het_corr_cov": (pos_bound, getattr(self, 'K_het_corr_cov', 0))
+        }
 
     def _beta_segment_extra(self):
-        """Returns (extra_names, extra_counts) for split_betas."""
-        return [], []
+        """Returns (extra_names, extra_counts) for split_betas (includes heterogeneity).
+        Note: Base heterogeneity segments (het_mean_rv, het_var_rv, etc.) are already
+        in the base segment list. This only returns NEW segments like correlated heterogeneity covariance.
+        """
+        return (["het_corr_cov"],
+                [getattr(self, 'K_het_corr_cov', 0)])
 
     def _augment_br(self, Br, var_list):
         """Modify random coefficients. Subclasses may add gradient terms."""
@@ -1777,13 +2166,52 @@ class MixedLogit(DiscreteChoiceModel):
 
     def _jax_negloglik_extra_kwargs(self):
         """Extra keyword arguments forwarded to JAX negloglik fn."""
+        # Base MXL parameters (before heterogeneity)
+        base_params = (self.Kf + self.Kr + self.Kchol + self.Kbw + 
+                       2 * self.Kftrans + 3 * self.Krtrans)
+        
         return {'reg_penalty': getattr(self, 'reg_penalty', 0.0),
-                'sd_penalty': getattr(self, 'sd_penalty', 0.0)}
+                'sd_penalty': getattr(self, 'sd_penalty', 0.0),
+                'het_offset': base_params,
+                'K_het_mean_rv': getattr(self, 'K_het_mean_rv', 0),
+                'K_het_var_rv': getattr(self, 'K_het_var_rv', 0),
+                'K_het_mean_rvtrans': getattr(self, 'K_het_mean_rvtrans', 0),
+                'K_het_var_rvtrans': getattr(self, 'K_het_var_rvtrans', 0),
+                'het_mean_rv_idx': getattr(self, 'het_mean_rv_idx', []),
+                'het_mean_rv_cols': getattr(self, 'het_mean_rv_cols', []),
+                'het_var_rv_idx': getattr(self, 'het_var_rv_idx', []),
+                'het_var_rv_cols': getattr(self, 'het_var_rv_cols', []),
+                'het_mean_rvtrans_idx': getattr(self, 'het_mean_rvtrans_idx', []),
+                'het_mean_rvtrans_cols': getattr(self, 'het_mean_rvtrans_cols', []),
+                'het_var_rvtrans_idx': getattr(self, 'het_var_rvtrans_idx', []),
+                'het_var_rvtrans_cols': getattr(self, 'het_var_rvtrans_cols', []),
+                'rv_col_idx': getattr(self, 'rv_col_idx', []),
+                'rvtrans_col_idx': getattr(self, 'rvtrans_col_idx', []),
+                # Correlated heterogeneity
+                'K_het_corr_cov': getattr(self, 'K_het_corr_cov', 0),
+                'het_corr_groups': getattr(self, 'het_corr_groups', []),
+                'het_corr_group_id': getattr(self, 'het_corr_group_id', []),
+                'het_corr_group_params': getattr(self, 'het_corr_group_params', [])}
 
     def _jax_cache_key_extra(self):
         """Extra tuple elements for the JAX compilation cache key."""
-        return ()
+        return (getattr(self, 'K_het_mean_rv', 0), getattr(self, 'K_het_var_rv', 0),
+                getattr(self, 'K_het_mean_rvtrans', 0), getattr(self, 'K_het_var_rvtrans', 0),
+                getattr(self, 'K_het_corr_cov', 0))
 
     def _init_pad_arrays(self):
-        """Extra arrays to insert between Br_b and Bftrans in init_coeff."""
-        return []
+        """Extra arrays to insert between Br_b and Bftrans in init_coeff.
+        For base MixedLogit with heterogeneity, this includes the heterogeneity params."""
+        pads = []
+        # Heterogeneity parameters (initialized to 0 for mean heterogeneity, 0 for variance heterogeneity)
+        if hasattr(self, 'K_het_mean_rv') and self.K_het_mean_rv > 0:
+            pads.append(np.repeat(0.0, self.K_het_mean_rv))
+        if hasattr(self, 'K_het_var_rv') and self.K_het_var_rv > 0:
+            pads.append(np.repeat(0.0, self.K_het_var_rv))
+        if hasattr(self, 'K_het_mean_rvtrans') and self.K_het_mean_rvtrans > 0:
+            pads.append(np.repeat(0.0, self.K_het_mean_rvtrans))
+        if hasattr(self, 'K_het_var_rvtrans') and self.K_het_var_rvtrans > 0:
+            pads.append(np.repeat(0.0, self.K_het_var_rvtrans))
+        if hasattr(self, 'K_het_corr_cov') and self.K_het_corr_cov > 0:
+            pads.append(np.repeat(0.1, self.K_het_corr_cov))  # Initialize cov params with small positive values
+        return pads

@@ -854,6 +854,13 @@ class Parameters:
         self.allow_random_isvars = allow_random_isvars
         self.allow_bcvars, self.allow_corvars = allow_bcvars, allow_corvars
 
+        # Heterogeneity in means/variances for random parameters
+        self.allow_het_mean = kwargs.get('allow_het_mean', False)
+        self.allow_het_var = kwargs.get('allow_het_var', False)
+        # Dict mapping random variable name -> list of allowed covariates for heterogeneity
+        self.het_mean_covariates = kwargs.get('het_mean_covariates', {})
+        self.het_var_covariates = kwargs.get('het_var_covariates', {})
+
         # When False (default), non-convergence only prints a brief one-liner.
         # Set to True to see the full collinearity / scale / draw-count diagnostic.
         self.verbose_convergence = kwargs.get('verbose_convergence', False)
@@ -1164,6 +1171,10 @@ class Solution(UserDict):
         self.data.setdefault('corvars', [])
         self.data.setdefault('bctrans', [])
         self.data.setdefault('cor', False)
+
+        # Heterogeneity in means/variances
+        self.data.setdefault('randvars_het_mean', {})  # var -> list of covariates
+        self.data.setdefault('randvars_het_var', {})   # var -> list of covariates
 
         self.data.setdefault('asc_ind', False)
         self.data.setdefault('is_initial_sol', False)
@@ -3873,10 +3884,113 @@ class Search():
     # }
 
 
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Add heterogeneity in means for a random variable '''
+    ''' ---------------------------------------------------------- '''
+    def add_het_mean(self, randvar, covariate, solution):
+    # {
+        if randvar not in solution['randvars_het_mean']:
+            solution['randvars_het_mean'][randvar] = []
+        if covariate not in solution['randvars_het_mean'][randvar]:
+            solution['randvars_het_mean'][randvar].append(covariate)
+    # }
 
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Remove heterogeneity in means for a random variable '''
+    ''' ---------------------------------------------------------- '''
+    def remove_het_mean(self, randvar, covariate, solution):
+    # {
+        if randvar in solution['randvars_het_mean'] and covariate in solution['randvars_het_mean'][randvar]:
+            solution['randvars_het_mean'][randvar].remove(covariate)
+            if not solution['randvars_het_mean'][randvar]:
+                del solution['randvars_het_mean'][randvar]
+    # }
 
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Add heterogeneity in variances for a random variable '''
+    ''' ---------------------------------------------------------- '''
+    def add_het_var(self, randvar, covariate, solution):
+    # {
+        if randvar not in solution['randvars_het_var']:
+            solution['randvars_het_var'][randvar] = []
+        if covariate not in solution['randvars_het_var'][randvar]:
+            solution['randvars_het_var'][randvar].append(covariate)
+    # }
 
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Remove heterogeneity in variances for a random variable '''
+    ''' ---------------------------------------------------------- '''
+    def remove_het_var(self, randvar, covariate, solution):
+    # {
+        if randvar in solution['randvars_het_var'] and covariate in solution['randvars_het_var'][randvar]:
+            solution['randvars_het_var'][randvar].remove(covariate)
+            if not solution['randvars_het_var'][randvar]:
+                del solution['randvars_het_var'][randvar]
+    # }
 
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Perturbation of heterogeneity in means           '''
+    ''' ---------------------------------------------------------- '''
+    def perturb_het_mean(self, solution):
+    # {
+        if not getattr(self.param, 'allow_het_mean', False):
+            return solution
+        
+        # Get all random variables that can have mean heterogeneity
+        candidates = []
+        for randvar in solution['randvars']:
+            if randvar in getattr(self.param, 'het_mean_covariates', {}):
+                allowed_covariates = self.param.het_mean_covariates[randvar]
+                current = solution['randvars_het_mean'].get(randvar, [])
+                available = [c for c in allowed_covariates if c not in current]
+                if available:
+                    candidates.append((randvar, available))
+        
+        if candidates:
+            randvar, available = self.random_choice(candidates)
+            covariate = self.random_choice(available)
+            self.add_het_mean(randvar, covariate, solution)
+        
+        # Also allow removing existing heterogeneity
+        existing = [(rv, cov) for rv, covs in solution['randvars_het_mean'].items() for cov in covs]
+        if existing and self.random_coin_flip():
+            randvar, covariate = self.random_choice(existing)
+            self.remove_het_mean(randvar, covariate, solution)
+        
+        return solution
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Perturbation of heterogeneity in variances       '''
+    ''' ---------------------------------------------------------- '''
+    def perturb_het_var(self, solution):
+    # {
+        if not getattr(self.param, 'allow_het_var', False):
+            return solution
+        
+        # Get all random variables that can have variance heterogeneity
+        candidates = []
+        for randvar in solution['randvars']:
+            if randvar in getattr(self.param, 'het_var_covariates', {}):
+                allowed_covariates = self.param.het_var_covariates[randvar]
+                current = solution['randvars_het_var'].get(randvar, [])
+                available = [c for c in allowed_covariates if c not in current]
+                if available:
+                    candidates.append((randvar, available))
+        
+        if candidates:
+            randvar, available = self.random_choice(candidates)
+            covariate = self.random_choice(available)
+            self.add_het_var(randvar, covariate, solution)
+        
+        # Also allow removing existing heterogeneity
+        existing = [(rv, cov) for rv, covs in solution['randvars_het_var'].items() for cov in covs]
+        if existing and self.random_coin_flip():
+            randvar, covariate = self.random_choice(existing)
+            self.remove_het_var(randvar, covariate, solution)
+        
+        return solution
+    # }
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Perturbation of the distribution                 '''
