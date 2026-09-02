@@ -748,10 +748,13 @@ def call_search(parameters, init_sol=None, algorithm='sa', ctrl=None, thorough=F
         return call_harmony_pbil(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
     elif algorithm in ('ta', 'threshold', 'threshold_accepting'):
         return call_threshold(parameters, init_sol=init_sol, ctrl=ctrl, **kwargs)
+    elif algorithm in ('agds', 'ga', 'sparseea', 'adaptive_ga'):
+        return call_agds(parameters, init_sol=init_sol, ctrl=ctrl,
+                         thorough=thorough, deep=deep, **kwargs)
     else:
         raise ValueError(
             f"Unknown algorithm '{algorithm}'. "
-            f"Choose 'sa', 'sapbil', 'banditsa', 'hs', 'hspbil', or 'ta'."
+            f"Choose 'sa', 'sapbil', 'banditsa', 'hs', 'hspbil', 'ta', or 'agds'."
         )
 
 
