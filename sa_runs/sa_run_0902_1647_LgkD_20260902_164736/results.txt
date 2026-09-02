@@ -1,0 +1,8 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : run_0902_1647_LgkD
+Started      : 20260902_164736
+Output dir   : sa_runs\sa_run_0902_1647_LgkD_20260902_164736
+Criterions   : [('nsig', -1), ('bic', -1)]
+Models       : ['multinomial']
+tI=100, tF=0.01, steps=2, iter/step=2
+────────────────────────────────────────────────────────────
