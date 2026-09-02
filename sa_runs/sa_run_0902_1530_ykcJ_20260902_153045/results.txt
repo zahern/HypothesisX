@@ -1,0 +1,40 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : run_0902_1530_ykcJ
+Started      : 20260902_153045
+Output dir   : sa_runs\sa_run_0902_1530_ykcJ_20260902_153045
+Criterions   : [('bic', -1), ('nsig', -1)]
+Models       : ['mixed_logit']
+tI=200, tF=0.01, steps=3, iter/step=2
+────────────────────────────────────────────────────────────
+════════════════════════════════════════════════════════════
+  Initial Solution
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = inf
+  [1] (Minimise) nsig = inf
+
+Model Statistics:
+  (statistics unavailable: 'NoneType' object has no attribute 'summarise')
+
+Specification:
+asvars   =  ['asc_cyc', 'asc_drv']
+isvars   =  []
+randvars =  {'asc_cyc': 'n'}
+bcvars   =  []
+corvars  =  []
+bctrans  =  False
+asc_ind  =  False
+model    =  mixed_logit
+
+SA[run_0902_1530_ykcJ] step       1/3 | T=     200 | curr=inf, inf | archive=1 | acc=0 | t=5.9s
+SA[run_0902_1530_ykcJ] step       2/3 | T=   1.414 | curr=inf, inf | archive=1 | acc=0 | t=5.9s
+SA[run_0902_1530_ykcJ] step       3/3 | T=    0.01 | curr=inf, inf | archive=1 | acc=0 | t=6.0s
+════════════════════════════════════════════════════════════
+  EXPLORATION SUMMARY
+════════════════════════════════════════════════════════════
+  Unique specifications explored : 22
+  Cache hits                     : 0
+  Cache hit rate                 : 0.0%
+════════════════════════════════════════════════════════════
+#Converged=0; #Not Converged=6
+#Accepted=0; #Not Accepted=0

@@ -1,0 +1,5 @@
+step,temperature,current_obj,best_obj,n_accepted,elapsed_s
+0,200,inf,inf,0,5.9
+1,200,inf,inf,0,5.9
+2,1.41421,inf,inf,0,5.9
+3,0.01,inf,inf,0,6.0

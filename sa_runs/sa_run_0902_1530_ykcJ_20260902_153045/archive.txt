@@ -1,0 +1,20 @@
+════════════════════════════════════════════════════════════
+  Non-Dominated #0
+════════════════════════════════════════════════════════════
+Objectives:
+  [0] (Minimise) bic = inf
+  [1] (Minimise) nsig = inf
+
+Model Statistics:
+  (statistics unavailable: 'NoneType' object has no attribute 'summarise')
+
+Specification:
+asvars   =  ['asc_cyc', 'asc_drv']
+isvars   =  []
+randvars =  {'asc_cyc': 'n'}
+bcvars   =  []
+corvars  =  []
+bctrans  =  False
+asc_ind  =  False
+model    =  mixed_logit
+
