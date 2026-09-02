@@ -998,6 +998,8 @@ class Parameters:
             '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
             'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class',
             'num_classes',
+            # Read explicitly above but were still warned about here:
+            'auto_as_is', 'report_auto_as_is', 'l1_penalty', 'l2_penalty',
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
@@ -3718,6 +3720,15 @@ class Search():
                                if "{}.{}".format(v, a) not in solution['randvars']]
         #NOT THIS (I THINK)
         #candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]
+        # Respect the random-eligibility pool: only variables in avail_rvars may
+        # be MADE random by a perturbation. Previously this drew straight from
+        # asvarnames, so a caller that narrowed avail_rvars (e.g. "only the ASCs
+        # may be random") still had interactions turned random by mutation, which
+        # then collapsed to sd=0. Prespecified randvars are forced separately.
+        _avail = getattr(self.param, 'avail_rvars', None)
+        if _avail is not None:
+            _avail_set = set(_avail)
+            candidates = [c for c in candidates if c in _avail_set]
         if len(candidates) > 0:
             new_randvar = self.random_choice(candidates)
             self.add_randvar(new_randvar, solution)
@@ -3764,6 +3775,11 @@ class Search():
                     if v in self.param.isvarnames:
                         candidates += ["{}.{}".format(v, a) for a in _nb
                                        if "{}.{}".format(v, a) not in solution['randvars']]
+            # Respect the random-eligibility pool (see perturb_add_randfeature).
+            _avail = getattr(self.param, 'avail_rvars', None)
+            if _avail is not None:
+                _avail_set = set(_avail)
+                candidates = [c for c in candidates if c in _avail_set]
         else:
             candidates = [var for var in solution['randvars'] if var not in self.param.ps_randvars]
 
