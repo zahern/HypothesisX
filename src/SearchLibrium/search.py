@@ -125,6 +125,8 @@ class ModelRegistry:
             'mixed_random_regret',
             'ordered_logit',
             'ordered_probit',
+            'exploded_logit',
+            'mixed_exploded_logit',
             'nested_logit',
             'mixed_nested',
         ]
@@ -5052,10 +5054,12 @@ class Search():
                 isvars = [i for i in isvars if i not in randvars.keys()]
 
         return isvars, varnames, fit_intercept
-def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars, corvars,
+    # }
+
+    def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars, corvars,
             fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params,
             halton_opts=None):
-    # {
+        # {
         model = MixedLogit(_jax=getattr(self.param, '_jax', True))
         #subvarnames = varnames delete itemes in randvaras
 
@@ -5565,8 +5569,8 @@ def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars
         converged = model.converged
         aic, bic, loglik = model.aic, model.bic, model.loglik
 
-        # Handle MAE if it's an objective
-if self.mae_is_an_objective():
+# Handle MAE if it's an objective
+        if self.mae_is_an_objective():
             X_test, _ = self._get_orthogonalized_X(all_vars)
             y_test = self.param.test_choices
             test_model = MultiLayerNestedLogit()
@@ -5582,8 +5586,7 @@ if self.mae_is_an_objective():
         mae = model.mae
         tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, {}, [], [], converged, sol)
         return tuple_
-
-
+    # }
 
 
     def _build_rrm_df(self, df, as_vars, is_vars):
@@ -5805,6 +5808,201 @@ if self.mae_is_an_objective():
         moll.fit(method='BFGS')
         moll.report()
         return moll
+    # }
+
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Fit Exploded Logit (Rank-Ordered Logit) model    '''
+    ''' ---------------------------------------------------------- '''
+    def fit_exploded_logit(self, X, y, ids, ranks, alt_var, origin_var=None, avail=None,
+                           varnames=None, fit_intercept=False, transvars=None):
+        """
+        Fit an Exploded Logit (Rank-Ordered Logit) model.
+        
+        Args:
+            X: Alternative-specific attributes (n_obs x n_vars)
+            y: Choice indicator (1=chosen at that rank, 0=not)
+            ids: Panel/observation IDs
+            ranks: Rank position (1=first, 2=second, etc.)
+            alt_var: Alternative identifiers
+            origin_var: Origin identifiers for availability conditioning (optional)
+            avail: Binary availability (optional)
+            varnames: Variable names
+            fit_intercept: Whether to include intercept
+            transvars: Box-Cox transformed variables
+            
+        Returns:
+            Fitted ExplodedLogit model
+        """
+        model = ExplodedLogit(
+            X=X, y=y, ids=ids, ranks=ranks, alt_var=alt_var,
+            origin_var=origin_var, avail=avail,
+            varnames=varnames, fit_intercept=fit_intercept,
+            maxiter=self.param.maxiter, ftol=self.param.ftol, gtol=self.param.gtol
+        )
+        
+        # Apply shrinkage parameters
+        model.reg_penalty = getattr(self.param, 'l2_penalty', 0.5)
+        model.l1_penalty = getattr(self.param, 'l1_penalty', 0.1)
+        
+        model.fit(method='BFGS')
+        model.report()
+        return model
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Evaluate Exploded Logit model                    '''
+    ''' ---------------------------------------------------------- '''
+    def evaluate_exploded_logit(self, sol):
+        """Evaluates an Exploded Logit (Rank-Ordered Logit) model."""
+        sol = self.apply_constraints(sol)
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        bc_vars = self.define_bc_vars(sol)
+
+        all_vars = as_vars + is_vars
+        if len(all_vars) == 0:
+            raise ValueError('need at least one variable for ExplodedLogit evaluation')
+        all_vars = [var for var in self.param.varnames if var in all_vars]
+
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        
+        # Exploded logit needs ranking data
+        y = self.param.choices  # Should be rank indicator (1=chosen at rank, 0=not)
+        ranks = getattr(self.param, 'ranks', None)
+        if ranks is None:
+            # Assume standard choice (not ranked) - use last choice as rank 1
+            ranks = self.np.ones_like(y)
+        alt_var = self.param.alt_var
+        origin_var = getattr(self.param, 'origin_var', None)
+        avail = self.param.avail
+
+        model = self.fit_exploded_logit(
+            X=X, y=y, ids=self.param.choice_id, ranks=ranks, alt_var=alt_var,
+            origin_var=origin_var, avail=avail, varnames=all_vars, fit_intercept=asc_ind
+        )
+        
+        sol['model'] = model
+        sol['coeff'] = model.get_coeff()
+        converged = model.converged
+        aic, bic, loglik = model.aic, model.bic, model.loglik
+        alts = self.param.alt_var
+        rand_vars, cor_vars = {}, []
+
+        # Handle MAE if it's an objective
+        if self.mae_is_an_objective():
+            X_test, _ = self._get_orthogonalized_X(all_vars)
+            y_test = self.param.test_choices if getattr(self.param, 'test_choices', None) is not None else self.param.choices
+            ranks_test = getattr(self.param, 'test_ranks', None)
+            alt_test = self.param.test_alt_var
+            origin_test = getattr(self.param, 'test_origin_var', None)
+            avail_test = self.param.test_avail
+            ids_test = self.param.test_choice_id if getattr(self.param, 'test_choice_id', None) is not None else self.param.choice_id
+            
+            test_model = self.fit_exploded_logit(
+                X=X_test, y=y_test, ids=ids_test, ranks=ranks_test, alt_var=alt_test,
+                origin_var=origin_test, avail=avail_test, varnames=all_vars,
+                fit_intercept=asc_ind
+            )
+            model.mae = self.compute_mae(test_model)
+
+        mae = model.mae
+
+        if getattr(self.param, 'verbose', False):
+            model.report()
+
+        tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
+        return tuple_
+
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Fit Mixed Exploded Logit (Rank-Ordered Logit)    '''
+    ''' ---------------------------------------------------------- '''
+    def fit_mixed_exploded_logit(self, X, y, ids, ranks, alt_var, randvars,
+                                 origin_var=None, avail=None, varnames=None,
+                                 distributions=None, n_draws=1000, halton_opts=None,
+                                 fit_intercept=False, transvars=None):
+        """
+        Fit a Mixed Exploded Logit (Rank-Ordered Logit) model with random coefficients.
+        """
+        model = MixedExplodedLogit(
+            X=X, y=y, ids=ids, ranks=ranks, alt_var=alt_var, randvars=randvars,
+            origin_var=origin_var, avail=avail, varnames=varnames,
+            distributions=distributions, n_draws=n_draws, halton_opts=halton_opts,
+            fit_intercept=fit_intercept, maxiter=self.param.maxiter,
+            ftol=self.param.ftol, gtol=self.param.gtol,
+            reg_penalty=getattr(self.param, 'l2_penalty', 0.5),
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
+            sd_penalty=getattr(self.param, 'sd_penalty', 0.001)
+        )
+        
+        model.fit(method='BFGS')
+        model.report()
+        return model
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Evaluate Mixed Exploded Logit model              '''
+    ''' ---------------------------------------------------------- '''
+    def evaluate_mixed_exploded_logit(self, sol):
+        """Evaluates a Mixed Exploded Logit (Rank-Ordered Logit) model with random parameters."""
+        sol = self.apply_constraints(sol)
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        bc_vars = self.define_bc_vars(sol)
+        randvars = sol.get('randvars', {})
+
+        all_vars = as_vars + is_vars
+        if len(all_vars) == 0:
+            raise ValueError('need at least one variable for MixedExplodedLogit evaluation')
+        all_vars = [var for var in self.param.varnames if var in all_vars]
+
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        
+        y = self.param.choices
+        ranks = getattr(self.param, 'ranks', None)
+        if ranks is None:
+            ranks = self.np.ones_like(y)
+        alt_var = self.param.alt_var
+        origin_var = getattr(self.param, 'origin_var', None)
+        avail = self.param.avail
+
+        if not randvars:
+            # No random variables specified, fall back to fixed exploded logit
+            return self.evaluate_exploded_logit(sol)
+
+        model = self.fit_mixed_exploded_logit(
+            X=X, y=y, ids=self.param.choice_id, ranks=ranks, alt_var=alt_var,
+            randvars=randvars, origin_var=origin_var, avail=avail, varnames=all_vars,
+            fit_intercept=asc_ind
+        )
+        
+        sol['model'] = model
+        sol['coeff'] = model.get_coeff()
+        converged = model.converged
+        aic, bic, loglik = model.aic, model.bic, model.loglik
+        alts = self.param.alt_var
+
+        # Handle MAE if it's an objective
+        if self.mae_is_an_objective():
+            X_test, _ = self._get_orthogonalized_X(all_vars)
+            y_test = self.param.test_choices if getattr(self.param, 'test_choices', None) is not None else self.param.choices
+            ranks_test = getattr(self.param, 'test_ranks', None)
+            alt_test = self.param.test_alt_var
+            origin_test = getattr(self.param, 'test_origin_var', None)
+            avail_test = self.param.test_avail
+            ids_test = self.param.test_choice_id if getattr(self.param, 'test_choice_id', None) is not None else self.param.choice_id
+            
+            test_model = self.fit_mixed_exploded_logit(
+                X=X_test, y=y_test, ids=ids_test, ranks=ranks_test, alt_var=alt_test,
+                randvars=randvars, origin_var=origin_test, avail=avail_test, varnames=all_vars,
+                fit_intercept=asc_ind
+            )
+            model.mae = self.compute_mae(test_model)
+
+        mae = model.mae
+
+        if getattr(self.param, 'verbose', False):
+            model.report()
+
+        tuple_ = (aic, bic, loglik, mae, as_vars, is_vars, randvars, bc_vars, cor_vars, converged, sol)
+        return tuple_
 
 
     ''' ---------------------------------------------------------- '''
@@ -5853,6 +6051,10 @@ if self.mae_is_an_objective():
             return self.evaluate_mixed_nested(sol)
         elif model_n == 'ordered_logit':
             return self.evaluate_ordered_logit(sol)
+        elif model_n == 'exploded_logit':
+            return self.evaluate_exploded_logit(sol)
+        elif model_n == 'mixed_exploded_logit':
+            return self.evaluate_mixed_exploded_logit(sol)
         elif bool(sol.get('randvars')):
             return self.evaluate_mxl(sol)
         else:

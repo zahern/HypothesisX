@@ -1559,10 +1559,760 @@ class SA_ORDLOG_FIT():
                     self.current = param
                     self.current_score = score
                     self.update_best()
-                # }
-            # }
+# }
+# }
+
+
+''' ---------------------------------------------------------- '''
+''' CLASS FOR EXPLODED LOGIT (RANK-ORDERED LOGIT)              '''
+''' ---------------------------------------------------------- '''
+
+class ExplodedLogit:
+    """
+    Exploded Logit (Rank-Ordered Logit) Model.
+    
+    Models ranked choice data by "exploding" each ranking into a sequence
+    of conditional multinomial logit choices. Supports origin-conditioned
+    availability (available alternatives vary by origin/decision-maker).
+    
+    Theory
+    ------
+    For a ranking A > B > C from choice set {A, B, C}, the exploded logit
+    represents this as:
+    
+        P(A > B > C) = P(A | {A,B,C}) * P(B | {B,C}) * P(C | {C})
+    
+    Each conditional choice is a standard MNL with the available set
+    shrinking after each selection.
+    
+    With origin conditioning, the available set can vary by origin
+    (e.g., different transport modes available in different zones).
+    
+    Parameters
+    ----------
+    X : array-like, shape (n_obs, n_vars)
+        Alternative-specific attributes in long format (each row = one alternative).
+    y : array-like, shape (n_obs,)
+        Choice indicator (1 = chosen at that position, 0 = not chosen).
+    ids : array-like, shape (n_obs,)
+        Panel/observation identifiers.
+    ranks : array-like, shape (n_obs,)
+        Rank position (1 = first choice, 2 = second choice, etc.).
+    alt_var : array-like, shape (n_obs,)
+        Alternative identifiers.
+    origin_var : array-like, shape (n_obs,), optional
+        Origin identifiers for availability conditioning.
+    avail : array-like, shape (n_obs,), optional
+        Binary availability (1 = available, 0 = not).
+    varnames : list[str]
+        Names of explanatory variables.
+    """
+    
+    def __init__(self, X, y, ids, ranks, alt_var, origin_var=None, avail=None,
+                 varnames=None, fit_intercept=False, maxiter=2000,
+                 ftol=1e-6, gtol=1e-6, _jax=True):
+        import numpy as np
+        self._jax = _jax
+        if _jax:
+            import jax.numpy as jnp
+            self.np = jnp
+        else:
+            import numpy as np
+            self.np = np
+        
+        self.X = self.np.asarray(X, dtype=float)
+        self.y = self.np.asarray(y, dtype=float)
+        self.ids = self.np.asarray(ids)
+        self.ranks = self.np.asarray(ranks, dtype=int)
+        self.alt_var = self.np.asarray(alt_var)
+        self.origin_var = self.np.asarray(origin_var) if origin_var is not None else None
+        self.avail = self.np.asarray(avail, dtype=float) if avail is not None else self.np.ones_like(y, dtype=float)
+        self.varnames = varnames or [f"x{i}" for i in range(self.X.shape[1])]
+        self.fit_intercept = fit_intercept
+        self.maxiter = maxiter
+        self.ftol = ftol
+        self.gtol = gtol
+        
+        # Pre-compute exploded choice situations
+        self._build_exploded_choices()
+        
+        # Initialize parameters
+        self.K = self.X.shape[1] + int(fit_intercept)
+        self.J = int(self.np.max(self.alt_var)) + 1  # Total alternatives
+        self.params = self.np.zeros(self.K)
+        self.reg_penalty = 0.0
+        self.l1_penalty = 0.0
+        
+    def _build_exploded_choices(self):
+        """Build exploded choice situations from ranked data."""
+        unique_ids = self.np.unique(self.ids)
+        exploded_rows = []
+        
+        for uid in unique_ids:
+            mask = self.ids == uid
+            # Get choices for this individual
+            indiv_ranks = self.ranks[mask]
+            indiv_alts = self.alt_var[mask]
+            indiv_X = self.X[mask]
+            indiv_avail = self.avail[mask]
+            indiv_origin = self.origin_var[mask] if self.origin_var is not None else None
+            
+            # Sort by rank
+            sort_idx = self.np.argsort(indiv_ranks)
+            indiv_ranks = indiv_ranks[sort_idx]
+            indiv_alts = indiv_alts[sort_idx]
+            indiv_X = indiv_X[sort_idx]
+            indiv_avail = indiv_avail[sort_idx]
+            if indiv_origin is not None:
+                indiv_origin = indiv_origin[sort_idx]
+            
+            # Build exploded sequence: for each rank, available = remaining alternatives
+            available = indiv_alts.copy()
+            for r_idx, (rank, alt) in enumerate(zip(indiv_ranks, indiv_alts)):
+                # Only include if available
+                if not indiv_avail[r_idx]:
+                    continue
+                
+                # Create choice situation for this rank
+                # Available alternatives = those not yet chosen
+                chosen_mask = self.np.isin(available, [alt])  # current choice
+                unchosen_mask = ~chosen_mask
+                
+                # Add rows for available alternatives at this rank
+                for a_idx, a in enumerate(available):
+                    if a in indiv_alts[r_idx:]:  # still available
+                        avail_val = 1 if a == alt else 0
+                        # Find the row in original data for this alternative
+                        orig_mask = (self.ids == uid) & (self.alt_var == a)
+                        orig_idx = self.np.where(orig_mask)[0]
+                        if len(orig_idx) > 0:
+                            exploded_rows.append({
+                                'uid': uid,
+                                'rank': int(rank),
+                                'alt': a,
+                                'chosen': int(a == alt),
+                                'X': indiv_X[a_idx] if a_idx < len(indiv_X) else self.np.zeros(self.X.shape[1]),
+                                'origin': indiv_origin[a_idx] if indiv_origin is not None else None,
+                                'avail': 1
+                            })
+                
+                # Remove chosen alternative from available set
+                available = available[unchosen_mask]
+        
+        # Convert to arrays
+        self.exploded = exploded_rows
+        self.n_exploded = len(exploded_rows)
+        
+        # Build design matrices
+        self.exploded_X = self.np.array([r['X'] for r in exploded_rows])
+        self.exploded_y = self.np.array([r['chosen'] for r in exploded_rows])
+        self.exploded_ids = self.np.array([r['uid'] for r in exploded_rows])
+        self.exploded_ranks = self.np.array([r['rank'] for r in exploded_rows])
+        self.exploded_alts = self.np.array([r['alt'] for r in exploded_rows])
+        
+        # Add intercept if needed
+        if self.fit_intercept:
+            self.exploded_X = self.np.column_stack([
+                self.np.ones(self.n_exploded),
+                self.exploded_X
+            ])
+            self.K = self.exploded_X.shape[1]
+        else:
+            self.K = self.exploded_X.shape[1]
+    
+    def _loglik(self, beta):
+        """Log-likelihood for exploded logit."""
+        # Utility for each alternative
+        V = self.exploded_X @ beta
+        
+        # Group by choice situation (id + rank)
+        # For each (uid, rank), compute softmax over available alternatives
+        loglik = 0.0
+        for uid in self.np.unique(self.exploded_ids):
+            for rank in self.np.unique(self.exploded_ranks[self.exploded_ids == uid]):
+                mask = (self.exploded_ids == uid) & (self.exploded_ranks == rank)
+                if not self.np.any(mask):
+                    continue
+                V_sit = V[mask]
+                y_sit = self.exploded_y[mask]
+                # Log-sum-exp trick
+                maxV = self.np.max(V_sit)
+                expV = self.np.exp(V_sit - maxV)
+                probs = expV / self.np.sum(expV)
+                chosen_idx = self.np.where(y_sit == 1)[0]
+                if len(chosen_idx) > 0:
+                    loglik += self.np.log(probs[chosen_idx[0]] + 1e-10)
+        
+        # Regularization
+        if self.reg_penalty > 0:
+            loglik -= self.reg_penalty * self.np.sum(self.np.square(beta))
+        if self.l1_penalty > 0:
+            loglik -= self.l1_penalty * self.np.sum(self.np.abs(beta))
+        
+        return loglik
+    
+    def _grad(self, beta):
+        """Gradient of log-likelihood."""
+        V = self.exploded_X @ beta
+        grad = self.np.zeros_like(beta)
+        
+        for uid in self.np.unique(self.exploded_ids):
+            for rank in self.np.unique(self.exploded_ranks[self.exploded_ids == uid]):
+                mask = (self.exploded_ids == uid) & (self.exploded_ranks == rank)
+                if not self.np.any(mask):
+                    continue
+                V_sit = V[mask]
+                y_sit = self.exploded_y[mask]
+                X_sit = self.exploded_X[mask]
+                
+                maxV = self.np.max(V_sit)
+                expV = self.np.exp(V_sit - maxV)
+                probs = expV / self.np.sum(expV)
+                
+                # Gradient: X' * (y - probs)
+                grad += self.np.sum((y_sit - probs)[:, None] * X_sit, axis=0)
+        
+        if self.reg_penalty > 0:
+            grad -= 2 * self.reg_penalty * beta
+        if self.l1_penalty > 0:
+            grad -= self.l1_penalty * self.np.sign(beta)
+        
+        return grad
+    
+    def fit(self, method='BFGS', start=None):
+        """Fit the exploded logit model."""
+        if start is None:
+            start = self.np.zeros(self.K)
+        
+        from scipy.optimize import minimize
+        
+        def neg_loglik(b):
+            return -self._loglik(b)
+        
+        def neg_grad(b):
+            return -self._grad(b)
+        
+        result = minimize(
+            fun=neg_loglik,
+            x0=start,
+            method=method,
+            jac=neg_grad if method in ['BFGS', 'L-BFGS-B', 'CG', 'Newton-CG'] else None,
+            options={'maxiter': self.maxiter, 'ftol': self.ftol, 'gtol': self.gtol, 'disp': True}
+        )
+        
+        self.params = result.x
+        self.converged = result.success
+        self.loglik = -result.fun
+        self.result = result
+        self._compute_se()
+        return self
+    
+    def _compute_se(self):
+        """Compute standard errors via Hessian."""
+        from scipy.optimize import approx_fprime
+        eps = 1e-6
+        hess = approx_fprime(self.params, self._grad, eps)
+        try:
+            cov = self.np.linalg.inv(-hess + 1e-8 * self.np.eye(self.K))
+            self.stderr = self.np.sqrt(self.np.diag(cov))
+            self.zvalues = self.params / self.stderr
+            from scipy import stats
+            self.pvalues = 2 * (1 - stats.norm.cdf(self.np.abs(self.zvalues)))
+        except Exception:
+            self.stderr = self.np.ones_like(self.params)
+            self.zvalues = self.np.zeros_like(self.params)
+            self.pvalues = self.np.ones_like(self.params)
+    
+    def get_coeff(self):
+        return self.params
+    
+    def report(self):
+        """Print model summary."""
+        import pandas as pd
+        df = pd.DataFrame({
+            'Variable': ['Intercept'] + self.varnames if self.fit_intercept else self.varnames,
+            'Coefficient': self.params,
+            'StdErr': self.stderr,
+            'z-value': self.zvalues,
+            'p-value': self.pvalues
+        })
+        print(df.to_string(index=False))
+        print(f"\nLog-likelihood: {self.loglik:.4f}")
+        print(f"Converged: {self.converged}")
+print(f"N exploded choice situations: {self.n_exploded}")
         # }
     # }
+
+
+''' ---------------------------------------------------------- '''
+''' CLASS FOR MIXED EXPLODED LOGIT (RANK-ORDERED LOGIT)        '''
+''' ---------------------------------------------------------- '''
+
+class MixedExplodedLogit:
+    """
+    Mixed Exploded Logit (Rank-Ordered Logit) with Random Parameters.
+    
+    Extends the exploded logit to support random coefficients using
+    the MixedLogit infrastructure (Halton draws, JAX acceleration,
+    sd_penalty, etc.).
+    
+    Theory
+    ------
+    For a ranking A > B > C from choice set {A, B, C}, the mixed exploded logit
+    represents this as:
+    
+        P(A > B > C) = ∫ P(A > B > C | β) f(β) dβ
+    
+    where f(β) is the distribution of random coefficients.
+    
+    Each conditional choice is a Mixed MNL with the available set
+    shrinking after each selection.
+    
+    Parameters
+    ----------
+    X : array-like, shape (n_obs, n_vars)
+        Alternative-specific attributes in long format.
+    y : array-like, shape (n_obs,)
+        Choice indicator (1 = chosen at that position, 0 = not).
+    ids : array-like, shape (n_obs,)
+        Panel/observation identifiers.
+    ranks : array-like, shape (n_obs,)
+        Rank position (1 = first choice, 2 = second choice, etc.).
+    alt_var : array-like, shape (n_obs,)
+        Alternative identifiers.
+    randvars : dict[str, str]
+        Random variable specifications, e.g., {'TT': 'n', 'CO': 'ln'}
+    origin_var : array-like, optional
+        Origin identifiers for availability conditioning.
+    avail : array-like, optional
+        Binary availability.
+    varnames : list[str]
+        Variable names.
+    distributions : list[str]
+        Available distributions: ['n', 'ln', 'tn', 'u', 't']
+    n_draws : int
+        Number of Halton draws per individual.
+    halton_opts : dict
+        Halton options (antithetic, shuffled).
+    """
+    
+    def __init__(self, X, y, ids, ranks, alt_var, randvars,
+                 origin_var=None, avail=None, varnames=None,
+                 distributions=None, n_draws=1000, halton_opts=None,
+                 fit_intercept=False, maxiter=2000, ftol=1e-6, gtol=1e-6,
+                 reg_penalty=0.5, l1_penalty=0.1, sd_penalty=0.001,
+                 _jax=True):
+        import numpy as np
+        self._jax = _jax
+        if _jax:
+            import jax.numpy as jnp
+            self.np = jnp
+        else:
+            import numpy as np
+            self.np = np
+        
+        self.X = self.np.asarray(X, dtype=float)
+        self.y = self.np.asarray(y, dtype=float)
+        self.ids = self.np.asarray(ids)
+        self.ranks = self.np.asarray(ranks, dtype=int)
+        self.alt_var = self.np.asarray(alt_var)
+        self.randvars = randvars
+        self.origin_var = self.np.asarray(origin_var) if origin_var is not None else None
+        self.avail = self.np.asarray(avail, dtype=float) if avail is not None else self.np.ones_like(y, dtype=float)
+        self.varnames = varnames or [f"x{i}" for i in range(self.X.shape[1])]
+        self.distributions = distributions or ["n", "ln", "tn", "u", "t"]
+        self.n_draws = n_draws
+        self.halton_opts = halton_opts or {'antithetic': True, 'shuffled': True}
+        self.fit_intercept = fit_intercept
+        self.maxiter = maxiter
+        self.ftol = ftol
+        self.gtol = gtol
+        
+        # Penalties
+        self.reg_penalty = reg_penalty
+        self.l1_penalty = l1_penalty
+        self.sd_penalty = sd_penalty
+        
+        # Build exploded choice situations
+        self._build_exploded_choices()
+        
+        # Setup parameter structure for random coefficients
+        self._setup_random_params()
+        
+        # Generate Halton draws
+        self._generate_draws()
+        
+    def _setup_random_params(self):
+        """Setup parameter indices for mixed model.
+        
+        Parameter structure (following MixedLogit):
+        - bf: fixed coefficients for all variables (Kf)
+        - br_b: mean of random coefficients (Kr)
+        - chol: Cholesky factors for correlated random coeffs (Kchol)
+        - br_w: standard deviations of random coefficients (Kbw)
+        - bf_trans: Box-Cox lambda parameters (Kftrans)
+        - br_trans_b: mean of trans random coeffs (Krtrans)
+        - br_trans_w: sd of trans random coeffs
+        """
+        from collections import OrderedDict
+        
+        # Identify which variables are random
+        self.randvar_names = list(self.randvars.keys())
+        self.randvar_dists = [self.randvars[v] for v in self.randvar_names]
+        
+        # All variables in model (including random ones)
+        all_vars = list(self.varnames)
+        if self.fit_intercept:
+            all_vars = ['intercept'] + all_vars
+        
+        self.Kf = len(all_vars)  # Fixed coefficients (all vars)
+        self.Kr = len(self.randvar_names)  # Random coefficient means
+        self.correlationLength = self.Kr  # Full correlation by default
+        self.Kchol = int(self.correlationLength * (self.correlationLength + 1) / 2)
+        self.Kbw = self.Kr  # Standard deviations
+        
+        # Transformed variables (none for now in exploded logit)
+        self.Kftrans = 0
+        self.Krtrans = 0
+        
+        # Total parameters
+        self.nparams = (self.Kf + self.Kr + self.Kchol + self.Kbw + 
+                       self.Kftrans + 2 * self.Krtrans)
+        
+        # Parameter bounds
+        positive_bound = (0, float('inf'))
+        any_bound = (-float('inf'), float('inf'))
+        self.bounds = []
+        
+        # bf: any
+        self.bounds.extend([any_bound] * self.Kf)
+        # br_b: any
+        self.bounds.extend([any_bound] * self.Kr)
+        # chol: any
+        self.bounds.extend([any_bound] * self.Kchol)
+        # br_w: positive
+        self.bounds.extend([positive_bound] * self.Kbw)
+        # bf_trans: any
+        self.bounds.extend([any_bound] * self.Kftrans)
+        # br_trans_b: any
+        self.bounds.extend([any_bound] * self.Krtrans)
+        # br_trans_w: any
+        self.bounds.extend([any_bound] * self.Krtrans)
+        # lambda: (-5, 1)
+        lmda_bound = (-5, 1)
+        self.bounds.extend([lmda_bound] * self.Kftrans)
+        self.bounds.extend([lmda_bound] * self.Krtrans)
+        
+        self.bounds = self.np.array(self.bounds)
+        
+        # Initial parameters
+        self.params = self.np.zeros(self.nparams)
+        
+        # Initialize random coefficient means to small values
+        if self.Kr > 0:
+            self.params[self.Kf:self.Kf + self.Kr] = 0.1
+        # Initialize SDs to 0.5
+        if self.Kbw > 0:
+            self.params[self.Kf + self.Kr + self.Kchol:self.Kf + self.Kr + self.Kchol + self.Kbw] = 0.5
+        
+    def _generate_draws(self):
+        """Generate Halton draws for random coefficient integration."""
+        from scipy.stats import qmc
+        
+        if self.Kr == 0:
+            self.draws = self.np.empty((self.N, 0))
+            return
+            
+        # Use scipy's Halton sequence generator
+        sampler = qmc.Halton(d=self.Kr, scramble=True)
+        draws = sampler.random(n=self.n_draws * self.N)
+        draws = draws.reshape(self.N, self.n_draws, self.Kr)
+        
+        # Apply inverse CDF for each distribution
+        transformed_draws = self.np.zeros_like(draws)
+        for k, dist in enumerate(self.randvar_dists):
+            if dist == 'n':
+                transformed_draws[:, :, k] = self.np.asarray(
+                    self.np.array(draws[:, :, k])  # Already uniform
+                )
+            elif dist == 'ln':
+                # Log-normal: exp(normal)
+                transformed_draws[:, :, k] = self.np.exp(
+                    self.np.asarray(self.np.array(draws[:, :, k]))
+                )
+            elif dist == 't':
+                # Triangular: inverse CDF
+                transformed_draws[:, :, k] = self.np.sqrt(
+                    self.np.asarray(self.np.array(draws[:, :, k]))
+                )
+            else:
+                transformed_draws[:, :, k] = draws[:, :, k]
+        
+        self.draws = self.np.asarray(transformed_draws)
+    
+    def _build_exploded_choices(self):
+        """Build exploded choice situations from ranked data."""
+        unique_ids = self.np.unique(self.ids)
+        exploded_rows = []
+        
+        for uid in unique_ids:
+            mask = self.ids == uid
+            indiv_ranks = self.ranks[mask]
+            indiv_alts = self.alt_var[mask]
+            indiv_X = self.X[mask]
+            indiv_avail = self.avail[mask]
+            indiv_origin = self.origin_var[mask] if self.origin_var is not None else None
+            
+            sort_idx = self.np.argsort(indiv_ranks)
+            indiv_ranks = indiv_ranks[sort_idx]
+            indiv_alts = indiv_alts[sort_idx]
+            indiv_X = indiv_X[sort_idx]
+            indiv_avail = indiv_avail[sort_idx]
+            if indiv_origin is not None:
+                indiv_origin = indiv_origin[sort_idx]
+            
+            available = indiv_alts.copy()
+            for r_idx, (rank, alt) in enumerate(zip(indiv_ranks, indiv_alts)):
+                if not indiv_avail[r_idx]:
+                    continue
+                
+                for a_idx, a in enumerate(available):
+                    if a in indiv_alts[r_idx:]:
+                        avail_val = int(a == alt)
+                        orig_mask = (self.ids == uid) & (self.alt_var == a)
+                        orig_idx = self.np.where(orig_mask)[0]
+                        if len(orig_idx) > 0:
+                            exploded_rows.append({
+                                'uid': uid,
+                                'rank': int(rank),
+                                'alt': a,
+                                'chosen': avail_val,
+                                'X': indiv_X[a_idx] if a_idx < len(indiv_X) else self.np.zeros(self.X.shape[1]),
+                                'origin': indiv_origin[a_idx] if indiv_origin is not None else None,
+                                'avail': 1
+                            })
+                
+                available = available[self.np.array([a != alt for a in available])]
+        
+        self.exploded = exploded_rows
+        self.n_exploded = len(exploded_rows)
+        
+        # Build design matrices
+        self.exploded_X = self.np.array([r['X'] for r in exploded_rows])
+        self.exploded_y = self.np.array([r['chosen'] for r in exploded_rows])
+        self.exploded_ids = self.np.array([r['uid'] for r in exploded_rows])
+        self.exploded_ranks = self.np.array([r['rank'] for r in exploded_rows])
+        self.exploded_alts = self.np.array([r['alt'] for r in exploded_rows])
+        
+        # Map exploded rows to panel index for draws
+        self.exploded_panel = self.np.array([
+            self.np.where(unique_ids == r['uid'])[0][0] for r in exploded_rows
+        ])
+        
+        # Add intercept if needed
+        if self.fit_intercept:
+            self.exploded_X = self.np.column_stack([
+                self.np.ones(self.n_exploded),
+                self.exploded_X
+            ])
+        
+    def _loglik_single_draw(self, beta, draw_idx):
+        """Log-likelihood for a single draw across all individuals."""
+        # beta structure: [bf (Kf), br_b (Kr), chol (Kchol), br_w (Kbw), ...]
+        Kf, Kr, Kchol, Kbw = self.Kf, self.Kr, self.Kchol, self.Kbw
+        
+        bf = beta[:Kf]
+        br_b = beta[Kf:Kf+Kr]
+        chol_flat = beta[Kf+Kr:Kf+Kr+Kchol]
+        br_w = beta[Kf+Kr+Kchol:Kf+Kr+Kchol+Kbw]
+        
+        # Reconstruct Cholesky matrix
+        chol = self.np.zeros((Kr, Kr))
+        tril_indices = self.np.tril_indices(Kr)
+        chol = chol.at[tril_indices].set(chol_flat)
+        
+        # Random coefficient covariance: Σ = chol @ chol.T
+        Sigma = chol @ chol.T
+        
+        # Per-draw random coefficients
+        # beta_draw = br_b + L @ draw  where L = chol (lower triangular)
+        # Actually: br_w are the standard deviations (diagonal of L)
+        # So: beta_draw = br_b + L @ draw
+        draws = self.draws[:, draw_idx, :]  # (N, Kr)
+        
+        # Add fixed coefficients for non-random variables
+        # For random variables, use draw-specific coefficients
+        n_exploded = self.n_exploded
+        
+        # Build full coefficient vector per draw per panel
+        # Fixed part: same for all draws
+        V_fixed = self.exploded_X @ bf
+        
+        # Random part: varies by draw and panel
+        loglik = 0.0
+        for uid_idx, uid in enumerate(self.np.unique(self.exploded_ids)):
+            panel_mask = self.exploded_ids == uid
+            panel_draws = draws[uid_idx]  # (n_draws, Kr)
+            
+            for draw_idx in range(self.n_draws):
+                beta_draw = br_b + chol @ panel_draws[draw_idx] * br_w
+                
+                # Utility for this panel at this draw
+                # Map random variables to their positions in X
+                V_random = self.np.zeros(n_exploded)
+                for k, var in enumerate(self.randvar_names):
+                    # Find column index of this variable in exploded_X
+                    if var in self.varnames:
+                        col_idx = self.varnames.index(var)
+                        if self.fit_intercept:
+                            col_idx += 1
+                        V_random = V_random.at[self.exploded_panel == uid_idx].add(
+                            beta_draw[k] * self.exploded_X[self.exploded_panel == uid_idx, col_idx]
+                        )
+                
+                V_total = V_fixed + V_random
+                
+                # Compute log-likelihood for this draw
+                for rank in self.np.unique(self.exploded_ranks[panel_mask]):
+                    mask = panel_mask & (self.exploded_ranks == rank)
+                    if not self.np.any(mask):
+                        continue
+                    V_sit = V_total[mask]
+                    y_sit = self.exploded_y[mask]
+                    
+                    maxV = self.np.max(V_sit)
+                    expV = self.np.exp(V_sit - maxV)
+                    probs = expV / self.np.sum(expV)
+                    chosen_idx = self.np.where(y_sit == 1)[0]
+                    if len(chosen_idx) > 0:
+                        loglik += self.np.log(probs[chosen_idx[0]] + 1e-10)
+        
+        # Average over draws
+        loglik = loglik / self.n_draws
+        
+        # Regularization
+        if self.reg_penalty > 0:
+            loglik -= self.reg_penalty * self.np.sum(self.np.square(bf))
+        if self.l1_penalty > 0:
+            loglik -= self.l1_penalty * self.np.sum(self.np.abs(bf))
+        if self.sd_penalty > 0 and Kbw > 0:
+            loglik -= self.sd_penalty * self.np.sum(self.np.square(br_w))
+        
+        return loglik
+    
+    def _grad_single_draw(self, beta, draw_idx):
+        """Gradient for a single draw (placeholder - use JAX for real gradient)."""
+        # For now, use finite differences
+        eps = 1e-6
+        grad = self.np.zeros_like(beta)
+        f0 = self._loglik_single_draw(beta, draw_idx)
+        for i in range(len(beta)):
+            beta_plus = beta.at[i].add(eps) if hasattr(beta, 'at') else beta.copy()
+            if not hasattr(beta, 'at'):
+                beta_plus[i] += eps
+            f1 = self._loglik_single_draw(beta_plus, draw_idx)
+            grad = grad.at[i].set((f1 - f0) / eps) if hasattr(grad, 'at') else grad
+            if not hasattr(grad, 'at'):
+                grad[i] = (f1 - f0) / eps
+        return grad
+    
+    def _loglik(self, beta):
+        """Full log-likelihood averaging over draws."""
+        total_ll = 0.0
+        for d in range(self.n_draws):
+            total_ll += self._loglik_single_draw(beta, d)
+        return total_ll / self.n_draws
+    
+    def _grad(self, beta):
+        """Full gradient averaging over draws."""
+        total_grad = self.np.zeros_like(beta)
+        for d in range(self.n_draws):
+            total_grad += self._grad_single_draw(beta, d)
+        return total_grad / self.n_draws
+    
+    def fit(self, method='BFGS', start=None):
+        """Fit the mixed exploded logit model."""
+        if start is None:
+            start = self.params
+        
+        from scipy.optimize import minimize
+        
+        def neg_loglik(b):
+            return -self._loglik(b)
+        
+        def neg_grad(b):
+            return -self._grad(b)
+        
+        result = minimize(
+            fun=neg_loglik,
+            x0=start,
+            method=method,
+            jac=neg_grad if method in ['BFGS', 'L-BFGS-B', 'CG', 'Newton-CG'] else None,
+            bounds=self.bounds if method == 'L-BFGS-B' else None,
+            options={'maxiter': self.maxiter, 'ftol': self.ftol, 'gtol': self.gtol, 'disp': True}
+        )
+        
+        self.params = result.x
+        self.converged = result.success
+        self.loglik = -result.fun
+        self.result = result
+        self._compute_se()
+        return self
+    
+    def _compute_se(self):
+        """Compute standard errors via finite-difference Hessian."""
+        from scipy.optimize import approx_fprime
+        eps = 1e-5
+        try:
+            hess = approx_fprime(self.params, self._grad, eps)
+            cov = self.np.linalg.inv(-hess + 1e-8 * self.np.eye(len(self.params)))
+            self.stderr = self.np.sqrt(self.np.diag(cov))
+            self.zvalues = self.params / self.stderr
+            from scipy import stats
+            self.pvalues = 2 * (1 - stats.norm.cdf(self.np.abs(self.zvalues)))
+        except Exception:
+            self.stderr = self.np.ones_like(self.params)
+            self.zvalues = self.np.zeros_like(self.params)
+            self.pvalues = self.np.ones_like(self.params)
+    
+    def get_coeff(self):
+        return self.params
+    
+    def get_random_coeff_names(self):
+        """Return names of random coefficients."""
+        names = []
+        # Fixed coefficients
+        for v in self.varnames:
+            names.append(f"beta_{v}")
+        if self.fit_intercept:
+            names.insert(0, "beta_intercept")
+        # Random means
+        for v in self.randvar_names:
+            names.append(f"mean_{v}")
+        # Cholesky
+        for i in range(self.Kchol):
+            names.append(f"chol_{i}")
+        # SDs
+        for v in self.randvar_names:
+            names.append(f"sd_{v}")
+        return names
+    
+    def report(self):
+        """Print model summary."""
+        import pandas as pd
+        names = self.get_random_coeff_names()
+        df = pd.DataFrame({
+            'Variable': names[:len(self.params)],
+            'Coefficient': self.params,
+            'StdErr': self.stderr,
+            'z-value': self.zvalues,
+            'p-value': self.pvalues
+        })
+        print(df.to_string(index=False))
+        print(f"\nLog-likelihood: {self.loglik:.4f}")
+        print(f"Converged: {self.converged}")
+        print(f"N exploded: {self.n_exploded}")
+        print(f"N draws: {self.n_draws}")
 
     def evaluate(self, solution):
         return self.mod.evaluate(solution, False)

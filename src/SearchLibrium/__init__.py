@@ -116,7 +116,7 @@ try:
     from .Halton import Halton
     from .rrm import RandomRegret
     from .mixedrrm import MixedRandomRegret
-    from .ordered_logit import OrderedLogit, OrderedLogitLong
+    from .ordered_logit import OrderedLogit, OrderedLogitLong, ExplodedLogit, MixedExplodedLogit
     from .selection_models import BinaryProbit, HeckmanTwoStep
     from .zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
     from .latent_class import LatentClassMixedLogit
@@ -146,7 +146,7 @@ except ImportError as e:
     from Halton import Halton
     from rrm import RandomRegret
     from mixedrrm import MixedRandomRegret
-    from ordered_logit import OrderedLogit, OrderedLogitLong
+    from ordered_logit import OrderedLogit, OrderedLogitLong, ExplodedLogit
     from selection_models import BinaryProbit, HeckmanTwoStep
     from zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
     from latent_class import LatentClassMixedLogit
@@ -173,7 +173,7 @@ __all__ = [
     "DiscreteChoiceModel",
     "MultinomialLogit", "LogisticRegression", "MixedLogit",
     "NestedLogit", "MultiLayerNestedLogit", "MixedNested", "Halton",
-    "RandomRegret", "MixedRandomRegret", "OrderedLogit", "OrderedLogitLong",
+    "RandomRegret", "MixedRandomRegret", "OrderedLogit", "OrderedLogitLong", "ExplodedLogit", "MixedExplodedLogit",
     "BinaryProbit", "HeckmanTwoStep",
     "ZeroInflatedOrderedProbit", "ZeroInflatedProbit",
     "LatentClassMixedLogit", "MDCEVFitResult", "MDCEVModel", "MultinomialProbit",
