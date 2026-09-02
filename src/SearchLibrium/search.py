@@ -5446,7 +5446,9 @@ def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars
                     alts=self.param.alt_var, ids=self.param.choice_id,
                     nests=nests, lambdas=lambdas, fit_intercept=asc_ind,
                     transvars=bc_vars,
-                    return_grad=self.param.grad, return_hess=self.param.hess)
+                    return_grad=self.param.grad, return_hess=self.param.hess,
+                    l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+                    l1_penalty=getattr(self.param, 'l1_penalty', 0.1))
 
         model.fit()
 
@@ -5457,13 +5459,15 @@ def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars
         aic, bic, loglik = model.aic, model.bic, model.loglik
         # Handle MAE if it's an objective
         if self.mae_is_an_objective():
-            X_test = self.param.df_test[all_vars].values
+            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
             y_test = self.param.test_choices
             test_model = NestedLogit()
             test_model.setup(X=X_test, y=y_test, varnames=all_vars, isvars=is_vars,
                              alts=self.param.test_alt_var, ids=self.param.test_choice_id,
                              nests=nests, lambdas=lambdas, fit_intercept=asc_ind,
-                             return_grad=False)
+                             return_grad=False,
+                             l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+                             l1_penalty=getattr(self.param, 'l1_penalty', 0.1))
             test_model.fit()
             model.mae = self.compute_mae(test_model)
 
@@ -5509,6 +5513,9 @@ def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars
             panels=self.param.ind_id,
             fit_intercept=asc_ind,
             n_draws=n_draws,
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+            l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
+            sd_penalty=getattr(self.param, 'sd_penalty', 0.001),
         )
         model.fit()
 
@@ -5546,7 +5553,9 @@ def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars
         model.setup(X=X, y=y, varnames=all_vars, isvars=is_vars,
                     alts=self.param.alt_var, ids=self.param.choice_id,
                     nests=nests, lambdas=lambdas, lambdas_mapping=lambdas_mapping,
-                    transvars=bc_vars, fit_intercept=asc_ind, return_grad=False)
+                    transvars=bc_vars, fit_intercept=asc_ind, return_grad=False,
+                    l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+                    l1_penalty=getattr(self.param, 'l1_penalty', 0.1))
 
         model.fit()
 
@@ -5557,13 +5566,16 @@ def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars
         aic, bic, loglik = model.aic, model.bic, model.loglik
 
         # Handle MAE if it's an objective
-        if self.mae_is_an_objective():
-            X_test = self.param.df_test[all_vars].values
+if self.mae_is_an_objective():
+            X_test, _ = self._get_orthogonalized_X(all_vars)
             y_test = self.param.test_choices
             test_model = MultiLayerNestedLogit()
             test_model.setup(X=X_test, y=y_test, varnames=all_vars, isvars=is_vars,
-                                     alts=self.param.test_alt_var, ids=self.param.test_choice_id,
-                                     nests=nests, lambdas=lambdas, lambdas_mapping = lambdas_mapping, fit_intercept=asc_ind,  return_grad=False)
+                             alts=self.param.test_alt_var, ids=self.param.test_choice_id,
+                             nests=nests, lambdas=lambdas, lambdas_mapping=lambdas_mapping,
+                             fit_intercept=asc_ind, return_grad=False,
+                             l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+                             l1_penalty=getattr(self.param, 'l1_penalty', 0.1))
             test_model.fit()
             model.mae = self.compute_mae(test_model)
 

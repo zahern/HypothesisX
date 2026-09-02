@@ -47,13 +47,6 @@ class OrderedMixedLogit(OrderedLogit, DiscreteChoiceModel, MixedLogit):
             y_latent += beta_fixed[0]
         return y_latent
 
-    def setup(self,  **kwargs):
-        print("OrderedMixedLogit.setup")
-        OrderedLogit.setup(self, **kwargs)
-        # Call MixedLogit's setup to handle random coefficients
-    # {
-        
-    '''
     def setup(self, **kwargs):
         # Call OrderedLogit's setup
         OrderedLogit.setup(self, **kwargs)
@@ -61,14 +54,15 @@ class OrderedMixedLogit(OrderedLogit, DiscreteChoiceModel, MixedLogit):
         # Call MixedLogit's setup to handle random coefficients
         mixed_logit_args = {key: kwargs[key] for key in kwargs if key not in ["J", "distr", 'start',
                                                                               'normalize']}
-        # Call MixedLogit's setup
+        # Ensure penalty parameters are passed
+        for pen in ['reg_penalty', 'l1_penalty', 'sd_penalty']:
+            if pen in kwargs:
+                mixed_logit_args[pen] = kwargs[pen]
         MixedLogit.setup(self, **mixed_logit_args)
-        #MixedLogit.setup(self, **kwargs)
 
         # Ensure `fn_generate_draws` is initialized
         if not hasattr(self, "fn_generate_draws"):
             self.fn_generate_draws = self.generate_draws_halton if self.halton else self.generate_draws_random
-    '''
     def get_thresholds(self, params: np.ndarray, draws: np.ndarray = None) -> np.ndarray:
         delta = get_last_elements(params, self.J - 1)
         thresholds = np.cumsum(delta)

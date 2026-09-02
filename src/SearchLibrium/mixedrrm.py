@@ -11,6 +11,10 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
         RandomRegret.__init__(self, **kwargs)
         MixedLogit.__init__(self, halton_opts=halton_opts, distributions=distributions)
         self.fn_generate_draws = self.generate_draws_halton
+        # Store penalty parameters for use in fit
+        self.reg_penalty = getattr(self, 'reg_penalty', 0.5)
+        self.l1_penalty = getattr(self, 'l1_penalty', 0.1)
+        self.sd_penalty = getattr(self, 'sd_penalty', 0.001)
 
     def _n(self):
         return getattr(self, 'N', getattr(self, 'nb_samples', 0))

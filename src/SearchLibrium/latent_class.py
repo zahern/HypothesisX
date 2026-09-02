@@ -105,7 +105,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
     def setup(self, X, y, varnames, ids, alts, avail=None, fit_intercept=False,
               membership_vars=None, member_params_spec=None,
               class_params_spec=None, l1_penalty=None, l2_penalty=None,
-              panels=None):
+              sd_penalty=None, panels=None):
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
         ids = np.asarray(ids)
@@ -131,6 +131,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             self.l1_penalty = float(l1_penalty)
         if l2_penalty is not None:
             self.l2_penalty = float(l2_penalty)
+        if sd_penalty is not None:
+            self.sd_penalty = float(sd_penalty)
 
         order = np.lexsort((alts, ids))
         X = X[order]
@@ -613,10 +615,22 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
 
             def objective(beta):
                 value, grad = grad_fn(self.jnp.asarray(beta), weights_backend)
-                l2 = self.l2_penalty * float(self.jnp.sum(self.jnp.square(beta)))
+                l2 = self.l2_penalty * float(self.jnp.sum(self.jnp.sum(beta)))
                 l1 = self.l1_penalty * float(self.jnp.sum(self.jnp.abs(beta)))
+                # sd_penalty on br_w (SD) parameters - they are at the end of each class's beta vector
+                sd = 0.0
+                if hasattr(self, 'sd_penalty') and self.sd_penalty > 0:
+                    # Find Kbw (number of SD params) for this class
+                    # br_w params are the last Kbw params in the class beta vector
+                    if self._class_specs is not None and class_idx is not None:
+                        K = X_c.shape[2]  # Kf + Kr for this class
+                        # Assuming Kr random params => Kbw = Kr (uncorrelated) or Kr - correlationLength (correlated)
+                        # For simplicity, use the last Kbw params where Kbw = number of random params
+                        Kbw = getattr(self, '_Kbw', getattr(self, 'Kr', 0))
+                        if Kbw > 0 and len(beta) >= Kbw:
+                            sd = self.sd_penalty * float(self.jnp.sum(self.jnp.square(beta[-Kbw:])))
                 grad_l1 = self._regularize_l1_grad(np.asarray(beta))
-                return float(value) + l2 + l1, np.asarray(grad, dtype=float) + 2.0 * self.l2_penalty * np.asarray(beta) + grad_l1
+                return float(value) + l2 + l1 + sd, np.asarray(grad, dtype=float) + 2.0 * self.l2_penalty * np.asarray(beta) + grad_l1
         else:
             def objective(beta):
                 utilities = np.einsum("njk,k->nj", X_c, beta)
@@ -630,7 +644,13 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 grad = np.einsum("nj,njk->k", diff, X_c)
                 l2 = self.l2_penalty * float(np.sum(beta * beta))
                 l1 = self.l1_penalty * float(np.sum(np.abs(beta)))
-                return -loglik + l2 + l1, -grad + 2.0 * self.l2_penalty * beta + self._regularize_l1_grad(beta)
+                # sd_penalty on br_w (SD) parameters
+                sd = 0.0
+                if hasattr(self, 'sd_penalty') and self.sd_penalty > 0:
+                    Kbw = getattr(self, '_Kbw', getattr(self, 'Kr', 0))
+                    if Kbw > 0 and len(beta) >= Kbw:
+                        sd = self.sd_penalty * float(np.sum(np.square(beta[-Kbw:])))
+                return -loglik + l2 + l1 + sd, -grad + 2.0 * self.l2_penalty * beta + self._regularize_l1_grad(beta)
 
         result = minimize(
             objective,
