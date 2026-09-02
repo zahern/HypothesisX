@@ -27,11 +27,14 @@ try:
 except Exception:
     pass
 
-from . import misc
+try:
+    from . import misc
+except ImportError:
+    import misc
 
 try:
     from .banditsa import BanditSA, PerturbationBandit
-except ImportError:  # pragma: no cover - direct script execution fallback
+except ImportError:
     from banditsa import BanditSA, PerturbationBandit
 
 def new_features():
@@ -102,12 +105,29 @@ def print_version():
 
 try:
     from . import _device as dev
-except ImportError:
-    #print('Error importing local _device, using global import')
-    import _device  as dev
-    #print('loaded devices from local import')
+except Exception:
+    try:
+        import _device as dev
+    except Exception:
+        dev = None
+
+def _import_relative(module_name, names, fallback_globals=None):
+    """Try relative import first, then bare import as fallback."""
+    try:
+        mod = __import__(f'.{module_name}', fromlist=names, package=__name__)
+        return {name: getattr(mod, name) for name in names}
+    except Exception:
+        try:
+            mod = __import__(module_name, fromlist=names)
+            return {name: getattr(mod, name) for name in names}
+        except Exception:
+            return None
+
+_core_imports = _import_relative('_choice_model', ['DiscreteChoiceModel'])
+if _core_imports:
+    DiscreteChoiceModel = _core_imports['DiscreteChoiceModel']
+
 try:
-    from ._choice_model import DiscreteChoiceModel
     from .multinomial_logit import MultinomialLogit
     from .logistic_regression import LogisticRegression
     from .MixedLogit import MixedLogit
@@ -126,42 +146,41 @@ try:
     from .RandomP import RandomParameters
     from .constraints_builder import ConstraintBuilder, create_constraints
     from .search import Parameters
-
-    from . import misc
     from .sapbil import SAPBIL, ProbabilityMatrix
     from .hspbil import HSPBIL
     from .sparseea_agds import SparseEAAGDS
     from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, call_banditsa, call_parcopsa, call_agds, estimate_ctrl
     from .predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
     from .sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
+except Exception:
+    try:
+        from multinomial_logit import MultinomialLogit
+        from logistic_regression import LogisticRegression
+        from MixedLogit import MixedLogit
+        from multinomial_nested import NestedLogit, MultiLayerNestedLogit
+        from mixed_nested import MixedNested
+        from Halton import Halton
+        from rrm import RandomRegret
+        from mixedrrm import MixedRandomRegret
+        from ordered_logit import OrderedLogit, OrderedLogitLong, ExplodedLogit
+        from selection_models import BinaryProbit, HeckmanTwoStep
+        from zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
+        from latent_class import LatentClassMixedLogit
+        from mdcev import MDCEVFitResult, MDCEVModel
+        from multinomial_probit import MultinomialProbit
+        from MixedLogitGSE import MixedLogitGSE
+        from RandomP import RandomParameters
+        from constraints_builder import ConstraintBuilder, create_constraints
+        from search import Parameters
+        from sapbil import SAPBIL, ProbabilityMatrix
+        from hspbil import HSPBIL
+        from sparseea_agds import SparseEAAGDS
+        from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, call_banditsa, call_parsa, call_parcopsa, call_agds, estimate_ctrl
+        from predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
+        from sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
+    except Exception as e:
+        warnings.warn(f"SearchLibrium: some modules failed to import: {e}")
 
-except ImportError as e:
-    # Fallback for direct (non-package) execution; kept for backwards compatibility.
-    from _choice_model import DiscreteChoiceModel
-    from multinomial_logit import MultinomialLogit
-    from logistic_regression import LogisticRegression
-    from MixedLogit import MixedLogit
-    from multinomial_nested import NestedLogit, MultiLayerNestedLogit
-    from mixed_nested import MixedNested
-    from Halton import Halton
-    from rrm import RandomRegret
-    from mixedrrm import MixedRandomRegret
-    from ordered_logit import OrderedLogit, OrderedLogitLong, ExplodedLogit
-    from selection_models import BinaryProbit, HeckmanTwoStep
-    from zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
-    from latent_class import LatentClassMixedLogit
-    from mdcev import MDCEVFitResult, MDCEVModel
-    from multinomial_probit import MultinomialProbit
-    from MixedLogitGSE import MixedLogitGSE
-    from RandomP import RandomParameters
-    from constraints_builder import ConstraintBuilder, create_constraints
-    from search import Parameters
-    from sapbil import SAPBIL, ProbabilityMatrix
-    from hspbil import HSPBIL
-    from sparseea_agds import SparseEAAGDS
-    from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, call_banditsa, call_parsa, call_parcopsa, call_agds, estimate_ctrl
-    from predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
-    from sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
 try:
     from .main import print_ascii_art_logo
 except Exception:

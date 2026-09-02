@@ -1839,7 +1839,7 @@ class ExplodedLogit:
         print(df.to_string(index=False))
         print(f"\nLog-likelihood: {self.loglik:.4f}")
         print(f"Converged: {self.converged}")
-print(f"N exploded choice situations: {self.n_exploded}")
+        print(f"N exploded choice situations: {self.n_exploded}")
         # }
     # }
 
