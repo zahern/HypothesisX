@@ -1477,7 +1477,7 @@ class Search():
         self.all_estimated_solutions = []  # Unused currently
         
 
-        self.generate_plots = False
+        self.generate_plots = kwargs.get('generate_plots', False)
 
         self.converged, self.not_converged = 0, 0
         self.idnum = idnum

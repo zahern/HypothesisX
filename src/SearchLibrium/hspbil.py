@@ -60,7 +60,7 @@ class HSPBIL(HarmonySearch):
         pbil_p_low = kwargs.pop('pbil_p_low', None)
         pbil_p_high = kwargs.pop('pbil_p_high', None)
 
-        super().__init__(param, ctrl=ctrl, idnum=idnum)
+        super().__init__(param, idnum=idnum, **kwargs)
 
         varnames = list(param.asvarnames or [])
         distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])
