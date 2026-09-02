@@ -462,9 +462,15 @@ class MixedLogit(DiscreteChoiceModel):
         
         current_group = 0
         
-        # Check non-transformed RVs
+        # Check non-transformed RVs. Guard the index: rv_het_corr holds one flag
+        # per COMPACT randvar, while Kr counts the EXPANDED random columns (an
+        # individual-specific random var expands into J-1 alternative-specific
+        # columns), so Kr can exceed len(rv_het_corr). The extra expanded columns
+        # default to no correlated heterogeneity (matches the guards at the
+        # het-tracking build above). Without this guard, any random-coefficient
+        # model with an isvar random raised IndexError in setup.
         for rv_idx in range(self.Kr):
-            if self.rv_het_corr[rv_idx]:
+            if rv_idx < len(self.rv_het_corr) and self.rv_het_corr[rv_idx]:
                 # Check if this RV should join an existing group or start a new one
                 # For now, all correlated RVs form a single group
                 if not self.het_corr_groups:
@@ -474,9 +480,9 @@ class MixedLogit(DiscreteChoiceModel):
             else:
                 self.het_corr_group_id[rv_idx] = -1
         
-        # Check transformed RVs
+        # Check transformed RVs (same expanded-vs-compact guard as above).
         for rvtrans_idx in range(self.Krtrans):
-            if self.rvtrans_het_corr[rvtrans_idx]:
+            if rvtrans_idx < len(self.rvtrans_het_corr) and self.rvtrans_het_corr[rvtrans_idx]:
                 if not self.het_corr_groups:
                     self.het_corr_groups.append([])
                 self.het_corr_groups[-1].append(('rvtrans', rvtrans_idx))
@@ -812,13 +818,31 @@ class MixedLogit(DiscreteChoiceModel):
                         pass
                 # ─────────────────────────────────────────────────────────
 
+                # Use the SAME canonical 14-segment layout as the batched
+                # (non-JAX) path below (see ~line 1203). The previous JAX-only
+                # layout inserted the extra segment right after Br_b and OMITTED
+                # the four heterogeneity segments (het_mean_rv, het_var_rv,
+                # het_mean_rvtrans, het_var_rvtrans), so split_betas produced a
+                # 10-entry var_list while compute_probabilities unpacks 14 — which
+                # crashed ("not enough values to unpack (expected 14, got 10)")
+                # for any random-coefficient model without individual-specific
+                # variables (e.g. an all-asvar mode-choice spec). The trailing
+                # het segments are zero-length when heterogeneity is unused, so
+                # this is safe and matches the beta vector layout implied by
+                # _jax_negloglik_extra_kwargs (het terms after the base params).
+                beta_segment_names = ["Bf", "Br_b", "chol", "Br_w", "Bftrans",
+                                      "flmbda", "Brtrans_b", "Brtrans_w", "rlmda",
+                                      "het_mean_rv", "het_var_rv",
+                                      "het_mean_rvtrans", "het_var_rvtrans",
+                                      "het_corr_cov"]
                 extra_names, extra_counts = self._beta_segment_extra()
-                beta_segment_names = (["Bf", "Br_b"] + list(extra_names)
-                                     + ["chol", "Br_w", "Bftrans",
-                                        "flmbda", "Brtrans_b", "Brtrans_w", "rlmda"])
-                iterations = ([self.Kf, self.Kr] + list(extra_counts)
-                              + [self.Kchol, self.Kbw, self.Kftrans,
-                                 self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans])
+                beta_segment_names = beta_segment_names + [
+                    n for n in extra_names if n not in beta_segment_names]
+                iterations = [self.Kf, self.Kr, self.Kchol, self.Kbw, self.Kftrans,
+                              self.Kftrans, self.Krtrans, self.Krtrans, self.Krtrans,
+                              self.K_het_mean_rv, self.K_het_var_rv,
+                              self.K_het_mean_rvtrans, self.K_het_var_rvtrans,
+                              self.K_het_corr_cov]
                 self.var_list = self.split_betas(jax_result['x'], iterations, beta_segment_names)
                 self.chol_mat = self.construct_chol_mat(
                     self.var_list['chol'], self.var_list['Br_w'], self.var_list['Brtrans_w'])
