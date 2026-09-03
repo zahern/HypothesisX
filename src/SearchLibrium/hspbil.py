@@ -103,9 +103,9 @@ class HSPBIL(HarmonySearch):
             self.results_file = open(f"hspbil_results.txt", "w")
 
         try:
-            self.progress_file = open(f"{run_name}_progress.txt", "w")
+            self.progress_file = open(f"{run_name}_progress.csv", "w")
         except Exception:
-            self.progress_file = open(f"hspbil_progress.txt", "w")
+            self.progress_file = open(f"hspbil_progress.csv", "w")
 
         print("SearchLibrium - HS+PBIL Run", file=self.results_file)
         print(f"Run ID: {run_id}", file=self.results_file)
@@ -113,7 +113,8 @@ class HSPBIL(HarmonySearch):
         print("-" * 72, file=self.results_file)
         self.results_file.flush()
 
-        print("iteration,score", file=self.progress_file)
+        crit_names = [c[0] for c in self.param.criterions[:self.nb_crit]]
+        print("iteration," + ",".join(crit_names), file=self.progress_file)
         self.progress_file.flush()
 
     # ------------------------------------------------------------------
@@ -284,6 +285,21 @@ class HSPBIL(HarmonySearch):
                     self._update_probability_matrix(curr_sol)
                 except Exception:
                     pass
+
+            # Log per-iteration best objective values
+            try:
+                crit_names = [c[0] for c in self.param.criterions[:self.nb_crit]]
+                _best = {}
+                for sol in self.memory:
+                    for cn in crit_names:
+                        v = float(sol.get(cn, float('inf')))
+                        if cn not in _best or abs(v) < abs(_best[cn]):
+                            _best[cn] = v
+                _vals = ','.join(str(_best.get(cn, '')) for cn in crit_names)
+                print(f"{iter},{_vals}", file=self.progress_file)
+                self.progress_file.flush()
+            except Exception:
+                pass
 
         all_val, obj_val = self.log_convergence(self.memory)
         if self.generate_plots:
