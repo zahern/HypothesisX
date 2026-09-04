@@ -3328,7 +3328,9 @@ class Search():
 
         if solution.get('model'):
             model = solution['model']
-            if model.converged or getattr(self.param, 'verbose_convergence', False):
+            _gtol = getattr(model, 'gtol_res', float('inf'))
+            _nearly = _gtol < 1e-2
+            if model.converged or _nearly or getattr(self.param, 'verbose_convergence', False):
                 model.summarise()
             else:
                 loglik = solution.get('loglik', float('nan'))
@@ -4557,7 +4559,12 @@ class Search():
         p_threshold = getattr(self.param, 'p_val', 0.05)
         ps_asvars   = set(getattr(self.param, 'ps_asvars',   []))
         ps_isvars   = set(getattr(self.param, 'ps_isvars',   []))
-        ps_randvars = set(getattr(self.param, 'ps_randvars', {}).keys())
+        # Only protect prespecified randvars that are actually in the
+        # current solution's asvars — eliminated variables must not be
+        # re-added by normalize_randvars during subsequent perturbations.
+        _cur_asvars = set(sol.get('asvars', []))
+        ps_randvars = {v for v in getattr(self.param, 'ps_randvars', {}).keys()
+                       if v in _cur_asvars}
         ps_bcvars   = set(getattr(self.param, 'ps_bcvars',   []))
 
         max_iters = 20
@@ -5240,9 +5247,8 @@ class Search():
 
             test_model = self.fit_mnl(X_test, y_test, varnames=all_vars, isvars=is_vars,
                     alts=self.param.test_alt_var, ids=self.param.test_choice_id, fit_intercept=asc_ind,
-                    init_coeff=None, transvars=bc_vars, maxiter=0, gtol=self.param.gtol, ftol=self.param.ftol,
+                    init_coeff=model.coeff_est, transvars=bc_vars, maxiter=0, gtol=self.param.gtol, ftol=self.param.ftol,
                     avail=self.param.test_avail, weights=self.param.test_weight_var, base_alt=self.param.base_alt)
-            # REMOVED: init_coeff=coeff
             model.mae = self.compute_mae(test_model)
         # }
         mae = model.mae
@@ -5328,10 +5334,9 @@ class Search():
             test_model = self.fit_mxl(X_test, y_test, varnames=all_vars, alts=self.param.test_alt_var, isvars=is_vars,
                         ids=self.param.test_choice_id, panels=self.param.test_ind_id, randvars=rand_vars,
                         n_draws=self.param.n_draws, fit_intercept=asc_ind, corvars=cor_vars,
-                        init_coeff=None, transvars=bc_vars, avail=self.param.test_avail, maxiter=0,
+                        init_coeff=model.coeff_est, transvars=bc_vars, avail=self.param.test_avail, maxiter=0,
                         gtol=self.param.gtol, ftol=self.param.ftol, weights=self.param.test_weight_var,
                         base_alt=self.param.base_alt, save_fitted_params=False)
-                # REMOVED: init_coeff=coeff,
             model.mae = self.compute_mae(test_model)
         # }
         mae = model.mae
