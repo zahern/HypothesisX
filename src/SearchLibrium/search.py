@@ -4252,12 +4252,14 @@ class Search():
     ''' ---------------------------------------------------------- '''
     ''' Function. Get orthogonalized design matrix for model fitting   '''
     ''' ---------------------------------------------------------- '''
-    def _get_orthogonalized_X(self, all_vars):
+    def _get_orthogonalized_X(self, all_vars, df=None):
         """
         Return orthogonalized design matrix X and updated variable list for
         the given variable set, applying any user-specified orthogonal groups.
         """
-        df, new_vars = self.orthogonalize_groups(self.param.df, all_vars, self.param.orthogonal_groups)
+        if df is None:
+            df = self.param.df
+        df, new_vars = self.orthogonalize_groups(df, all_vars, self.param.orthogonal_groups)
         X = df[new_vars].values
         return X, new_vars
 
@@ -5232,13 +5234,12 @@ class Search():
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
         # {
-            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
+            _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+            X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
             y_test = self.param.test_choices
 
-            # QUERY: Maybe call model.setup(...) and model.fit() rather than create test_model?
-
             test_model = self.fit_mnl(X_test, y_test, varnames=all_vars, isvars=is_vars,
-                    alts=self.param.alt_var, ids=self.param.test_choice_id, fit_intercept=asc_ind,
+                    alts=self.param.test_alt_var, ids=self.param.test_choice_id, fit_intercept=asc_ind,
                     init_coeff=None, transvars=bc_vars, maxiter=0, gtol=self.param.gtol, ftol=self.param.ftol,
                     avail=self.param.test_avail, weights=self.param.test_weight_var, base_alt=self.param.base_alt)
             # REMOVED: init_coeff=coeff
@@ -5320,10 +5321,9 @@ class Search():
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
         # {
-            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
+            _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+            X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
             y_test = self.param.test_choices
-
-            # QUERY: Maybe call model.setup(...) and model.fit() rather than create test_model?
 
             test_model = self.fit_mxl(X_test, y_test, varnames=all_vars, alts=self.param.test_alt_var, isvars=is_vars,
                         ids=self.param.test_choice_id, panels=self.param.test_ind_id, randvars=rand_vars,
@@ -5479,7 +5479,8 @@ class Search():
         aic, bic, loglik = model.aic, model.bic, model.loglik
         # Handle MAE if it's an objective
         if self.mae_is_an_objective():
-            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
+            _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+            X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
             y_test = self.param.test_choices
             test_model = NestedLogit()
             test_model.setup(X=X_test, y=y_test, varnames=all_vars, isvars=is_vars,
@@ -5587,7 +5588,8 @@ class Search():
 
 # Handle MAE if it's an objective
         if self.mae_is_an_objective():
-            X_test, _ = self._get_orthogonalized_X(all_vars)
+            _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+            X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
             y_test = self.param.test_choices
             test_model = MultiLayerNestedLogit()
             test_model.setup(X=X_test, y=y_test, varnames=all_vars, isvars=is_vars,
@@ -5784,7 +5786,8 @@ class Search():
         # COMPUTE MAE
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if self.mae_is_an_objective():
-            X_test, _ = self._get_orthogonalized_X(all_vars)  # Use same transformation for test
+            _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+            X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
             y_test = self.param.test_choices if getattr(self.param, 'test_choices', None) is not None else self.param.choices
             ids_test = self.param.test_choice_id if getattr(self.param, 'test_choice_id', None) is not None else self.param.choice_id
             test_model = self.fit_ordered_logit(X=X_test, y=y_test, ids=ids_test, varnames=all_vars)
@@ -5905,7 +5908,8 @@ class Search():
 
         # Handle MAE if it's an objective
         if self.mae_is_an_objective():
-            X_test, _ = self._get_orthogonalized_X(all_vars)
+            _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+            X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
             y_test = self.param.test_choices if getattr(self.param, 'test_choices', None) is not None else self.param.choices
             ranks_test = getattr(self.param, 'test_ranks', None)
             alt_test = self.param.test_alt_var
@@ -5997,7 +6001,8 @@ class Search():
 
         # Handle MAE if it's an objective
         if self.mae_is_an_objective():
-            X_test, _ = self._get_orthogonalized_X(all_vars)
+            _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+            X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
             y_test = self.param.test_choices if getattr(self.param, 'test_choices', None) is not None else self.param.choices
             ranks_test = getattr(self.param, 'test_ranks', None)
             alt_test = self.param.test_alt_var

@@ -108,8 +108,8 @@ class SparseEAAGDS(Search):
         self.ref_divisions = int(ref_divisions)
         self.generate_plots = generate_plots
 
-    def __init__(self, param, ctrl=None, idnum=None):
-        super().__init__(param)
+    def __init__(self, param, ctrl=None, idnum=None, **kwargs):
+        super().__init__(param, **kwargs)
         self.idnum = idnum or 'AGDS'
 
         if ctrl is not None:
@@ -337,7 +337,20 @@ class SparseEAAGDS(Search):
     #  main entry point                                                   #
     # ------------------------------------------------------------------ #
     def run_search(self, existing_sols=None):
+        import os, time as _time
         self.start = datetime.datetime.now()
+
+        # Open progress CSV
+        crit_names = [c[0] for c in self.param.criterions[:self.nb_crit]]
+        try:
+            run_id = self.idnum or 'agds'
+            ts = _time.strftime("%Y%m%d_%H%M%S")
+            pf = open(f"agds_{run_id}_{ts}_progress.csv", "w")
+        except Exception:
+            pf = open("agds_progress.csv", "w")
+        print("iteration," + ",".join(crit_names), file=pf)
+        pf.flush()
+
         memory = self._initialize(existing_sols)
         for sol in memory:
             sol.data['is_initial_sol'] = True
@@ -350,9 +363,61 @@ class SparseEAAGDS(Search):
                 self.best_sol = best
             logger.info("[AGDS] gen {}: best obj0 = {:.6g}".format(gen, best.obj(0)))
 
+            # Log per-generation best values
+            try:
+                _best = {}
+                for sol in memory:
+                    for ci, cn in enumerate(crit_names):
+                        try:
+                            v = float(sol.obj(ci))
+                        except Exception:
+                            v = float('inf')
+                        if cn not in _best or abs(v) < abs(_best[cn]):
+                            _best[cn] = v
+                _vals = ','.join(str(_best.get(cn, '')) for cn in crit_names)
+                print(f"{gen},{_vals}", file=pf)
+                pf.flush()
+            except Exception:
+                pass
+
+        pf.close()
         self.memory = self._sort_mem(memory)
         logger.info("[AGDS] search complete; best obj0 = {:.6g}"
                     .format(self.memory[0].obj(0)))
+
+        # Generate convergence plot
+        if self.generate_plots:
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                pf_path = pf.name
+                lines = open(pf_path).read().strip().split('\n')
+                if len(lines) >= 2:
+                    header = lines[0].split(',')
+                    data = [l.split(',') for l in lines[1:] if l.strip()]
+                    iters = [int(d[0]) for d in data]
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    for ci, col in enumerate(header[1:], 1):
+                        vals = []
+                        for d in data:
+                            try: vals.append(float(d[ci]))
+                            except: vals.append(None)
+                        vc = [(i, v) for i, v in zip(iters, vals) if v is not None]
+                        if vc:
+                            xs, ys = zip(*vc)
+                            ax.plot(xs, ys, label=col.strip(), linewidth=1.5)
+                    ax.set_xlabel('Generation')
+                    ax.set_ylabel('Objective Value')
+                    ax.set_title('SparseEA-AGDS Convergence')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    fig.savefig("convergence_agds.png", dpi=150, bbox_inches='tight')
+                    plt.close(fig)
+                    logger.info("[AGDS] convergence plot saved: convergence_agds.png")
+            except Exception as exc:
+                logger.warning(f"Convergence plot failed: {exc}")
+
         return self.memory
 
     # ------------------------------------------------------------------ #
