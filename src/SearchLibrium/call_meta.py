@@ -677,7 +677,16 @@ def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
     print(_describe_ctrl(ctrl, 'hs'))
     print()
 
-    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num, **kwargs)
+    solver = HSPBIL(parameters, init_sol, ctrl, idnum=id_num)
+    # Forward remaining kwargs (e.g. generate_plots) via set_control_parameters
+    # instead of the constructor: HSPBIL.__init__ does not accept them and older
+    # callers crash with TypeError.
+    _fwd = {k: v for k, v in kwargs.items() if k != 'ctrl'}
+    if _fwd and hasattr(solver, 'set_control_parameters'):
+        try:
+            solver.set_control_parameters(**_fwd)
+        except TypeError:
+            pass
     existing = [init_sol] if init_sol is not None else None
     solver.run_search(existing_sols=existing)
     solver.close_files()

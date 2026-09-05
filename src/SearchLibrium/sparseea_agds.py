@@ -331,6 +331,12 @@ class SparseEAAGDS(Search):
             if converged and abs(sol.obj(0)) < BOUND:
                 mem.append(sol)
             mem = get_unique(mem, 0)
+        if not mem:
+            raise RuntimeError(
+                "AGDS initial population is empty: none of the candidate "
+                "specifications converged. Check Parameters (n_draws/maxiter), "
+                "model setup, and run with verbose_convergence=True to print "
+                "per-fit failures.")
         return self._sort_mem(mem)[:self.pop_size]
 
     # ------------------------------------------------------------------ #

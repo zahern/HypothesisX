@@ -121,6 +121,7 @@ class ModelRegistry:
         self.models = [
             'multinomial',
             'mixed_logit',
+            'mixed_logit_gse',
             'random_regret',
             'mixed_random_regret',
             'ordered_logit',
@@ -2173,7 +2174,7 @@ class Search():
             # No random coefficients – exclude mixed models
             candidate_models = [
                 m for m in candidate_models
-                if m not in {"mixed_logit", "mixed_random_regret", "mixed_nested"}
+                if m not in {"mixed_logit", "mixed_logit_gse", "mixed_random_regret", "mixed_nested"}
             ]
 
         # nested_logit only valid when nests are configured
@@ -5625,9 +5626,10 @@ class Search():
 
         for col in df.columns:
             cl = col.lower()
-            if cl in ('id', 'custom_id', 'ind_id') and id_col is None:
+            if cl in ('id', 'custom_id', 'ind_id', 'trip_id', 'choice_id',
+                      'participant_id', 'participant_id_int') and id_col is None:
                 id_col = col
-            if cl in ('alt', 'alternative') and alt_col is None:
+            if cl in ('alt', 'alternative', 'alt_var', 'mode_code', 'mode') and alt_col is None:
                 alt_col = col
             if cl in ('choice', 'chosen', 'y') and choice_col is None:
                 choice_col = col
@@ -5748,7 +5750,19 @@ class Search():
             model.fit(n_draws=self.param.n_draws)
             model.descr = "MixedRRM"
         except Exception as e:
-            print(f"[MixedRRM] fit failed: {e}")
+            print(f"[MixedRRM] fit failed: {e} — falling back to fixed-coefficient RRM")
+            try:
+                _df, _attrs = self._build_rrm_df(self.param.df, as_vars, is_vars)
+                _fb = self.fit_random_regret(df=_df, transvars=bc_vars)
+                _fb.descr = "RRM(fallback-for-mixed)"
+                sol['model'] = _fb
+                sol['coeff'] = getattr(_fb, 'coeff_est', getattr(_fb, 'beta', None))
+                sol['model_n'] = 'random_regret'
+                return (getattr(_fb, 'aic', float('inf')), getattr(_fb, 'bic', float('inf')),
+                        getattr(_fb, 'loglik', -float('inf')), getattr(_fb, 'mae', float('inf')),
+                        as_vars, is_vars, {}, bc_vars, [], getattr(_fb, 'converged', False), sol)
+            except Exception as e2:
+                print(f"[MixedRRM] fallback RRM also failed: {e2}")
             aic = bic = loglik = mae = float('inf')
             loglik = -float('inf')
             return (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, False, sol)
@@ -6071,6 +6085,14 @@ class Search():
             return self.evaluate_rrm(sol)
         elif model_n == 'mixed_random_regret':
             return self.evaluate_mixed_rrm(sol)
+        elif model_n == 'mixed_logit_gse':
+            # GSE needs gradient_scores unavailable during spec search; the MXL
+            # likelihood is the same family, so route through it. Refit the
+            # winning spec with MixedLogitGSE as a post-step.
+            if bool(sol.get('randvars')):
+                return self.evaluate_mxl(sol)
+            sol = self.repair_solution(sol)
+            return self.evaluate_mnl(sol)
         elif model_n == 'nested_logit':
             return self.evaluate_nested_logit(sol)
         elif model_n == 'mixed_nested':
