@@ -1399,12 +1399,16 @@ class DiscreteChoiceModel(ABC):
 
         # Sample info
         N = getattr(self, 'N', None)
+        if N is None:
+            # Models such as RandomRegret track the sample size as nb_samples
+            # and never set N/P/panel_info. Fall back so summarise() is generic.
+            N = getattr(self, 'nb_samples', None)
         P = getattr(self, 'P', None)
         if getattr(self, "panel_info", None) is not None:
             obs = self.panel_info.sum(axis=1).astype(int)
-        else:            
-            obs = np.ones(self.N, dtype=int)   
-        mn, mx = int(obs.min()), int(obs.max())
+            mn, mx = int(obs.min()), int(obs.max())
+        else:
+            mn = mx = 1
         if N is not None:
             if P is not None and P > 1:
                 total = getattr(self, 'sample_size', N * P)

@@ -3,6 +3,7 @@ from scipy.optimize import minimize, differential_evolution
 from scipy.special import logsumexp
 from scipy.stats import norm as _scipy_norm
 import time
+import warnings
 
 try:  
     from _choice_model import  DiscreteChoiceModel
@@ -52,6 +53,10 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         membership_maxiter=50,
         l1_penalty=0.0,
         l2_penalty=0.5,
+        smart_init=False,
+        smart_jitter=0.5,
+        min_share=0.05,
+        sort_classes=True,
     ):
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
@@ -63,6 +68,24 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.membership_maxiter = int(membership_maxiter)
         self.l1_penalty = float(l1_penalty)
         self.l2_penalty = float(l2_penalty)
+        # ── smart initialisation (see _smart_start_betas) ──────────
+        # smart_init : build data-driven starts (pooled MNL + random panel
+        #   partitions) instead of N(0, 0.05) noise around the origin.
+        # smart_jitter : std of the Gaussian fallback spread around the
+        #   pooled-MNL solution when a partition fit is unusable.
+        # min_share : class shares below this flag the class as collapsed.
+        # sort_classes : reorder classes by descending share after fitting
+        #   (fixes label switching for reporting/search comparability).
+        self.smart_init = bool(smart_init)
+        self.smart_jitter = float(smart_jitter)
+        self.min_share = float(min_share)
+        self.sort_classes = bool(sort_classes)
+        # Diagnostics populated by fit()/fit_direct().
+        self.starts_ = []
+        self.sort_perm_ = None
+        self.collapsed_ = []
+        self.min_class_share_ = float("nan")
+        self.smart_init_used_ = False
         self.descr = "LC-MXL"
         self.coeff_est = None
         self.coeff_names = None
@@ -781,6 +804,131 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             raise ValueError("class_probs0 must have length n_classes.")
         return self._normalize_class_probs(class_probs0)
 
+    def _smart_start_betas(self, rng):
+        """Data-driven EM starting values for the class betas.
+
+        Mixture likelihoods are multimodal and EM climbs to the nearest
+        stationary point, so symmetric N(0, 0.05) starts make the final
+        solution a lottery over seeds. This instead:
+
+        1. fits a pooled MNL (uniform weights) as the data-informed centre;
+        2. randomly partitions *panels* into ``n_classes`` groups and fits a
+           weighted MNL per group — one cheap L-BFGS-B each — so classes
+           start separated along real data variation (classic random-partition
+           initialisation for mixtures);
+        3. falls back to pooled-MNL + ``N(0, smart_jitter)`` noise for any
+           group whose partition fit is empty or non-finite.
+
+        Returns a list of per-class beta arrays matching ``self._Ks``.
+        """
+        C = self.n_classes
+        Ks = list(self._Ks)
+        n_tasks = int(np.asarray(self.y).shape[0])
+        ones = np.ones(n_tasks, dtype=float)
+
+        def _zeros(k):
+            return np.zeros(int(k), dtype=float)
+
+        # 1. Pooled MNL centre (per class spec, from zeros).
+        base = []
+        for c in range(C):
+            try:
+                b = self._weighted_m_step(_zeros(Ks[c]), ones, class_idx=c)
+                b = np.asarray(b, dtype=float)
+                if not np.all(np.isfinite(b)):
+                    raise ValueError("non-finite pooled MNL")
+            except Exception:
+                b = _zeros(Ks[c])
+            base.append(b)
+
+        # 2. Random panel partition → one weighted MNL per group.
+        try:
+            n_panels = int(self.n_panels)
+            assign = rng.integers(0, C, size=n_panels)
+            # Guarantee non-empty groups (redraw empties deterministically).
+            for c in range(C):
+                if not bool((assign == c).any()):
+                    assign[rng.integers(0, n_panels)] = c
+        except Exception:
+            assign = None
+
+        starts = []
+        if assign is not None:
+            panel_idx = np.asarray(self.panel_idx).ravel() if self._panelled \
+                else np.arange(n_tasks, dtype=int)
+            ok = True
+            for c in range(C):
+                w = (assign[panel_idx] == c).astype(float)
+                if w.sum() <= 0:
+                    ok = False
+                    break
+                try:
+                    b = self._weighted_m_step(base[c], w, class_idx=c)
+                    b = np.asarray(b, dtype=float)
+                    if not np.all(np.isfinite(b)):
+                        raise ValueError("non-finite partition MNL")
+                except Exception:
+                    ok = False
+                    break
+                starts.append(b)
+            if ok and len(starts) == C:
+                return starts
+
+        # 3. Fallback: pooled centre + jitter (still breaks symmetry with
+        # data-scale spread instead of origin noise).
+        return [base[c] + rng.normal(scale=self.smart_jitter, size=Ks[c])
+                for c in range(C)]
+
+    def _sort_classes_in_place(self):
+        """Reorder classes by descending share (fixes label switching).
+
+        Permutes ``class_betas`` / ``class_probs`` / ``posterior`` columns.
+        Membership gammas use the *last* class as reference, so they are
+        re-expressed exactly under the new reference (full C×Km matrix with
+        an implicit zero row, permuted, then re-centred). No-op for one
+        class. Returns the permutation applied.
+        """
+        C = self.n_classes
+        perm = np.arange(C, dtype=int)
+        if C <= 1 or self.class_probs is None:
+            return perm
+        order = np.argsort(-np.asarray(self.class_probs, dtype=float), kind="stable")
+        if bool((order == perm).all()):
+            return perm
+        if isinstance(self.class_betas, list):
+            self.class_betas = [self.class_betas[c] for c in order]
+        else:
+            self.class_betas = np.asarray(self.class_betas)[order]
+        self.class_probs = np.asarray(self.class_probs, dtype=float)[order]
+        if self.posterior is not None:
+            self.posterior = np.asarray(self.posterior)[:, order]
+        gammas = getattr(self, "class_gammas", None)
+        if gammas is not None and np.asarray(gammas).size > 0:
+            g = np.asarray(gammas, dtype=float)
+            if g.shape[0] == C - 1:
+                full = np.vstack([g, np.zeros((1, g.shape[1]))])
+                full = full[order]
+                self.class_gammas = full[:-1] - full[-1]
+        return order
+
+    def _detect_collapse(self):
+        """Flag degenerate (near-empty) classes. Returns list of class indices."""
+        shares = np.asarray(getattr(self, "class_probs", []), dtype=float)
+        collapsed = [int(c) for c, s in enumerate(shares) if s < self.min_share]
+        self.collapsed_ = collapsed
+        self.min_class_share_ = float(shares.min()) if shares.size else float("nan")
+        if collapsed:
+            warnings.warn(
+                f"LatentClassMixedLogit: {len(collapsed)}/{self.n_classes} class(es) "
+                f"collapsed (share < {self.min_share}): "
+                + ", ".join(f"class {c + 1} (share={shares[c]:.4f})" for c in collapsed)
+                + ". Treat this solution with suspicion: try more starts "
+                "(n_init), smart_init=True, fewer classes, or stronger "
+                "regularisation.",
+                UserWarning, stacklevel=3,
+            )
+        return collapsed
+
     def _panel_sum(self, arr_task):
         """Sum a per-task array ``(N_task, C)`` into per-panel ``(n_panels, C)``.
 
@@ -984,7 +1132,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
 
     def fit(self, betas0=None, class_probs0=None, gammas0=None,
             de_init=False, de_popsize=6, de_maxiter=20, de_tol=0.01, de_seed=None,
-            em_method="squarem"):
+            em_method="squarem", smart_init=None):
         """Fit the latent class model via EM or SQUAREM-accelerated EM.
 
         Parameters
@@ -1003,9 +1151,16 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         em_method : {'standard', 'squarem'}
             EM solver.  ``'squarem'`` applies the Squared Extrapolation Method
             (Varadhan & Roland 2008) to accelerate convergence.
+        smart_init : bool or None
+            Data-driven starts (pooled MNL + random panel partitions, see
+            :meth:`_smart_start_betas`) instead of N(0, 0.05) origin noise.
+            None (default) uses the ``smart_init`` constructor flag. An
+            explicitly passed ``betas0`` is still honoured for start 0.
         """
         if em_method not in ("standard", "squarem"):
             raise ValueError(f"em_method must be 'standard' or 'squarem', got {em_method!r}")
+
+        use_smart = self.smart_init if smart_init is None else bool(smart_init)
 
         if de_init:
             betas0 = self._de_warm_start(
@@ -1019,6 +1174,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         _fit_once = self._fit_squarem_once if em_method == "squarem" else self._fit_em_once
 
         start_time = time.time()
+        self.starts_ = []
 
         for init_idx in range(self.n_init):
             seed = self.random_state + init_idx
@@ -1026,7 +1182,26 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             init_betas = betas0 if init_idx == 0 else None
             init_probs = class_probs0 if init_idx == 0 else None
             init_gammas = gammas0 if init_idx == 0 else None
+            start_kind = "user" if init_idx == 0 and init_betas is not None else (
+                "smart" if use_smart else "random")
+            if start_kind == "smart":
+                init_betas = self._smart_start_betas(rng)
+                # Diagnostic only: log-likelihood at the smart start. Uses the
+                # concrete start (no rng draws) so legacy random-start streams
+                # are bit-identical when smart_init=False.
+                try:
+                    start_ll = float(self._squarem_loglik(
+                        init_betas,
+                        self._make_initial_class_probs(init_probs), init_gammas))
+                except Exception:
+                    start_ll = float("nan")
+            else:
+                start_ll = float("nan")
             result = _fit_once(rng, betas0=init_betas, class_probs0=init_probs, gammas0=init_gammas)
+            self.starts_.append({"init": init_idx, "kind": start_kind,
+                                 "start_loglik": start_ll,
+                                 "final_loglik": float(result.get("loglik", float("nan"))),
+                                 "converged": bool(result.get("converged", False))})
             if best_result is None or result["loglik"] > best_result["loglik"]:
                 best_result = result
 
@@ -1038,6 +1213,12 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.converged = best_result["converged"]
         self.total_iter = best_result["iterations"]
         self.em_method = em_method
+        self.smart_init_used_ = use_smart
+
+        if self.sort_classes:
+            self.sort_perm_ = self._sort_classes_in_place()
+        else:
+            self.sort_perm_ = np.arange(self.n_classes, dtype=int)
 
         if isinstance(self.class_betas, list):
             self.coeff_est = np.concatenate([np.asarray(b).ravel() for b in self.class_betas])
@@ -1067,12 +1248,13 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
 
         self.estim_time_sec = time.time() - start_time
         self.post_process()
+        self._detect_collapse()
 
         return self
 
     def fit_direct(self, betas0=None, class_probs0=None, gammas0=None,
                    de_init=False, de_popsize=6, de_maxiter=20, de_tol=0.01,
-                   de_seed=None, maxiter=None):
+                   de_seed=None, maxiter=None, smart_init=None):
         """Fit via direct maximum likelihood (simultaneous optimisation of all parameters).
 
         Uses scipy L-BFGS-B to directly maximise the log-likelihood with respect
@@ -1092,6 +1274,10 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             DE hyper-parameters.
         maxiter : int, optional
             Maximum L-BFGS-B iterations (default: 100 * n_params).
+        smart_init : bool or None
+            Data-driven start (pooled MNL + random panel partition) when
+            ``betas0`` is None. None (default) uses the ``smart_init``
+            constructor flag.
         """
         C = self.n_classes
 
@@ -1102,6 +1288,13 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             )
 
         rng = np.random.default_rng(self.random_state)
+        use_smart = self.smart_init if smart_init is None else bool(smart_init)
+
+        if betas0 is None and use_smart:
+            betas0 = self._smart_start_betas(rng)
+            self.smart_init_used_ = True
+        else:
+            self.smart_init_used_ = False
 
         if isinstance(self.class_betas, list) and betas0 is None:
             betas0 = self._make_initial_betas(rng)
@@ -1207,6 +1400,21 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             self.class_betas, self.class_probs, self.class_gammas
         )
         self.total_iter = result.nit
+
+        if self.sort_classes:
+            self.sort_perm_ = self._sort_classes_in_place()
+            # Rebuild label-dependent outputs in the new order (self.class_betas
+            # was permuted in place; the local betas_flat still holds old order).
+            self.coeff_est = np.concatenate(
+                [np.asarray(b).ravel() for b in self.class_betas])
+            self.coeff_names = []
+            for c in range(C):
+                idx = self._class_specs[c]
+                for v in [self.varnames[i] for i in idx]:
+                    self.coeff_names.append(f"class_{c + 1}_{v}")
+        else:
+            self.sort_perm_ = np.arange(C, dtype=int)
+        self._detect_collapse()
 
         return self
 
@@ -1436,30 +1644,39 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         """Numerical Hessian of the log-likelihood via central finite differences.
 
         Uses O(h^2) accuracy.  Requires 2P + 4*P*(P-1)/2 function evaluations.
+
+        Steps are *scale-aware*: ``h_i = eps * max(1.0, |x_i|)``. A fixed
+        absolute step divides pure float64 cancellation noise by ``eps**2``
+        at flat EM optima (gradient ~0), fabricating huge phantom curvature
+        that then collapses SEs to 0 (and t/p to inf/NaN). Scaling the step
+        to the parameter magnitude keeps the differencing error proportional
+        to the local function scale instead.
         """
         P = len(params)
         H = np.zeros((P, P))
         f0 = self._full_loglik(params)
+        h = np.array([eps * max(1.0, abs(float(v))) for v in np.asarray(params).ravel()],
+                     dtype=float)
 
         for i in range(P):
             ei = np.zeros(P)
-            ei[i] = eps
+            ei[i] = h[i]
             H[i, i] = (
                 self._full_loglik(params + ei)
                 - 2.0 * f0
                 + self._full_loglik(params - ei)
-            ) / (eps * eps)
+            ) / (h[i] * h[i])
 
         for i in range(P):
             for j in range(i + 1, P):
-                ei = np.zeros(P); ei[i] = eps
-                ej = np.zeros(P); ej[j] = eps
+                ei = np.zeros(P); ei[i] = h[i]
+                ej = np.zeros(P); ej[j] = h[j]
                 val = (
                     self._full_loglik(params + ei + ej)
                     - self._full_loglik(params + ei - ej)
                     - self._full_loglik(params - ei + ej)
                     + self._full_loglik(params - ei - ej)
-                ) / (4.0 * eps * eps)
+                ) / (4.0 * h[i] * h[j])
                 H[i, j] = H[j, i] = val
 
         return H
@@ -1649,12 +1866,46 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             score = np.hstack([score_phi, score_beta]) if C > 1 else score_beta
 
         opg_diag = np.zeros(len(params))
+        cov_opg = None
         try:
             JtJ = score.T @ score
             cov_opg = np.linalg.pinv(JtJ)
             opg_diag = np.sqrt(np.clip(np.diag(cov_opg), 0.0, None))
         except Exception:
             pass
+
+        # ── Reliability gate: Hessian SEs vs OPG fallback ─────────────
+        # A huge/ill-conditioned observed-information matrix with ~0
+        # gradients is the signature of a flat EM plateau or collapsed
+        # class: the FD Hessian reads cancellation noise × 1/eps² (and clip
+        # kinks at 1e-300), the inverse collapses SEs to 0, and t/p degrade
+        # to inf/NaN. The OPG (outer-product-of-scores) covariance needs no
+        # second derivatives and stays PSD, so prefer it whenever the
+        # Hessian path is unreliable — and say so in se_method.
+        shares_now = np.asarray(pi, dtype=float)
+        collapsed_now = bool(shares_now.size
+                             and np.nanmin(shares_now) < getattr(self, "min_share", 0.05))
+        hess_reliable = (bool(np.all(np.isfinite(se)))
+                         and bool(np.isfinite(cond_number))
+                         and cond_number <= 1e12
+                         and not collapsed_now)
+        opg_usable = (cov_opg is not None
+                      and bool(np.all(np.isfinite(opg_diag)))
+                      and bool((opg_diag > 0).any()))
+        se_reliable = hess_reliable
+        if not hess_reliable and opg_usable:
+            se = opg_diag
+            cov = cov_opg
+            reason = ("collapsed class (share < min_share)" if collapsed_now
+                      else "ill-conditioned Hessian")
+            se_method = f"opg fallback ({reason})"
+            se_reliable = True
+            warnings.warn(
+                f"LatentClassMixedLogit: Hessian-based SEs unreliable ({reason}; "
+                f"cond={cond_number:.2e}) — reporting OPG standard errors instead. "
+                "Treat z/p values as approximate.",
+                UserWarning, stacklevel=2,
+            )
 
         # ── Inference ─────────────────────────────────────────────────────
         # NB: np.where evaluates both branches eagerly, so params / se would
@@ -1734,6 +1985,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             "cond_number": cond_number,
             "se_method":   se_method,
             "opg_se":      opg_diag,
+            "se_reliable": se_reliable,
+            "collapsed":   collapsed_now,
         }
 
     def summarise_lc(self, compute_se=True):

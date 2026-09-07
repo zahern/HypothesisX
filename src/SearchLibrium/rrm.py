@@ -781,18 +781,27 @@ class RandomRegret(DiscreteChoiceModel):
         print("=" * 100)
 
         # Print out table:
-        print("{:>10} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12}"
-              .format("Coeff", "Estimate", "Std.Err.", "z-val", "p-val", "[0.025", "0.975]"))
-        print("-" * 100)
-        cond = "{:>10} {:>12.6f} {:>12.6f} {:>12.6f} {:>12.6f} {:>12.6f} {:>12.6f}"
+        # Left-justify the variable name in a column wide enough for the longest
+        # label so the numeric columns stay aligned (names can exceed 10 chars).
+        name_w = max((len(str(l)) for l in self.labels), default=10)
+        name_w = max(name_w, len("Coeff"))
+        cw = 12
+        hdr = ("{:<{nw}} {:>{cw}} {:>{cw}} {:>{cw}} {:>{cw}} {:>{cw}} {:>{cw}}"
+               .format("Coeff", "Estimate", "Std.Err.", "z-val", "p-val",
+                       "[0.025", "0.975]", nw=name_w, cw=cw))
+        print(hdr)
+        print("-" * len(hdr))
+        cond = ("{:<{nw}} {:>{cw}.6f} {:>{cw}.6f} {:>{cw}.6f} {:>{cw}.6f} "
+                "{:>{cw}.6f} {:>{cw}.6f}")
 
         for m in range(self.nb_attr):
         # {
-            formatted_str = cond.format(self.labels[m], self.beta[m], self.stderr[m],
-                self.zvalues[m], self.pvalues[m], self.signif_lb[m], self.signif_ub[m])
+            formatted_str = cond.format(str(self.labels[m]), self.beta[m], self.stderr[m],
+                self.zvalues[m], self.pvalues[m], self.signif_lb[m], self.signif_ub[m],
+                nw=name_w, cw=cw)
             if self.pvalues[m] < 0.05:
                 formatted_str += (" (*)")
             print(formatted_str)
         # }
-        print("=" * 100)
+        print("=" * len(hdr))
     # }

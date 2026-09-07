@@ -887,6 +887,15 @@ class Parameters:
         # Larch*MNL/Nested/Mixed wrappers. Keys: compute_engine ('jax'/'numba'/None
         # for auto), reg_alpha (elastic-net strength, 0 = off), l1_ratio.
         self.larch_opts = kwargs.get('larch_opts', {})
+
+        # Latent-class search options forwarded to Search.fit_lcm() and
+        # LatentClassMixedLogit. n_init>1 with smart_init defeats the
+        # seed-lottery behind LC instability (see latent_class._smart_start_betas).
+        self.lc_n_init = kwargs.get('lc_n_init', 1)
+        self.lc_smart_init = kwargs.get('lc_smart_init', False)
+        self.lc_smart_jitter = kwargs.get('lc_smart_jitter', 0.5)
+        self.lc_min_share = kwargs.get('lc_min_share', 0.05)
+        self.lc_sort_classes = kwargs.get('lc_sort_classes', True)
         self.de_init = de_init
         self.de_popsize = de_popsize
         self.de_maxiter = de_maxiter
@@ -1011,6 +1020,8 @@ class Parameters:
             'auto_as_is', 'report_auto_as_is', 'l1_penalty', 'l2_penalty',
             'verbose_convergence', 'allow_het_mean', 'allow_het_var',
             'het_mean_covariates', 'het_var_covariates', 'larch_opts',
+            'lc_n_init', 'lc_smart_init', 'lc_smart_jitter', 'lc_min_share',
+            'lc_sort_classes',
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
@@ -5156,6 +5167,11 @@ class Search():
             membership_maxiter=100,
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
             l2_penalty=getattr(self.param, 'l2_penalty', 0.5),
+            n_init=getattr(self.param, 'lc_n_init', 1),
+            smart_init=getattr(self.param, 'lc_smart_init', False),
+            smart_jitter=getattr(self.param, 'lc_smart_jitter', 0.5),
+            min_share=getattr(self.param, 'lc_min_share', 0.05),
+            sort_classes=getattr(self.param, 'lc_sort_classes', True),
         )
 
         membership_vars = None

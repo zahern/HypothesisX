@@ -372,6 +372,27 @@ class SparseEAAGDS(Search):
         for sol in memory:
             sol.data['is_initial_sol'] = True
 
+        # Per-model-type convergence history: model_n -> list of (gen, best_obj0
+        # seen so far for that model type). Used to overlay one convergence line
+        # per model type (e.g. multinomial / random_regret / mixed_random_regret).
+        model_hist = {}
+        model_best = {}
+
+        def _record_model_history(gen, mem):
+            for sol in mem:
+                try:
+                    mn = sol.get('model_n', '') or 'unknown'
+                    if isinstance(mn, (list, tuple)):
+                        mn = mn[0] if mn else 'unknown'
+                    mn = str(mn)
+                    v = float(sol.obj(0))
+                except Exception:
+                    continue
+                if mn not in model_best or v < model_best[mn]:
+                    model_best[mn] = v
+            for mn, v in model_best.items():
+                model_hist.setdefault(mn, []).append((gen, v))
+
         for gen in range(self.maxiter):
             children = self._reproduce(memory)
             memory = self._environmental_selection(memory + children, self.pop_size)
@@ -379,6 +400,7 @@ class SparseEAAGDS(Search):
             if self.best_sol is None or best.obj(0) < self.best_sol.obj(0):
                 self.best_sol = best
             logger.info("[AGDS] gen {}: best obj0 = {:.6g}".format(gen, best.obj(0)))
+            _record_model_history(gen, memory)
 
             # Log per-generation best values
             try:
@@ -402,36 +424,50 @@ class SparseEAAGDS(Search):
         logger.info("[AGDS] search complete; best obj0 = {:.6g}"
                     .format(self.memory[0].obj(0)))
 
-        # Generate convergence plot
+        # Generate convergence plot: one line per model type explored, showing
+        # the best objective (crit 0) seen so far for that model at each
+        # generation ("convergence history across models").
         if self.generate_plots:
             try:
                 import matplotlib
                 matplotlib.use('Agg')
                 import matplotlib.pyplot as plt
-                pf_path = pf.name
-                lines = open(pf_path).read().strip().split('\n')
-                if len(lines) >= 2:
-                    header = lines[0].split(',')
-                    data = [l.split(',') for l in lines[1:] if l.strip()]
-                    iters = [int(d[0]) for d in data]
+                obj_label = crit_names[0] if crit_names else 'Objective Value'
+                # Persist the per-model history as a CSV alongside the plot.
+                try:
+                    base = os.path.splitext(pf.name)[0]
+                    csv_path = base + "_by_model.csv"
+                except Exception:
+                    base, csv_path = "convergence_agds", "convergence_agds_by_model.csv"
+                if model_hist:
+                    try:
+                        with open(csv_path, "w") as mf:
+                            mf.write("model_n,generation," + str(obj_label) + "\n")
+                            for mn in sorted(model_hist):
+                                for g, v in model_hist[mn]:
+                                    mf.write(f"{mn},{g},{v}\n")
+                    except Exception as _csv_exc:
+                        logger.warning(f"by-model CSV failed: {_csv_exc}")
+
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    for ci, col in enumerate(header[1:], 1):
-                        vals = []
-                        for d in data:
-                            try: vals.append(float(d[ci]))
-                            except: vals.append(None)
-                        vc = [(i, v) for i, v in zip(iters, vals) if v is not None]
-                        if vc:
-                            xs, ys = zip(*vc)
-                            ax.plot(xs, ys, label=col.strip(), linewidth=1.5)
+                    for mn in sorted(model_hist):
+                        pts = model_hist[mn]
+                        if pts:
+                            xs, ys = zip(*pts)
+                            ax.plot(xs, ys, label=mn, linewidth=1.5, marker='.',
+                                    markersize=4)
                     ax.set_xlabel('Generation')
-                    ax.set_ylabel('Objective Value')
-                    ax.set_title('SparseEA-AGDS Convergence')
-                    ax.legend()
+                    ax.set_ylabel(f'Best {obj_label} so far')
+                    ax.set_title('SparseEA-AGDS Convergence by Model Type')
+                    ax.legend(title='Model type')
                     ax.grid(True, alpha=0.3)
                     fig.savefig("convergence_agds.png", dpi=150, bbox_inches='tight')
                     plt.close(fig)
-                    logger.info("[AGDS] convergence plot saved: convergence_agds.png")
+                    logger.info("[AGDS] convergence plot saved: convergence_agds.png "
+                                "(%d model types)", len(model_hist))
+                else:
+                    logger.warning("[AGDS] no per-model history recorded; "
+                                   "skipping convergence plot")
             except Exception as exc:
                 logger.warning(f"Convergence plot failed: {exc}")
 
