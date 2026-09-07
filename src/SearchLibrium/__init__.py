@@ -152,6 +152,13 @@ try:
     from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, call_banditsa, call_parcopsa, call_agds, estimate_ctrl
     from .predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
     from .sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
+    from .regularization import elasticnet_objective, elasticnet_penalty_and_grad, nl_identification_priors
+    from .jax_utils import ensure_jax_environment, is_large_model, estimate_row_guard, check_gradient_health
+    from .larch_compat import apply_larch_patches
+    from .larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
+    from .skims import omx_to_dataframe, read_omx_skims, prepare_skims_from_omx, merge_skim_component
+    from .accessibility import gravity_accessibility, compute_accessibility, logsum_accessibility
+    from .abm import available_stages, stage_search_config
 except Exception:
     try:
         from multinomial_logit import MultinomialLogit
@@ -178,6 +185,13 @@ except Exception:
         from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, call_banditsa, call_parsa, call_parcopsa, call_agds, estimate_ctrl
         from predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
         from sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
+        from regularization import elasticnet_objective, elasticnet_penalty_and_grad, nl_identification_priors
+        from jax_utils import ensure_jax_environment, is_large_model, estimate_row_guard, check_gradient_health
+        from larch_compat import apply_larch_patches
+        from larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
+        from skims import omx_to_dataframe, read_omx_skims, prepare_skims_from_omx, merge_skim_component
+        from accessibility import gravity_accessibility, compute_accessibility, logsum_accessibility
+        from abm import available_stages, stage_search_config
     except Exception as e:
         warnings.warn(f"SearchLibrium: some modules failed to import: {e}")
 
@@ -203,6 +217,12 @@ __all__ = [
     "call_banditsa", "call_parsa", "call_parcopsa", "call_agds", "estimate_ctrl",
     "DestinationPredictor", "predict_destination_components", "predict_aggregate_destination_flows",
     "load_electricity_data", "load_travel_mode_data", "load_swiss_metro_data", "preview_datasets",
+    "elasticnet_objective", "elasticnet_penalty_and_grad", "nl_identification_priors",
+    "ensure_jax_environment", "is_large_model", "estimate_row_guard", "check_gradient_health",
+    "apply_larch_patches", "LarchMNL", "LarchNestedLogit", "LarchMixedLogit",
+    "omx_to_dataframe", "read_omx_skims", "prepare_skims_from_omx", "merge_skim_component",
+    "gravity_accessibility", "compute_accessibility", "logsum_accessibility",
+    "available_stages", "stage_search_config",
 ]
 
 

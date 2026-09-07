@@ -82,6 +82,21 @@ jax = [
     "jaxlib>=0.4.30",
     "jaxopt>=0.8.5",
 ]
+larch = [
+    "larch>=6",
+    "sharrow",
+    "xarray",
+]
+skims = [
+    "openmatrix",
+    "h5py",
+]
+abm = [
+    "SearchLibrium[larch]",
+    "SearchLibrium[skims]",
+    "lifelines",
+    "pylogit",
+]
 dev = [
     "black",
     "bumpver",

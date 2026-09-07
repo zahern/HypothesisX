@@ -130,6 +130,9 @@ class ModelRegistry:
             'mixed_exploded_logit',
             'nested_logit',
             'mixed_nested',
+            'larch_mnl',
+            'larch_nested',
+            'larch_mixed',
         ]
         if model_dict is not None:
             self.reset_models(model_dict)
@@ -879,6 +882,11 @@ class Parameters:
         # reduction: equivalent to ~2x draws for normal-based distributions.
         # shuffled=True applies Owen scrambling to reduce inter-dimension correlation.
         self.halton_opts = kwargs.get('halton_opts', {'antithetic': True})
+
+        # Larch estimator options forwarded to Search.fit_larch() and the
+        # Larch*MNL/Nested/Mixed wrappers. Keys: compute_engine ('jax'/'numba'/None
+        # for auto), reg_alpha (elastic-net strength, 0 = off), l1_ratio.
+        self.larch_opts = kwargs.get('larch_opts', {})
         self.de_init = de_init
         self.de_popsize = de_popsize
         self.de_maxiter = de_maxiter
@@ -1002,7 +1010,7 @@ class Parameters:
             # Read explicitly above but were still warned about here:
             'auto_as_is', 'report_auto_as_is', 'l1_penalty', 'l2_penalty',
             'verbose_convergence', 'allow_het_mean', 'allow_het_var',
-            'het_mean_covariates', 'het_var_covariates',
+            'het_mean_covariates', 'het_var_covariates', 'larch_opts',
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
@@ -2167,21 +2175,28 @@ class Search():
             # Random coefficients require mixed models; deterministic models excluded
             candidate_models = [
                 m for m in candidate_models
-                if m not in {"multinomial", "nested_logit", "random_regret", "ordered_logit", "ordered_probit"}
+                if m not in {"multinomial", "nested_logit", "random_regret", "ordered_logit", "ordered_probit",
+                             "larch_mnl", "larch_nested"}
             ]
             # mixed_nested only valid when nests are configured
             if not has_nests and "mixed_nested" in candidate_models:
                 candidate_models = [m for m in candidate_models if m != "mixed_nested"]
+            if not has_nests and "larch_nested" in candidate_models:
+                candidate_models = [m for m in candidate_models if m != "larch_nested"]
         else:
             # No random coefficients – exclude mixed models
             candidate_models = [
                 m for m in candidate_models
-                if m not in {"mixed_logit", "mixed_logit_gse", "mixed_random_regret", "mixed_nested"}
+                if m not in {"mixed_logit", "mixed_logit_gse", "mixed_random_regret", "mixed_nested",
+                             "larch_mixed"}
             ]
 
         # nested_logit only valid when nests are configured
         if not has_nests and "nested_logit" in candidate_models:
             candidate_models = [m for m in candidate_models if m != "nested_logit"]
+        # larch_nested needs a nest map too (param.nests)
+        if not has_nests and "larch_nested" in candidate_models:
+            candidate_models = [m for m in candidate_models if m != "larch_nested"]
 
         if not self.param.choice_set or len(self.param.choice_set) <= 2:
             candidate_models = [m for m in candidate_models if m not in {"ordered_logit", "ordered_probit"}]
@@ -5263,6 +5278,155 @@ class Search():
     # }
 
     ''' ---------------------------------------------------------- '''
+    ''' Function. Shared Larch fit helper (lazy larch import)      '''
+    ''' ---------------------------------------------------------- '''
+    def fit_larch(self, cls_name, X, y, varnames, isvars, alts, ids,
+                  transvars, fit_intercept, init_coeff, weights, avail,
+                  base_alt, maxiter, ftol, gtol, randvars=None, nests=None,
+                  n_draws=None):
+    # {
+        try:
+            from larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
+        except ImportError:
+            from .larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
+        _cls = {'LarchMNL': LarchMNL, 'LarchNestedLogit': LarchNestedLogit,
+                'LarchMixedLogit': LarchMixedLogit}[cls_name]
+        _opts = dict(getattr(self.param, 'larch_opts', {}) or {})
+        model = _cls()
+        model.setup(X=X, y=y, varnames=list(varnames), alts=alts, ids=ids,
+                    isvars=list(isvars or []), weights=weights, avail=avail,
+                    randvars=dict(randvars or {}), base_alt=base_alt,
+                    fit_intercept=fit_intercept, init_coeff=init_coeff,
+                    maxiter=maxiter, ftol=ftol, gtol=gtol,
+                    n_draws=n_draws if n_draws is not None else getattr(self.param, 'n_draws', 200),
+                    nests=nests if nests is not None else getattr(self.param, 'nests', None),
+                    compute_engine=_opts.get('compute_engine'),
+                    reg_alpha=_opts.get('reg_alpha', 0.0),
+                    l1_ratio=_opts.get('l1_ratio', 0.0))
+        model.fit()
+        return model
+    # }
+
+    def _larch_mae(self, cls_name, model, all_vars, is_vars, bc_vars, asc_ind, randvars=None):
+    # {
+        _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+        X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
+        y_test = self.param.test_choices
+        test_model = self.fit_larch(cls_name, X_test, y_test, varnames=all_vars, isvars=is_vars,
+                alts=self.param.test_alt_var, ids=self.param.test_choice_id, transvars=bc_vars,
+                fit_intercept=asc_ind, init_coeff=model.coeff_est, weights=self.param.test_weight_var,
+                avail=self.param.test_avail, base_alt=self.param.base_alt,
+                maxiter=0, ftol=self.param.ftol, gtol=self.param.gtol, randvars=randvars)
+        # maxiter=0 warm-start still runs finalize; reuse its predictions.
+        model.mae = self.compute_mae(test_model)
+        return model.mae
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Estimates a Larch-backed MNL model               '''
+    ''' ---------------------------------------------------------- '''
+    def evaluate_larch_mnl(self, sol):
+    # {
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        bc_vars = self.define_bc_vars(sol)
+        all_vars = [var for var in self.param.varnames if var in (as_vars + is_vars)]
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
+        model = self.fit_larch('LarchMNL', X=X, y=y, varnames=all_vars, isvars=is_vars,
+                alts=self.param.alt_var, ids=self.param.choice_id, transvars=bc_vars,
+                fit_intercept=asc_ind, init_coeff=None, weights=self.param.weights,
+                avail=self.param.avail, base_alt=self.param.base_alt,
+                maxiter=self.param.maxiter, ftol=self.param.ftol, gtol=self.param.gtol)
+        sol['model'] = model
+        sol['coeff'] = model.betas
+        converged = model.converged
+        aic, bic, loglik = model.aic, model.bic, model.loglik
+        bc_vars = [var for var in bc_vars if var not in self.param.isvarnames]
+        rand_vars, cor_vars = {}, []
+        if self.mae_is_an_objective():
+            self._larch_mae('LarchMNL', model, all_vars, is_vars, bc_vars, asc_ind)
+        mae = model.mae
+        if getattr(self.param, 'verbose', False):
+            model.summarise()
+        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
+        return tuple
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Estimates a Larch-backed nested logit model      '''
+    ''' ---------------------------------------------------------- '''
+    def evaluate_larch_nested(self, sol):
+    # {
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        bc_vars = self.define_bc_vars(sol)
+        all_vars = [var for var in self.param.varnames if var in (as_vars + is_vars)]
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
+        model = self.fit_larch('LarchNestedLogit', X=X, y=y, varnames=all_vars, isvars=is_vars,
+                alts=self.param.alt_var, ids=self.param.choice_id, transvars=bc_vars,
+                fit_intercept=asc_ind, init_coeff=None, weights=self.param.weights,
+                avail=self.param.avail, base_alt=self.param.base_alt,
+                maxiter=self.param.maxiter, ftol=self.param.ftol, gtol=self.param.gtol)
+        sol['model'] = model
+        sol['coeff'] = model.betas
+        converged = model.converged
+        aic, bic, loglik = model.aic, model.bic, model.loglik
+        bc_vars = [var for var in bc_vars if var not in self.param.isvarnames]
+        rand_vars, cor_vars = {}, []
+        if self.mae_is_an_objective():
+            self._larch_mae('LarchNestedLogit', model, all_vars, is_vars, bc_vars, asc_ind)
+        mae = model.mae
+        if getattr(self.param, 'verbose', False):
+            model.summarise()
+        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
+        return tuple
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Estimates a Larch-backed mixed logit model       '''
+    ''' ---------------------------------------------------------- '''
+    def evaluate_larch_mixed(self, sol):
+    # {
+        as_vars, is_vars, asc_ind = sol['asvars'], sol['isvars'], sol['asc_ind']
+        rand_vars, cor_vars = sol['randvars'], sol['corvars']
+        if isinstance(rand_vars, dict):
+            rand_var_names = list(rand_vars.keys())
+        elif isinstance(rand_vars, list):
+            rand_var_names = rand_vars
+        else:
+            rand_var_names = []
+        _extra = set(rand_var_names)
+        _is_names = set(getattr(self.param, "isvarnames", []) or [])
+        as_extra = {v for v in _extra if v not in _is_names}
+        is_extra = {v for v in _extra if v in _is_names}
+        as_vars = [var for var in self.param.varnames if var in (set(as_vars) | as_extra)]
+        is_vars = [var for var in self.param.varnames if var in (set(is_vars) | is_extra)]
+        bc_vars = [i for i in self.define_bc_vars(sol) if i not in self.param.isvarnames]
+        all_vars = list(set(as_vars + is_vars + rand_var_names))
+        all_vars = [var for var in self.param.varnames if var in all_vars]
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
+        model = self.fit_larch('LarchMixedLogit', X=X, y=y, varnames=all_vars, isvars=is_vars,
+                alts=self.param.alt_var, ids=self.param.choice_id, transvars=bc_vars,
+                fit_intercept=asc_ind, init_coeff=None, weights=self.param.weights,
+                avail=self.param.avail, base_alt=self.param.base_alt,
+                maxiter=self.param.maxiter, ftol=self.param.ftol, gtol=self.param.gtol,
+                randvars=rand_vars if isinstance(rand_vars, dict) else {})
+        sol['model'] = model
+        sol['coeff'] = model.coeff_est
+        converged = model.converged
+        aic, bic, loglik = model.aic, model.bic, model.loglik
+        if self.mae_is_an_objective():
+            self._larch_mae('LarchMixedLogit', model, all_vars, is_vars, bc_vars, asc_ind,
+                            randvars=rand_vars if isinstance(rand_vars, dict) else {})
+        mae = model.mae
+        if getattr(self.param, 'verbose', False):
+            model.summarise()
+        tuple = (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
+        return tuple
+    # }
+
+    ''' ---------------------------------------------------------- '''
     ''' Function.  Estimates a Mixed Logit model                   '''
     ''' ---------------------------------------------------------- '''
     def evaluate_mxl(self, sol):
@@ -6097,6 +6261,12 @@ class Search():
             return self.evaluate_mnl(sol)
         elif model_n == 'nested_logit':
             return self.evaluate_nested_logit(sol)
+        elif model_n == 'larch_mnl':
+            return self.evaluate_larch_mnl(sol)
+        elif model_n == 'larch_nested':
+            return self.evaluate_larch_nested(sol)
+        elif model_n == 'larch_mixed':
+            return self.evaluate_larch_mixed(sol)
         elif model_n == 'mixed_nested':
             return self.evaluate_mixed_nested(sol)
         elif model_n == 'ordered_logit':
