@@ -96,14 +96,13 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         # ── AUTHENTICATION ────────────────────────────────────────────────────
-        # Currently using Option B: API token stored as a repository secret.
-        #
-        # To switch to OIDC Trusted Publishing (Option A, no secret needed):
-        #   1. Go to https://pypi.org/manage/project/SearchLibrium/settings/publishing/
-        #   2. Add a GitHub Actions trusted publisher:
-        #        Owner:    zahern   Repo: HypothesisX
-        #        Workflow: publish.yml   Environment: pypi
-        #   3. Comment out the 'with' block below.
+        # OIDC Trusted Publishing (no secret needed, cannot expire).
+        # Requires the trusted publisher on PyPI (one-time setup):
+        #   https://pypi.org/manage/project/SearchLibrium/settings/publishing/
+        #   Owner:    zahern   Repo: HypothesisX
+        #   Workflow: publish.yml   Environment: pypi
+        # (Legacy token path removed 2026-09-07 after repeated 403s from a
+        # stale PYPI_API_TOKEN secret. To go back: re-add
+        #   with:
+        #     password: ${{ secrets.PYPI_API_TOKEN }})
         # ─────────────────────────────────────────────────────────────────────
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
