@@ -59,8 +59,23 @@ class HSPBIL(HarmonySearch):
         pbil_l_bounds = kwargs.pop('pbil_l_bounds', None)
         pbil_p_low = kwargs.pop('pbil_p_low', None)
         pbil_p_high = kwargs.pop('pbil_p_high', None)
+        # Control kwargs (generate_plots, threshold, prop_local, ...) are
+        # accepted by HarmonySearch.__init__ but must not override the ctrl
+        # tuple unpacking there; hold them back and apply afterwards so a
+        # ctrl tuple + generate_plots=True works without TypeError.
+        _ctrl_kwargs = {}
+        for _k in ('generate_plots', 'threshold', 'prop_local',
+                   'max_harm', 'min_harm', 'max_pitch', 'min_pitch',
+                   'max_mem', 'maxiter'):
+            if _k in kwargs:
+                _ctrl_kwargs[_k] = kwargs.pop(_k)
 
         super().__init__(param, idnum=idnum, **kwargs)
+        if _ctrl_kwargs:
+            try:
+                self.set_control_parameters(**_ctrl_kwargs)
+            except TypeError:
+                pass
 
         varnames = list(param.asvarnames or [])
         distributions = list(param.distr or ["n", "ln", "tn", "u", "t"])

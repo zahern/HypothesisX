@@ -119,6 +119,17 @@ class SparseEAAGDS(Search):
         else:
             self.set_control_parameters()
 
+        # Respect control kwargs (generate_plots, ref_divisions, ...) passed
+        # by call_meta / call_search instead of silently dropping them.
+        _known = {'pop_size', 'maxiter', 'pc0', 'pm0',
+                  'ref_divisions', 'generate_plots'}
+        _fwd = {k: v for k, v in kwargs.items() if k in _known}
+        if _fwd:
+            try:
+                self.set_control_parameters(**_fwd)
+            except TypeError:
+                pass
+
         self.memory = []
         self.best_sol = None
         self.start = None

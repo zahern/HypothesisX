@@ -122,7 +122,7 @@ class HarmonySearch(Search):
     ''' ---------------------------------------------------------- '''
     ''' Function. Constructor                                      '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, param: Parameters, ctrl=None, idnum=None):
+    def __init__(self, param: Parameters, ctrl=None, idnum=None, **kwargs):
     # {
         super().__init__(param)           # Call base class constructor
         self.idnum = idnum or 'HS'
@@ -144,6 +144,22 @@ class HarmonySearch(Search):
             )
         else:
             self.set_control_parameters()   # default values
+
+        # Accept control kwargs forwarded by call_meta / call_search
+        # (e.g. generate_plots, threshold, prop_local). Previously any such
+        # kwarg raised TypeError: unexpected keyword argument.
+        if kwargs:
+            try:
+                self.set_control_parameters(**kwargs)
+            except TypeError:
+                # Silently ignore unknown kwargs for backward compatibility;
+                # call_meta already filters to known control parameters.
+                _known = {'max_harm', 'min_harm', 'max_pitch', 'min_pitch',
+                          'max_mem', 'maxiter', 'threshold', 'prop_local',
+                          'generate_plots'}
+                _fwd = {k: v for k, v in kwargs.items() if k in _known}
+                if _fwd:
+                    self.set_control_parameters(**_fwd)
 
         self.pitch        = self.max_pitch
         self.memory       = []              # harmony memory

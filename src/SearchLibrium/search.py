@@ -1001,6 +1001,8 @@ class Parameters:
             'num_classes',
             # Read explicitly above but were still warned about here:
             'auto_as_is', 'report_auto_as_is', 'l1_penalty', 'l2_penalty',
+            'verbose_convergence', 'allow_het_mean', 'allow_het_var',
+            'het_mean_covariates', 'het_var_covariates',
         ]
 
         # Assign all kwargs to self, but only if the key is in the acceptable_keys list
