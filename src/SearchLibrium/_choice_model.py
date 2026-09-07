@@ -1241,6 +1241,17 @@ class DiscreteChoiceModel(ABC):
     ''' |y| = #samples * #choices                                  '''
     ''' ---------------------------------------------------------- '''
     def get_loglik_null(self):  # {
+        y_arr = np.asarray(self.y)
+        if y_arr.ndim == 1:
+            # 1D chosen-alternative indices (e.g. regret models store argmax
+            # choices, not one-hot rows). Equal-share null: -N*log(J).
+            n = int(y_arr.shape[0])
+            j = int(getattr(self, 'J', 0) or 0)
+            if j < 1:
+                j = int(getattr(self, 'nb_alt', 0) or 0)
+            if j < 1:
+                return float('-inf')
+            return float(-n * np.log(float(j)))
         factor = 1.0 / self.J
         y_ = self.y * factor  # Scale each element by 1/J
         lik = np.sum(y_, axis=1)  # Compute row sums => |lik| = #samples
