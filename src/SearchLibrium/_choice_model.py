@@ -842,6 +842,9 @@ class DiscreteChoiceModel(ABC):
         #ispos = [self.varnames.tolist().index(i) for i in self.isvars]  # Position of IS vars
 
         # adjust index array to include isvars
+        # Initialised up front: the repeat-call branch below skips the block
+        # that (re)assigns it, so this guarantees it is always bound.
+        where_h = 0
         
         if len(self.isvars) > 0 and not hasattr(self, 'ispos'):  # check not done before...
             #self.fxidx = np.insert(np.array(self.fxidx, dtype="bool_"), 0,
