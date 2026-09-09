@@ -1387,6 +1387,18 @@ class DiscreteChoiceModel(ABC):
                 return set(val.keys())
             return set(val)
 
+        # Models that never set coeff_names crashed below with
+        # TypeError: 'NoneType' object is not iterable. Derive from
+        # labels/varnames so every fitted model can summarise.
+        if getattr(self, 'coeff_names', None) is None:
+            _lbl = getattr(self, 'labels', None)
+            if _lbl is None:
+                _lbl = getattr(self, 'varnames', []) or []
+            try:
+                self.coeff_names = [str(v) for v in list(_lbl)]
+            except Exception:
+                self.coeff_names = []
+
         is_latent_class = hasattr(self, 'n_classes') and hasattr(self, 'class_betas')
 
         # ── Header ──────────────────────────────────────────────────────────

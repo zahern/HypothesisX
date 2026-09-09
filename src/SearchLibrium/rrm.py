@@ -374,6 +374,10 @@ class RandomRegret(DiscreteChoiceModel):
     # {
         self.beta = np.zeros(self.nb_attr, dtype=float)
         self.labels = np.array(self.attrs)
+        # summarise()/search need coefficient names; without this every
+        # converged fixed-RRM best crashed print_best_solution with
+        # TypeError: 'NoneType' object is not iterable.
+        self.coeff_names = [str(v) for v in list(self.labels)]
 
         self.stderr = np.zeros(self.nb_attr)
         self.signif_lb = np.zeros(self.nb_attr)
