@@ -3110,13 +3110,71 @@ class Search():
             model.pred_prob = dev.to_cpu(model.pred_prob)
         # ________________________________________________________________
 
-        predicted_probabilities = model.pred_prob * 100.0
-        obs_prob = model.obs_prob * 100.0
+        predicted_probabilities = np.asarray(model.pred_prob, dtype=float)
+        obs_prob = np.asarray(model.obs_prob, dtype=float)
+        if obs_prob.ndim == 2:
+            obs_prob = obs_prob.mean(axis=0)
+        if predicted_probabilities.ndim == 2:
+            predicted_probabilities = predicted_probabilities.mean(axis=0)
+        # Panel padding can deflate observed shares (sum < 1); renormalize so
+        # the MAE measures calibration, not padding. Without this every spec
+        # scores a near-constant MAE dominated by the padding gap.
+        try:
+            _s = float(np.sum(obs_prob))
+        except Exception:
+            _s = 0.0
+        if _s > 0 and abs(_s - 1.0) > 1e-6:
+            obs_prob = obs_prob / _s
+        predicted_probabilities = predicted_probabilities * 100.0
+        obs_prob = obs_prob * 100.0
         diff = predicted_probabilities - obs_prob
         diff = np.abs(diff)
         mae = np.mean(diff)
         mae.round(2)
         return mae
+    # }
+
+    def _stash_test_shares(self, model, test_model=None, test_obs=None, test_pred=None):
+    # {
+        """Record out-of-sample aggregate mode shares on the train model.
+
+        Used for out-of-sample observed-vs-predicted plots without refitting.
+        Sets ``model.test_obs_shares`` / ``model.test_pred_shares`` (1D float
+        arrays over alternatives) or leaves them unset. Never raises.
+        """
+        try:
+            if test_obs is None and test_model is not None:
+                test_obs = getattr(test_model, 'obs_prob', None)
+            if test_pred is None and test_model is not None:
+                test_pred = getattr(test_model, 'pred_prob', None)
+            if test_obs is None or test_pred is None:
+                return
+            o = np.asarray(test_obs, dtype=float)
+            p = np.asarray(test_pred, dtype=float)
+            if o.ndim == 2:
+                o = o.mean(axis=0)
+            if p.ndim == 2:
+                p = p.mean(axis=0)
+            o = np.asarray(o, dtype=float).ravel()
+            p = np.asarray(p, dtype=float).ravel()
+            if o.size == 0 or p.size == 0 or o.size != p.size:
+                return
+            if not (np.all(np.isfinite(o)) and np.all(np.isfinite(p))):
+                return
+            try:
+                _s = float(o.sum())
+            except Exception:
+                return
+            if _s <= 0:
+                return
+            # Same panel-padding renormalization as compute_mae so the
+            # stashed shares (and OOS plots) sum to 1.
+            if abs(_s - 1.0) > 1e-6:
+                o = o / _s
+            model.test_obs_shares = o
+            model.test_pred_shares = p
+        except Exception:
+            pass
     # }
 
 
@@ -5284,6 +5342,7 @@ class Search():
                     init_coeff=model.coeff_est, transvars=bc_vars, maxiter=0, gtol=self.param.gtol, ftol=self.param.ftol,
                     avail=self.param.test_avail, weights=self.param.test_weight_var, base_alt=self.param.base_alt)
             model.mae = self.compute_mae(test_model)
+            self._stash_test_shares(model, test_model)
         # }
         mae = model.mae
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -5521,6 +5580,7 @@ class Search():
                         gtol=self.param.gtol, ftol=self.param.ftol, weights=self.param.test_weight_var,
                         base_alt=self.param.base_alt, save_fitted_params=False)
             model.mae = self.compute_mae(test_model)
+            self._stash_test_shares(model, test_model)
         # }
         mae = model.mae
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -5899,6 +5959,7 @@ class Search():
             df_test, _ = self._build_rrm_df(self.param.df_test, as_vars, is_vars)
             test_model  = self.fit_random_regret(df=df_test)
             model.mae   = self.compute_mae(test_model)
+            self._stash_test_shares(model, test_model)
         mae = model.mae
 
         if getattr(self.param, 'verbose', False):
@@ -5955,7 +6016,45 @@ class Search():
         aic          = getattr(model, 'aic',    float('inf'))
         bic          = getattr(model, 'bic',    float('inf'))
         loglik       = getattr(model, 'loglik', -float('inf'))
-        mae          = getattr(model, 'mae',    float('inf'))
+
+        # Out-of-sample MAE by *prediction* (no refit): score the test design
+        # with the train-fitted theta. A full simulated refit per candidate
+        # is prohibitively expensive; without this block mixed specs score
+        # mae=inf and can never win a prediction-ranked search.
+        if self.mae_is_an_objective():
+            try:
+                _Xt, _allt = self._get_orthogonalized_X(
+                    all_vars, df=self.param.df_test)
+                _tm = MixedRandomRegret(
+                    distributions=list(set(rand_vars.values())))
+                _tm.setup(X=_Xt, y=self.param.test_choices, varnames=_allt,
+                          alts=self.param.test_alt_var, isvars=is_vars,
+                          ids=self.param.test_choice_id, randvars=rand_vars,
+                          transvars=bc_vars, panels=self.param.test_ind_id,
+                          avail=self.param.test_avail,
+                          base_alt=self.param.base_alt, maxiter=0,
+                          ftol=self.param.ftol, gtol=self.param.gtol)
+                if list(_tm._attr_names) != list(model._attr_names):
+                    raise ValueError('test/train attribute order mismatch')
+                _tm.n_draws = int(getattr(model, 'n_draws', 0) or
+                                  getattr(self.param, 'n_draws', 100))
+                _theta = np.asarray(model.beta, dtype=float)
+                _probs = _tm._sim_probs_numpy(_theta)
+                _yidx = np.asarray(_tm.y, dtype=int)
+                _cnt = np.bincount(_yidx,
+                                   minlength=_probs.shape[1]).astype(float)
+                _obs = _cnt / max(float(_cnt.sum()), 1.0)
+                _pred = np.asarray(_probs.mean(axis=0), dtype=float)
+                mae = float(np.mean(np.abs(_pred * 100.0 - _obs * 100.0)))
+                model.mae = mae
+                model.test_obs_shares = _obs
+                model.test_pred_shares = _pred
+            except Exception as e:
+                print(f"[MixedRRM] OOS scoring failed ({e}); mae=inf")
+                mae = float('inf')
+                model.mae = mae
+        else:
+            mae = getattr(model, 'mae', float('inf'))
 
         return (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
 
