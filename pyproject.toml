@@ -91,6 +91,15 @@ skims = [
     "openmatrix",
     "h5py",
 ]
+geo = [
+    # Overture parquet access (build_location_table_overture.py,
+    # build_zone_landuse_overture.py): duckdb spatial/httpfs extensions
+    # are loaded at runtime via INSTALL/LOAD.
+    "duckdb>=1.0",
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "pyproj>=3.5",
+]
 abm = [
     "SearchLibrium[larch]",
     "SearchLibrium[skims]",

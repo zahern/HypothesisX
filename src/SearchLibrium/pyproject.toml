@@ -33,22 +33,30 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
+# NOTE: legacy copy — the authoritative metadata is ../../pyproject.toml.
+# Pins below are kept aligned with it (numpy 2.x, jax>=0.4.30).
 dependencies = [
-    "numpy>=1.26.4,<2.0.0",
-    "pandas>=2.1,<3.0",
-    "scipy>=1.11,<1.14",
-    "scikit-learn>=1.3.1,<2.0",
-    "statsmodels>=0.14,<1.0",
-    "jax==0.4.30",
-    "jaxlib==0.4.30",
+    "numpy>=2.0,<3",
+    "pandas>=2.0.0",
+    "scipy>=1.10",
+    "scikit-learn>=1.3.1",
+    "statsmodels",
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
     "jaxopt>=0.8.5",
 ]
 
 [project.optional-dependencies]
 jax = [
-    "jax==0.4.30",
-    "jaxlib==0.4.30",
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
     "jaxopt>=0.8.5",
+]
+geo = [
+    "duckdb>=1.0",
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "pyproj>=3.5",
 ]
 dev = [
     "ruff>=0.4,<1.0",

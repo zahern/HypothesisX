@@ -131,6 +131,29 @@ def halton_seq(length, prime=3, drop=100, shuffled=False):
     """Compatibility wrapper — now uses scrambled Sobol."""
     return _sobol_generate(1, length, 1, shuffled=shuffled).ravel()
 
+def _panel_weighted_shares(prob_np, panel_info):
+    """Aggregate (N, P, J) per-situation shares, ignoring zero-padded panel slots.
+
+    ``balance_panels`` pads short panels with zeros; a plain mean over the P
+    axis then deflates observed shares by (avg valid P / max P) and smooths
+    predicted shares toward uniform. Weighting by ``panel_info`` restricts
+    both averages to valid positions. Returns (per-person shares (N, J),
+    overall shares (J,)). Falls back to plain means when shapes mismatch.
+    """
+    try:
+        a = np.asarray(prob_np, dtype=float)
+        w = np.asarray(panel_info, dtype=float)
+        if (a.ndim == 3 and w.ndim == 2 and w.shape == a.shape[:2]
+                and float(w.sum()) > 0):
+            w3 = w[..., None]
+            ind = (a * w3).sum(axis=1) / np.maximum(
+                w.sum(axis=1, keepdims=True), 1e-300)
+            return ind, (a * w3).sum(axis=(0, 1)) / float(w.sum())
+    except Exception:
+        pass
+    ind = np.mean(a, axis=1)
+    return ind, np.mean(ind, axis=0)
+
 ''' ---------------------------------------------------------- '''
 ''' CLASS FOR ESTIMATION OF MIXED LOGIT MODELS                 '''
 ''' ---------------------------------------------------------- '''
@@ -439,12 +462,13 @@ class MixedLogit(DiscreteChoiceModel):
         self.avail = self.reshape_avail(avail, self.panels) if avail is not None else avail
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # COMPUTE: self.obs_prob as np.mean(np.mean(np.mean(y, axis=3), axis=1), axis=0)
+        # COMPUTE obs_prob over valid panel positions only (balance_panels
+        # pads short panels with zeros; an unweighted mean over P deflates
+        # shares by avg-valid-P / max-P, e.g. sums to ~0.18 instead of 1).
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        means_1 = np.mean(self.y, axis=3)  # means_1[i,j] = avg(y[i,j,:])
-        means_2 = np.mean(means_1, axis=1)  # means_2[i] = avg(means_1[i,:])
-        self.obs_prob = np.mean(means_2, axis=0)  # obs_prob = avg(means_2[:])
-        print(f'observed probs debug{self.obs_prob}')
+        means_1 = np.mean(self.y, axis=3)  # means_1[n,p,j] = avg(y[n,p,j,:])
+        _, self.obs_prob = _panel_weighted_shares(
+            means_1, getattr(self, 'panel_info', None))
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # DEFINE MEMBER FUNCTIONS TO APPLY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -752,11 +776,10 @@ class MixedLogit(DiscreteChoiceModel):
             # Compute choice_pred_prob = avg(p[i,j,:]):
             self.choice_pred_prob = np.mean(p, axis=3)
 
-            # Compute ind_pred_prob = avg(choice_pred_prob[i,:])
-            self.ind_pred_prob = np.mean(self.choice_pred_prob, axis=1)
-
-            # Compute pred_prob = avg(ind_pred_prob[:])
-            self.pred_prob = np.mean(self.ind_pred_prob, axis=0)
+            # Per-person / overall predicted shares over valid panels only
+            # (unweighted P-means smooth predictions toward uniform).
+            self.ind_pred_prob, self.pred_prob = _panel_weighted_shares(
+                self.choice_pred_prob, self.panel_info)
 
             self.prob_full = p
         # }

@@ -6001,8 +6001,11 @@ class Search():
                 sol['model'] = _fb
                 sol['coeff'] = getattr(_fb, 'coeff_est', getattr(_fb, 'beta', None))
                 sol['model_n'] = 'random_regret'
+                _fb_mae = getattr(_fb, 'mae', float('inf'))
+                if _fb_mae is None or not np.isfinite(float(_fb_mae)):
+                    _fb_mae = float('inf')
                 return (getattr(_fb, 'aic', float('inf')), getattr(_fb, 'bic', float('inf')),
-                        getattr(_fb, 'loglik', -float('inf')), getattr(_fb, 'mae', float('inf')),
+                        getattr(_fb, 'loglik', -float('inf')), _fb_mae,
                         as_vars, is_vars, {}, bc_vars, [], getattr(_fb, 'converged', False), sol)
             except Exception as e2:
                 print(f"[MixedRRM] fallback RRM also failed: {e2}")
@@ -6055,6 +6058,9 @@ class Search():
                 model.mae = mae
         else:
             mae = getattr(model, 'mae', float('inf'))
+            if mae is None:
+                # Never leak None into objectives: scale()/sorting crash on it.
+                mae = float('inf')
 
         return (aic, bic, loglik, mae, as_vars, is_vars, rand_vars, bc_vars, cor_vars, converged, sol)
 
