@@ -458,7 +458,6 @@ class SparseEAAGDS(Search):
                                     markersize=4)
                     ax.set_xlabel('Generation')
                     ax.set_ylabel(f'Best {obj_label} so far')
-                    ax.set_title('SparseEA-AGDS Convergence by Model Type')
                     ax.legend(title='Model type')
                     ax.grid(True, alpha=0.3)
                     fig.savefig("convergence_agds.png", dpi=150, bbox_inches='tight')

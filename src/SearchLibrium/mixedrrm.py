@@ -89,7 +89,8 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
     def setup(self, X=None, y=None, varnames=None, alts=None, isvars=None,
               transvars=None, ids=None, weights=None, panels=None, avail=None,
               base_alt=None, transformation='boxcox', maxiter=2000,
-              randvars=None, ftol=1e-6, gtol=1e-6, **kwargs):
+              randvars=None, ftol=1e-6, gtol=1e-6, reg_penalty=0.0,
+              sd_penalty=0.0, **kwargs):
         """Build the 3D regret design via :class:`RandomRegret`, then index the
         random coefficients given by ``randvars`` (name -> dist code).
 
@@ -117,6 +118,13 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
                            maxiter=maxiter, **kwargs)
         self.maxiter = maxiter
         self.ftol, self.gtol = ftol, gtol
+        # Shrinkage, mirroring MixedLogit: reg_penalty = L2 on all of theta,
+        # sd_penalty = L2 on the *variances* exp(2 log-sd). Note this shrinks
+        # values but never *selects*: weak SDs still occupy a parameter and
+        # must be demoted by backward elimination (which skips protected
+        # prespecified randoms).
+        self.reg_penalty = float(reg_penalty)
+        self.sd_penalty = float(sd_penalty)
 
         # --- deterministic repair of N / J / y from the snapshots ---
         X3 = np.asarray(self.X, dtype=float)
@@ -213,7 +221,7 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
     @staticmethod
     def _jax_mrrm_negloglik(theta, D_jax, y_jax, eta_jax, uni_jax,
                             fixed_idx, rand_idx, dist_ids, avail_jax,
-                            chunk=50):
+                            chunk=50, reg_pen=0.0, sd_pen=0.0):
         """Negative simulated log-likelihood.
 
         theta : (Mf + 2*Kr,) — [fixed | mu | log-sd]
@@ -280,7 +288,13 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
         sums = jax.lax.map(_chunk_probs, jnp.arange(n_chunks))    # (C,N,J,Cb)
         prob = jnp.sum(sums, axis=(0, 3)) / float(R)              # (N,J)
         prob = jnp.clip(prob, 1e-300, 1.0)
-        return -jnp.sum(jnp.log(prob[jnp.arange(N), y_jax]))
+        nll = -jnp.sum(jnp.log(prob[jnp.arange(N), y_jax]))
+        if reg_pen > 0:
+            nll = nll + reg_pen * jnp.sum(jnp.square(theta))
+        if sd_pen > 0 and Kr > 0:
+            _logsd = theta[Mf + Kr:Mf + 2 * Kr]
+            nll = nll + sd_pen * jnp.sum(jnp.exp(2.0 * _logsd))
+        return nll
 
     def _fit_jax(self, n_draws):
         import jax
@@ -308,7 +322,9 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
         @jax.jit
         def _neg_ll(t):
             return MixedRandomRegret._jax_mrrm_negloglik(
-                t, D_jax, y_jax, eta_jax, uni_jax, f_jax, r_jax, d_jax, a_jax)
+                t, D_jax, y_jax, eta_jax, uni_jax, f_jax, r_jax, d_jax, a_jax,
+                reg_pen=float(getattr(self, 'reg_penalty', 0.0)),
+                sd_pen=float(getattr(self, 'sd_penalty', 0.0)))
 
         _vg = jax.jit(jax.value_and_grad(_neg_ll))
 
@@ -366,7 +382,15 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
             eV = np.exp(neg)
             prob = eV / np.sum(eV, axis=1, keepdims=True)
             sim = prob.mean(axis=2)
-            return -np.sum(np.log(np.clip(sim[np.arange(N), y], 1e-300, 1.0)))
+            nll = -np.sum(np.log(np.clip(sim[np.arange(N), y], 1e-300, 1.0)))
+            _rp = float(getattr(self, 'reg_penalty', 0.0))
+            if _rp > 0:
+                nll = nll + _rp * float(np.sum(np.square(th)))
+            _sp = float(getattr(self, 'sd_penalty', 0.0))
+            if _sp > 0 and self.Kr > 0:
+                _lsd = np.asarray(th)[self.Kf + self.Kr:self.Kf + 2 * self.Kr]
+                nll = nll + _sp * float(np.sum(np.exp(2.0 * _lsd)))
+            return nll
 
         theta0 = np.zeros(self.Kf + 2 * self.Kr, dtype=float)
         return minimize(_neg_ll, theta0, method='BFGS',

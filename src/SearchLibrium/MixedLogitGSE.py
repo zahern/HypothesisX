@@ -171,7 +171,11 @@ class MixedLogitGSE(MixedLogit):
             elif dist == "tn":
                 Br = Br.at[:, k, :].set(jnp.abs(Br[:, k, :]))
             elif dist == "u":
-                Br = Br.at[:, k, :].set(Br_b[k] + Br_w[k] * (draws_jax[:, k, :] - 0.5))
+                # Marginal sd = Cholesky row norm (see MixedLogit: direct
+                # Br_w[k] indexing breaks with IndexError when Kbw < Kr).
+                _sd_k = jnp.linalg.norm(chol_mat[k, :])
+                Br = Br.at[:, k, :].set(
+                    Br_b[k] + _sd_k * (draws_jax[:, k, :] - 0.5))
 
         # Utility
         Xr = X_jax[:, :, :, rvidx]

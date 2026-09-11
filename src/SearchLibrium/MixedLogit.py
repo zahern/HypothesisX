@@ -1059,8 +1059,14 @@ class MixedLogit(DiscreteChoiceModel):
             elif dist == 'tn':
                 Br = Br.at[:, k, :].set(jnp.abs(Br[:, k, :]))
             elif dist == 'u':
+                # Marginal sd = Cholesky row norm: exact for correlated vars
+                # and identical to Br_w[k] when uncorrelated (single-nonzero
+                # row, symmetric uniform so the abs() is distribution-neutral).
+                # Direct Br_w[k] indexing breaks with IndexError whenever
+                # correlated vars exist (Kbw < Kr) or Kbw == 0.
+                _sd_k = jnp.linalg.norm(chol_mat[k, :])
                 Br = Br.at[:, k, :].set(
-                    Br_b[k] + Br_w[k] * (draws_jax[:, k, :] - 0.5))
+                    Br_b[k] + _sd_k * (draws_jax[:, k, :] - 0.5))
 
         # ---- utility ----
         P = X_jax.shape[1]

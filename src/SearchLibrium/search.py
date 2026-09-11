@@ -5989,7 +5989,9 @@ class Search():
                         panels=self.param.ind_id,
                         avail=self.param.avail, base_alt=self.param.base_alt,
                         maxiter=self.param.maxiter, ftol=self.param.ftol,
-                        gtol=self.param.gtol)
+                        gtol=self.param.gtol,
+                        reg_penalty=getattr(self.param, 'l2_penalty', 0.5),
+                        sd_penalty=getattr(self.param, 'sd_penalty', 0.001))
             model.fit(n_draws=self.param.n_draws)
             model.descr = "MixedRRM"
         except Exception as e:
