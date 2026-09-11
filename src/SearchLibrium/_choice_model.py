@@ -5,6 +5,22 @@ import logging
 
 _SINGULARITY_WARNED = False
 
+
+def _clip_zval(z, cap=50.0):
+    """Clip a z-value for DISPLAY ONLY (|z| > cap renders as +/-cap).
+
+    Huge |z| (near-zero SEs) break fixed-width table alignment without adding
+    information (p is 0 either way). Underlying statistics are untouched —
+    callers keep the raw values for inference.
+    """
+    try:
+        z = float(z)
+    except Exception:
+        return float('nan')
+    if z != z:  # nan stays nan
+        return z
+    return max(-float(cap), min(float(cap), z))
+
 """
 BACKGROUND - Choice Modelling
 
@@ -1722,7 +1738,7 @@ class DiscreteChoiceModel(ABC):
                     #self.coeff_est[idx],
                     abs(self.coeff_est[idx]) if name.startswith('sd.') or (name.startswith('chol.') and name.split('.')[1] == name.split('.')[2]) else self.coeff_est[idx],
                     self.stderr[idx],
-                    self.zvalues[idx],
+                    _clip_zval(self.zvalues[idx]),
                     self.pvalues[idx],
                     signif + bound_flag
                 ))
@@ -1865,7 +1881,7 @@ class DiscreteChoiceModel(ABC):
             )
             name = str(self.coeff_names[i])[:COL_NAME]
             se   = float(stderr[i])
-            zv   = float(zvalues[i])
+            zv   = _clip_zval(zvalues[i])
             print(fmt.format(name, float(coeff), se, zv, pv, signif), file=file)
 
         print(SEP, file=file)

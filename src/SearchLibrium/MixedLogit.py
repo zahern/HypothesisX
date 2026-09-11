@@ -878,6 +878,7 @@ class MixedLogit(DiscreteChoiceModel):
                 self.ind_pred_prob, self.pred_prob = _panel_weighted_shares(
                     self.choice_pred_prob, self.panel_info)
                 self.prob_full = p
+                self._refresh_corr_from_varlist()
                 self.post_process(jax_result, self.Xnames, self.N)
                 return
 
@@ -943,6 +944,7 @@ class MixedLogit(DiscreteChoiceModel):
 
             self.prob_full = p
         # }
+        self._refresh_corr_from_varlist()
         self.post_process(result, self.Xnames, self.N)
     # }
 
@@ -2252,6 +2254,49 @@ class MixedLogit(DiscreteChoiceModel):
         return (getattr(self, 'K_het_mean_rv', 0), getattr(self, 'K_het_var_rv', 0),
                 getattr(self, 'K_het_mean_rvtrans', 0), getattr(self, 'K_het_var_rvtrans', 0),
                 getattr(self, 'K_het_corr_cov', 0))
+
+    def _refresh_corr_from_varlist(self):
+        """Recompute chol/covariance/corr/stdevs from the FITTED var_list.
+
+        These attributes were previously left over from whichever gradient
+        evaluation ran last — often the init point (all-0.1 betas), which
+        prints the infamous constant 0.7071/0.5774/0.8165 'correlations' and
+        exact-zero terms that never move. Rebuilding deterministically from
+        the final segments makes the displayed matrix the estimated one.
+        Never raises (leaves prior values on failure).
+        """
+        try:
+            vl = getattr(self, 'var_list', None) or {}
+            chol = np.asarray(vl.get('chol', []), dtype=float).ravel()
+            brw = np.asarray(vl.get('Br_w', []), dtype=float).ravel()
+            Kr = int(getattr(self, 'Kr', 0) or 0)
+            L = int(getattr(self, 'correlationLength', 0) or 0)
+            if Kr <= 0 or chol.size == 0:
+                return
+            mat = np.zeros((Kr, Kr))
+            idx = 0
+            for r in range(min(L, Kr)):
+                for c in range(r + 1):
+                    if idx < chol.size:
+                        mat[r, c] = chol[idx]
+                        idx += 1
+            for k in range(min(L, Kr), Kr):
+                j = k - min(L, Kr)
+                if j < brw.size:
+                    mat[k, k] = abs(brw[j])
+            cov = mat @ mat.T
+            sd = np.sqrt(np.maximum(np.diag(cov), 1e-300))
+            corr = np.eye(Kr)
+            for i in range(Kr):
+                for j in range(Kr):
+                    if sd[i] > 0 and sd[j] > 0:
+                        corr[i, j] = cov[i, j] / (sd[i] * sd[j])
+            self.chol_mat = mat
+            self.covariance_matrix = cov
+            self.stdevs = sd
+            self.corr_mat = corr
+        except Exception:
+            pass
 
     def _init_pad_arrays(self):
         """Extra arrays to insert between Br_b and Bftrans in init_coeff.
