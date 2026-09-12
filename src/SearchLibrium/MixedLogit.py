@@ -1117,6 +1117,66 @@ class MixedLogit(DiscreteChoiceModel):
         return ll
 
     # ------------------------------------------------------------------
+    # MASKED (fixed-max-size) negloglik — one JIT compilation for ALL specs.
+    #
+    # The per-shape path above recompiles once for every distinct
+    # (Kf, Kr, Kchol, Kbw). This variant instead pads the design to a fixed
+    # (KF, KR), passes float masks (mask_f, mask_r) and the draws padded to KR,
+    # and zeroes inactive columns with the masks instead of slicing — so a single
+    # compiled function serves every specification. Scope: UNCORRELATED random
+    # coefficients, no heterogeneity, no Box-Cox (exactly the cases the JAX path
+    # already supports; correlated/het/trans fall back to the per-shape path).
+    # Enabled with SL_JAX_MASK=1; numerically identical to the per-shape path
+    # (see tests/test_jax_mask_equivalence.py).
+    #
+    # beta layout (padded): [ Bf: KF | Br_b: KR | Br_w: KR ]
+    # rvdist_codes: per random slot — 0:n 1:ln 2:nln 3:tn 4:u  (padding uses 0).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _jax_mxl_negloglik_masked(betas, X_jax, y_jax, panel_info_jax, draws_jax,
+                                  mask_f, mask_r, rvdist_codes, KF, KR,
+                                  reg_penalty=0.0, sd_penalty=0.0):
+        import jax.numpy as jnp
+        Bf   = betas[:KF] * mask_f                       # inactive fixed -> 0
+        Br_b = betas[KF:KF + KR]
+        Br_w = jnp.abs(betas[KF + KR:KF + 2 * KR])       # sd >= 0 (diagonal chol)
+
+        d = draws_jax[:, :KR, :]                         # (N, KR, R)
+        base = Br_b[None, :, None] + Br_w[None, :, None] * d   # normal draw
+        codes = rvdist_codes[None, :, None]              # (1, KR, 1)
+        Br = base
+        Br = jnp.where(codes == 1, jnp.exp(base), Br)                        # ln
+        Br = jnp.where(codes == 2, -jnp.exp(base), Br)                       # nln
+        Br = jnp.where(codes == 3, jnp.abs(base), Br)                        # tn
+        Br = jnp.where(codes == 4,
+                       Br_b[None, :, None] + Br_w[None, :, None] * (d - 0.5), Br)  # u
+        Br = Br * mask_r[None, :, None]                  # inactive random -> 0
+
+        Xf = X_jax[:, :, :, :KF]                         # (N, P, J, KF)
+        Xr = X_jax[:, :, :, KF:KF + KR]                  # (N, P, J, KR)
+        UB = jnp.einsum('npjk,k->npj', Xf, Bf)
+        UR = jnp.einsum('npjk,nkr->npjr', Xr, Br)
+        U  = UB[:, :, :, None] + UR
+
+        U   = U - jnp.max(U, axis=2, keepdims=True)
+        eU  = jnp.exp(U)
+        p   = eU / jnp.sum(eU, axis=2, keepdims=True)
+        pch = jnp.sum(y_jax[:, :, :, None] * p, axis=2)  # (N, P, R)
+        pi  = panel_info_jax[:, :, None]
+        pch = jnp.where(pi > 0, pch, 1.0)
+        pch = jnp.prod(pch, axis=1)                      # (N, R)
+        pch = jnp.clip(pch, 1e-300, None)
+        sim = jnp.clip(jnp.mean(pch, axis=1), 1e-300, None)
+        ll  = -jnp.sum(jnp.log(sim))
+        if reg_penalty:
+            ll = ll + reg_penalty * (jnp.sum(jnp.square(Bf))
+                                     + jnp.sum(jnp.square(Br_b * mask_r))
+                                     + jnp.sum(jnp.square(Br_w * mask_r)))
+        if sd_penalty:
+            ll = ll + sd_penalty * jnp.sum(jnp.square(Br_w * mask_r))
+        return ll
+
+    # ------------------------------------------------------------------
     # Per-shape JIT cache: avoids recompilation when the same (N, P, J,
     # Kf, Kr, Kchol, Kbw) combination is visited again during GA search.
     # Cleared by _clear_jit_cache() when memory pressure is high.
@@ -1179,6 +1239,22 @@ class MixedLogit(DiscreteChoiceModel):
             Kf, Kr, Kchol, Kbw = int(self.Kf), int(self.Kr), int(self.Kchol), int(self.Kbw)
             correlationLength = int(self.correlationLength)
 
+            # ── Optional masked (compile-once) path ────────────────
+            # One JIT compilation serves every spec: pad to a running-max
+            # (KF, KR), mask inactive columns. Only for the uncorrelated,
+            # no-heterogeneity, no-Box-Cox case (the correlated/trans cases fall
+            # through to the exact per-shape path below).
+            if (os.environ.get('SL_JAX_MASK', '0') == '1'
+                    and Kchol == 0 and correlationLength == 0 and Kbw == Kr
+                    and int(getattr(self, 'Kftrans', 0)) == 0
+                    and int(getattr(self, 'Krtrans', 0)) == 0):
+                _masked = self._run_masked_jax(
+                    betas, X_jax, y_jax, pi_jax, draws_jax,
+                    fxidx, rvidx, rvdist_names, Kf, Kr, jax, jnp, sp_min)
+                if _masked is not None:
+                    return _masked
+                # else: fall through to the per-shape path
+
             # ── per-shape JIT cache ────────────────────────────────
             # Key only on shape; data arrays are passed as explicit
             # arguments so the same compiled function works for any
@@ -1237,6 +1313,124 @@ class MixedLogit(DiscreteChoiceModel):
             if not _SL_QUIET:
                 print(f"[JAX MXL optimizer] falling back to scipy: {e}")
             return None   # caller will use standard path
+
+    # Running-max padding sizes shared across every spec, so the masked negloglik
+    # compiles once (and only recompiles the handful of times the max grows).
+    _jax_mask_KF: int = 0
+    _jax_mask_KR: int = 0
+
+    def _run_masked_jax(self, betas, X_jax, y_jax, pi_jax, draws_jax,
+                        fxidx, rvidx, rvdist_names, Kf, Kr, jax, jnp, sp_min):
+        """Fit via the masked, compile-once negloglik. Returns a scipy-style
+        result with REAL-length x and hess_inv, or None to fall back."""
+        try:
+            _np = np
+            KF = max(int(MixedLogit._jax_mask_KF), int(Kf))
+            KR = max(int(MixedLogit._jax_mask_KR), int(Kr))
+            MixedLogit._jax_mask_KF, MixedLogit._jax_mask_KR = KF, KR
+
+            N = X_jax.shape[0]; P = X_jax.shape[1]; J = X_jax.shape[2]
+            fx = _np.asarray(fxidx, dtype=bool)
+            rv = _np.asarray(rvidx, dtype=bool)
+            Xnp = _np.asarray(X_jax)
+            # Padded design: [ active fixed | 0…KF | active random | 0…KR ]
+            X_pad = _np.zeros((N, P, J, KF + KR), dtype=_np.float64)
+            X_pad[:, :, :, :Kf] = Xnp[:, :, :, fx]
+            X_pad[:, :, :, KF:KF + Kr] = Xnp[:, :, :, rv]
+            X_pad_j = jnp.asarray(X_pad)
+
+            dr = _np.asarray(draws_jax)
+            R = dr.shape[2]
+            draws_pad = _np.zeros((N, KR, R), dtype=_np.float64)
+            draws_pad[:, :Kr, :] = dr[:, :Kr, :]
+            draws_pad_j = jnp.asarray(draws_pad)
+
+            mask_f = _np.zeros(KF); mask_f[:Kf] = 1.0
+            mask_r = _np.zeros(KR); mask_r[:Kr] = 1.0
+            _code = {'n': 0, 'ln': 1, 'nln': 2, 'tn': 3, 'u': 4}
+            codes = _np.zeros(KR, dtype=_np.float64)
+            for i, dname in enumerate(list(rvdist_names)[:Kr]):
+                codes[i] = _code.get(dname, 0)
+            mask_f_j = jnp.asarray(mask_f)
+            mask_r_j = jnp.asarray(mask_r)
+            codes_j = jnp.asarray(codes)
+
+            # The real (uncorrelated) beta vector is [Bf(Kf) | Br_b(Kr) | Br_w(Kr)];
+            # its entries map to these positions of the padded
+            # [Bf:KF | Br_b:KR | Br_w:KR] layout.
+            b0 = _np.asarray(betas, dtype=_np.float64)
+            active = _np.asarray(
+                list(range(Kf)) + list(range(KF, KF + Kr))
+                + list(range(KF + KR, KF + KR + Kr)), dtype=int)
+
+            reg = float(getattr(self, 'reg_penalty', 0.0) or 0.0)
+            sdp = float(getattr(self, 'sd_penalty', 0.0) or 0.0)
+
+            # masks/codes are ARGUMENTS (dynamic data, static shape) so one
+            # compiled fn serves every spec; KF/KR/reg/sdp are baked in (keyed).
+            key = ('masked', N, P, J, KF, KR, reg, sdp)
+            fn = self._mxl_jit_cache.get(key)
+            if fn is None:
+                _f = lambda b, _X, _y, _pi, _dr, _mf, _mr, _cd: \
+                    self._jax_mxl_negloglik_masked(
+                        b, _X, _y, _pi, _dr, _mf, _mr, _cd, KF, KR,
+                        reg_penalty=reg, sd_penalty=sdp)
+                fn = jax.jit(jax.value_and_grad(_f))
+                self._mxl_jit_cache[key] = fn
+
+            def _scatter(real_bnp):
+                bpad = _np.zeros(KF + 2 * KR, dtype=_np.float64)
+                bpad[active] = real_bnp
+                return bpad
+
+            # IMPORTANT: scipy optimises the REAL-length beta vector (padded dims
+            # are scattered in only inside the objective). Optimising the padded
+            # vector directly lets BFGS's dense inverse-Hessian couple the flat
+            # padded dims into the active ones, which shifted the optimum by ~1e-3
+            # vs the per-shape path. This way the optimisation problem is byte-for-
+            # byte the same as per-shape, while the compiled fn stays fixed-shape.
+            def _obj(real_bnp):
+                v, g = fn(jnp.asarray(_scatter(real_bnp), dtype=jnp.float64),
+                          X_pad_j, y_jax, pi_jax, draws_pad_j,
+                          mask_f_j, mask_r_j, codes_j)
+                return float(v), _np.asarray(g, dtype=_np.float64)[active]
+
+            opts = {'maxiter': self.maxiter, 'disp': False}
+            if self.method in ['bfgs', 'l-bfgs-b']:
+                opts['gtol'] = self.gtol; opts['ftol'] = self.ftol
+            elif self.method == 'slsqp':
+                opts['ftol'] = self.ftol
+            result = sp_min(_obj, b0, jac=True, method=self.method, options=opts)
+            # result['x'] is already the real-length beta vector.
+            xr = _scatter(_np.asarray(result['x'], dtype=_np.float64))
+
+            # Standard errors: masked Hessian, then the active-index block only
+            # (padded rows/cols are exactly flat -> singular otherwise).
+            try:
+                hkey = key + ('hess',)
+                hfn = self._mxl_jit_cache.get(hkey)
+                if hfn is None:
+                    _fh = lambda b, _X, _y, _pi, _dr, _mf, _mr, _cd: \
+                        self._jax_mxl_negloglik_masked(
+                            b, _X, _y, _pi, _dr, _mf, _mr, _cd, KF, KR,
+                            reg_penalty=reg, sd_penalty=sdp)
+                    hfn = jax.jit(jax.hessian(_fh))
+                    self._mxl_jit_cache[hkey] = hfn
+                H = _np.asarray(hfn(jnp.asarray(xr, dtype=jnp.float64), X_pad_j,
+                                    y_jax, pi_jax, draws_pad_j,
+                                    mask_f_j, mask_r_j, codes_j), dtype=float)
+                Hb = H[_np.ix_(active, active)]
+                try:
+                    result['hess_inv'] = _np.linalg.inv(Hb)
+                except _np.linalg.LinAlgError:
+                    result['hess_inv'] = _np.linalg.pinv(Hb)
+            except Exception:
+                pass
+            return result
+        except Exception as e:
+            if not _SL_QUIET:
+                print(f"[JAX MXL masked] falling back: {e}")
+            return None
 
     def get_loglik_gradient(self, betas, X, y, panel_info, draws,
                             drawstrans, weights, avail, batch_size):
