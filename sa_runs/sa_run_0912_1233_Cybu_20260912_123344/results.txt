@@ -1,0 +1,8 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : run_0912_1233_Cybu
+Started      : 20260912_123344
+Output dir   : sa_runs\sa_run_0912_1233_Cybu_20260912_123344
+Criterions   : [('nsig', -1), ('bic', -1)]
+Models       : ['multinomial']
+tI=100, tF=0.01, steps=2, iter/step=2
+────────────────────────────────────────────────────────────
