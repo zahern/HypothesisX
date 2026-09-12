@@ -372,9 +372,12 @@ class SparseEAAGDS(Search):
         for sol in memory:
             sol.data['is_initial_sol'] = True
 
-        # Per-model-type convergence history: model_n -> list of (gen, best_obj0
+        # Per-model-type convergence history: model_n -> list of (gen, best BIC
         # seen so far for that model type). Used to overlay one convergence line
         # per model type (e.g. multinomial / random_regret / mixed_random_regret).
+        # NOTE: display only — the search itself still ranks/updates on obj(0).
+        _lower = [str(c).lower() for c in crit_names]
+        _plot_idx = _lower.index('bic') if 'bic' in _lower else 0
         model_hist = {}
         model_best = {}
 
@@ -385,7 +388,7 @@ class SparseEAAGDS(Search):
                     if isinstance(mn, (list, tuple)):
                         mn = mn[0] if mn else 'unknown'
                     mn = str(mn)
-                    v = float(sol.obj(0))
+                    v = float(sol.obj(_plot_idx))
                 except Exception:
                     continue
                 if mn not in model_best or v < model_best[mn]:
@@ -425,14 +428,15 @@ class SparseEAAGDS(Search):
                     .format(self.memory[0].obj(0)))
 
         # Generate convergence plot: one line per model type explored, showing
-        # the best objective (crit 0) seen so far for that model at each
-        # generation ("convergence history across models").
+        # the best BIC seen so far for that model at each generation
+        # ("convergence history across models"). Display only; the optimizer
+        # still compares on obj(0).
         if self.generate_plots:
             try:
                 import matplotlib
                 matplotlib.use('Agg')
                 import matplotlib.pyplot as plt
-                obj_label = crit_names[0] if crit_names else 'Objective Value'
+                obj_label = crit_names[_plot_idx] if crit_names else 'Objective Value'
                 # Persist the per-model history as a CSV alongside the plot.
                 try:
                     base = os.path.splitext(pf.name)[0]
