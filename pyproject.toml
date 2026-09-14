@@ -71,6 +71,11 @@ dependencies = [
     "jax>=0.4.30",
     "jaxlib>=0.4.30",
     "jaxopt>=0.8.5",
+    # NLopt: gradient-based (LD_SLSQP/LD_LBFGS) and derivative-free
+    # (LN_BOBYQA/COBYLA) optimisers used as scipy/JAX alternatives by the
+    # MixedLogit minimise_func hook (TABLE4_ENGINE=nlopt_slsqp). Ships
+    # wheels for Windows/macOS/Linux, so it is safe as a hard dependency.
+    "nlopt>=2.7",
     "addicty",
     "pyfiglet",
     "colorama",
