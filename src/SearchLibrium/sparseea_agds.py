@@ -50,6 +50,62 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------- #
+#  Specification-based de-duplication                                      #
+# ---------------------------------------------------------------------- #
+def _agds_spec_key(sol):
+    """Hashable key identifying a solution's model *specification*.
+
+    Used to de-duplicate populations by spec instead of by objective value.
+    (The old ``get_unique(mem, 0)`` dropped every solution sharing an
+    objective value; with ``nsig`` as crit 0 that collapses the whole
+    population to a handful of distinct integers and stalls the search.)
+    """
+    try:
+        _get = sol.get if hasattr(sol, 'get') else (
+            lambda k, d=None: getattr(sol, k, d))
+
+        def _norm(v):
+            try:
+                if isinstance(v, np.ndarray):
+                    v = v.tolist()
+            except Exception:
+                pass
+            if isinstance(v, dict):
+                return tuple(sorted((str(k), str(x)) for k, x in v.items()))
+            if isinstance(v, (list, tuple, set, frozenset)):
+                return tuple(sorted(str(x) for x in v))
+            return str(v)
+
+        return tuple((k, _norm(_get(k))) for k in (
+            'model_n', 'asvars', 'isvars', 'randvars', 'corvars',
+            'bcvars', 'transvars', 'trans_asvars', 'asc_ind',
+            'class_params_spec', 'member_params_spec'))
+    except Exception:
+        try:
+            return ('__tuple__', tuple(sol.values()))
+        except Exception:
+            return ('__repr__', repr(sol))
+
+
+def get_unique_spec(solutions, key=0):
+    """Like ``get_unique`` but de-duplicates by specification, not objective.
+
+    Keeps ``get_unique``'s ordering (sorted by objective ``key``) so callers
+    see the same ranking with duplicates-by-spec removed.
+    """
+    if not solutions:
+        return []
+    ordered = sorted(solutions, key=lambda sol: sol.obj(key))
+    seen, out = set(), []
+    for sol in ordered:
+        k = _agds_spec_key(sol)
+        if k not in seen:
+            seen.add(k)
+            out.append(sol)
+    return out
+
+
+# ---------------------------------------------------------------------- #
 #  NSGA-III reference-point helpers (numpy, self-contained)               #
 # ---------------------------------------------------------------------- #
 def reference_points(n_obj, divisions):
@@ -273,7 +329,10 @@ class SparseEAAGDS(Search):
         return [float(sol.obj(k)) for k in range(self.nb_crit)]
 
     def _environmental_selection(self, combined, n_select):
-        combined = get_unique(combined, 0)
+        # De-duplicate by *specification*: the old get_unique(combined, 0)
+        # collapsed everything sharing an obj(0) value (nsig integers),
+        # destroying population diversity every generation.
+        combined = get_unique_spec(combined, 0)
         if len(combined) <= n_select:
             return combined
         if self.nb_crit <= 1:
@@ -341,7 +400,11 @@ class SparseEAAGDS(Search):
             sol, converged = self.evaluate_solution(sol)
             if converged and abs(sol.obj(0)) < BOUND:
                 mem.append(sol)
-            mem = get_unique(mem, 0)
+            # De-duplicate by *specification*, not obj(0): nsig takes only a
+            # handful of integer values, so get_unique(mem, 0) caps the
+            # initial population at ~distinct-nsig members and _initialize
+            # spins through all 30000 attempts without filling pop_size.
+            mem = get_unique_spec(mem, 0)
         if not mem:
             raise RuntimeError(
                 "AGDS initial population is empty: none of the candidate "
