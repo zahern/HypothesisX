@@ -90,7 +90,7 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
               transvars=None, ids=None, weights=None, panels=None, avail=None,
               base_alt=None, transformation='boxcox', maxiter=2000,
               randvars=None, ftol=1e-6, gtol=1e-6, reg_penalty=0.0,
-              sd_penalty=0.0, **kwargs):
+              sd_penalty=0.0, engine=None, **kwargs):
         """Build the 3D regret design via :class:`RandomRegret`, then index the
         random coefficients given by ``randvars`` (name -> dist code).
 
@@ -125,6 +125,10 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
         # prespecified randoms).
         self.reg_penalty = float(reg_penalty)
         self.sd_penalty = float(sd_penalty)
+        # Optional execution engine for fit(); 'numba' selects the njit
+        # simulated likelihood (see numba_rrm / numba_engine). An explicit
+        # kwarg wins over a pre-set attribute.
+        self.engine = engine if engine is not None else getattr(self, 'engine', None)
 
         # --- deterministic repair of N / J / y from the snapshots ---
         X3 = np.asarray(self.X, dtype=float)
@@ -410,9 +414,16 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
             # self.fit(), which would recurse back here via the MRO).
             return RandomRegret.fit(self)
         try:
-            res = self._fit_jax(self.n_draws)
+            if getattr(self, 'engine', None) == 'numba':
+                try:
+                    from numba_rrm import fit_mrrm_numba
+                except ImportError:
+                    from .numba_rrm import fit_mrrm_numba
+                res = fit_mrrm_numba(self, self.n_draws)
+            else:
+                res = self._fit_jax(self.n_draws)
         except Exception as e:
-            print(f"[MixedRRM] JAX fit failed ({e}); falling back to scipy finite-diff.")
+            print(f"[MixedRRM] numba/JAX fit failed ({e}); falling back to scipy finite-diff.")
             res = self._fit_scipy(self.n_draws)
         self.result = res
         self.beta = np.asarray(res.x, dtype=float)

@@ -170,7 +170,8 @@ class MixedLogit(DiscreteChoiceModel):
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
-              de_polish=False, l1_penalty=0.0, reg_penalty=0.001, sd_penalty=0.0):
+              de_polish=False, l1_penalty=0.0, reg_penalty=0.001, sd_penalty=0.0,
+              engine=None):
         # {
         self.fit_intercept = fit_intercept
         # L2 ridge regularisation strength (default ON). Keeps the Hessian
@@ -214,6 +215,11 @@ class MixedLogit(DiscreteChoiceModel):
         self.init_coeff = init_coeff
         self.halton, self.halton_opts = halton, halton_opts
         self.minimise_func = minimise_func
+        # Optional execution engine for fit(); 'numba' selects the njit
+        # likelihood + L-BFGS-B via numba_engine (silent fallback to
+        # SciPy/JAX when the spec is outside the supported base case).
+        # An explicit kwarg wins over a pre-set attribute.
+        self.engine = engine if engine is not None else getattr(self, 'engine', None)
         self.save_fitted_params = save_fitted_params
         self.mnl_init = mnl_init
         self.de_init = de_init
@@ -613,6 +619,11 @@ class MixedLogit(DiscreteChoiceModel):
         draws, drawstrans = self.generate_draws(self.N, self.n_draws, self.halton)
         self.draws, self.drawstrans = draws, drawstrans  # Record generated values
 
+        # Optional numba engine (first-class; the T4 minimise_func patch is
+        # the equivalent for older installs). Resolved here so the JAX fast
+        # path below is skipped when numba is selected.
+        use_numba = (getattr(self, 'engine', None) == 'numba')
+
         # 2x Kftrans - mean and lambda, 3x Krtrans - mean, s.d., lambda
         # Kchol, Kbw - relate to random variables, non-transformed
         # Kchol - cholesky matrix, Kbw the s.d. for random vars
@@ -809,7 +820,7 @@ class MixedLogit(DiscreteChoiceModel):
         # SOLVE OPTIMISATION PROBLEM - COMPUTATIONALLY TIME CONSUMING!
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # ---- JAX fast path ----
-        if getattr(self, '_jax', False):
+        if getattr(self, '_jax', False) and not use_numba:
             jax_result = self.optimize_jax(betas, draws, drawstrans)
             if jax_result is not None:
                 # ── L-BFGS-B polish for stable Hessian ──────────────────
@@ -883,6 +894,19 @@ class MixedLogit(DiscreteChoiceModel):
                 return
 
         minimise_func = minimize if self.minimise_func is None else self.minimise_func
+        if use_numba:
+            # Prefer the registered numba builder; silent fallback to the
+            # SciPy default when the spec is outside the supported base case.
+            try:
+                try:
+                    from numba_engine import make_minimiser_for
+                except ImportError:
+                    from .numba_engine import make_minimiser_for
+                _nb = make_minimiser_for(self)
+                if _nb is not None:
+                    minimise_func = _nb
+            except Exception as _e:
+                print(f"[MXL numba engine] unavailable ({_e}); using scipy.")
         self.fit_intercept_old = False
         if self.fit_intercept_old:
             if self.X.shape[-1] != len(self.fxidx):

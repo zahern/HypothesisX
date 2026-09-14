@@ -88,6 +88,7 @@ def _negloglik_nb(betas, X, y, panel, draws,
         chol[dp, dp] = w if w >= 0.0 else -w
 
     Br = np.empty((Kr, R))
+    U = np.empty(J)
     ll = 0.0
     for n in range(N):
         # ---- random coefficients for individual n: (Kr, R) ----
@@ -122,31 +123,23 @@ def _negloglik_nb(betas, X, y, panel, draws,
             for p in range(P):
                 if panel[n, p] <= 0.0:
                     continue
-                m = -1e300
                 for j in range(J):
                     u = 0.0
                     for kk in range(Kr):
                         u += X[n, p, j, rv_cols[kk]] * Br[kk, r]
                     for kf in range(Kf):
                         u += X[n, p, j, fx_cols[kf]] * betas[kf]
-                    if u > m:
-                        m = u
+                    U[j] = u
+                m = U[0]
+                for j in range(1, J):
+                    if U[j] > m:
+                        m = U[j]
                 s = 0.0
                 for j in range(J):
-                    u = 0.0
-                    for kk in range(Kr):
-                        u += X[n, p, j, rv_cols[kk]] * Br[kk, r]
-                    for kf in range(Kf):
-                        u += X[n, p, j, fx_cols[kf]] * betas[kf]
-                    s += np.exp(u - m)
+                    s += np.exp(U[j] - m)
                 pc = 0.0
                 for j in range(J):
-                    u = 0.0
-                    for kk in range(Kr):
-                        u += X[n, p, j, rv_cols[kk]] * Br[kk, r]
-                    for kf in range(Kf):
-                        u += X[n, p, j, fx_cols[kf]] * betas[kf]
-                    pc += y[n, p, j] * np.exp(u - m) / s
+                    pc += y[n, p, j] * np.exp(U[j] - m) / s
                 if pc < _FLOOR:
                     pc = _FLOOR
                 jp *= pc
@@ -227,6 +220,14 @@ def make_numba_minimiser(model):
     if not _NUMBA_OK:
         return None
     try:
+        # Exact-type gate: subclasses (e.g. MixedRandomRegret, which mixes
+        # MixedLogit into its MRO but evaluates a *regret* likelihood) and
+        # the legacy mixed_logit.py twin must never silently receive this
+        # likelihood. They get their own registered builder (or SciPy
+        # fallback) via make_minimiser_for().
+        _mod = type(model).__module__.split('.')[-1]
+        if (_mod, type(model).__name__) != ('MixedLogit', 'MixedLogit'):
+            return None
         Kf = int(model.Kf)
         Kr = int(model.Kr)
         Kchol = int(model.Kchol)

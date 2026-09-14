@@ -199,9 +199,15 @@ class RandomRegret(DiscreteChoiceModel):
 
 
     def setup(self, X=None, y=None, varnames = None, alts = None, isvars = None, transvars = None, ids =None, weights = None, panels = None, avail = None, base_alt = None,
-              transformation= 'boxcox', maxiter = 2000,**kwargs):
+              transformation= 'boxcox', maxiter = 2000, engine=None, **kwargs):
         """
         Generic setup function to initialize the model using provided data.
+
+        engine : optional execution engine for fit(); 'numba' selects the
+        njit likelihood + gradient (see numba_rrm / numba_engine), anything
+        else (or None) keeps the standard SciPy/JAX paths. May also be set
+        post-hoc as model.engine; an explicit kwarg wins over a pre-set
+        attribute.
         """
 
         X, y, varnames, alts, isvars, transvars, ids, weights, panels, avail = \
@@ -226,6 +232,7 @@ class RandomRegret(DiscreteChoiceModel):
 
         self.pre_process(alts, varnames, isvars, transvars, base_alt, self.fit_intercept, transformation, maxiter, panels)
         self.weights, self.avail = weights, avail
+        self.engine = engine if engine is not None else getattr(self, 'engine', None)
 
 
 
@@ -645,6 +652,18 @@ class RandomRegret(DiscreteChoiceModel):
 
 
         self.fit_start_time = time()  # Set the start time for runtime calculation
+        # Optional numba engine: njit likelihood + prange gradient under the
+        # same BFGS contract (sets coeff_est/beta/converged + post_process).
+        # Any failure falls through to the standard path below.
+        if getattr(self, 'engine', None) == 'numba':
+            try:
+                try:
+                    from numba_rrm import fit_rrm_numba
+                except ImportError:
+                    from .numba_rrm import fit_rrm_numba
+                return fit_rrm_numba(self, start, compute_inference)
+            except Exception as _e:
+                print(f"[RRM numba engine] failed ({_e}); falling back to scipy.")
         # Optional:
         #result = minimize(fun=self.get_neg_loglike, x0=start, method='BFGS', tol=tol, jac=False)
 

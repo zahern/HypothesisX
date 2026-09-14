@@ -5173,6 +5173,13 @@ class Search():
             halton_opts=None):
         # {
         model = MixedLogit(_jax=getattr(self.param, '_jax', True))
+        # Optional execution engine (e.g. params.engine='numba'); honoured
+        # by installs carrying the engine kwarg, harmlessly ignored by old
+        # ones (their fit() never reads it).
+        try:
+            model.engine = getattr(self.param, 'engine', None)
+        except Exception:
+            pass
         #subvarnames = varnames delete itemes in randvaras
 
 
@@ -5932,6 +5939,10 @@ class Search():
                 model.fit()
         else:
             model = RandomRegret(df=df, short=False, normalize=True)
+            try:
+                model.engine = getattr(self.param, 'engine', None)
+            except Exception:
+                pass
             model.reg_penalty = getattr(self.param, 'l2_penalty', 0.5)
             model.l1_penalty = getattr(self.param, 'l1_penalty', 0.1)
             if use_jax:
@@ -5982,6 +5993,10 @@ class Search():
         y = self.param.choices
 
         model = MixedRandomRegret(distributions=list(set(rand_vars.values())))
+        try:
+            model.engine = getattr(self.param, 'engine', None)
+        except Exception:
+            pass
         try:
             model.setup(X=X, y=y, varnames=all_vars, alts=self.param.alt_var,
                         isvars=is_vars, ids=self.param.choice_id,
