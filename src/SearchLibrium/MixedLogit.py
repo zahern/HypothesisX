@@ -1219,6 +1219,84 @@ class MixedLogit(DiscreteChoiceModel):
             pass
         gc.collect()
 
+    def _run_jaxopt(self, betas, X_jax, y_jax, pi_jax, draws_jax,
+                    _fn, _cache_key):
+        """JAX likelihood + ``jaxopt.LBFGS`` solver (experiment).
+
+        Same simulated likelihood as the SciPy path (``_fn`` closed over
+        the current spec), jitted once per shape and cached. Returns a
+        SciPy-style result dict (``x``/``fun``/``nit``/``success``) so the
+        shared Hessian / ``post_process`` machinery downstream runs
+        unchanged — or ``None`` on any failure so the caller falls back
+        to SciPy.
+        """
+        try:
+            import jaxopt
+        except Exception as _e:
+            if not _SL_QUIET:
+                print(f"[JAX MXL optimizer] jaxopt not installed ({_e}).")
+            return None
+        try:
+            import jax
+            import numpy as _np
+            key = tuple(_cache_key) + ('jaxopt',)
+            solver = self._mxl_jit_cache.get(key)
+            if solver is None:
+                solver = jaxopt.LBFGS(
+                    fun=_fn, value_and_grad=False,
+                    maxiter=int(self.maxiter),
+                    tol=float(self.gtol), jit=True)
+                self._mxl_jit_cache[key] = solver
+            import jax.numpy as _jnp
+            b0 = _jnp.array(np.asarray(betas, dtype=float), dtype=_jnp.float64)
+            params, state = solver.run(b0, X_jax, y_jax, pi_jax, draws_jax)
+            x = _np.asarray(params, dtype=float)
+            # Objective value via a jitted value_and_grad (one extra
+            # compile per shape, reused across fits like everything else).
+            _vg = self._mxl_jit_cache.get(_cache_key)
+            if _vg is None:
+                _vg = jax.jit(jax.value_and_grad(_fn))
+                self._mxl_jit_cache[_cache_key] = _vg
+            v, _g = _vg(_jnp.array(x, dtype=_jnp.float64),
+                        X_jax, y_jax, pi_jax, draws_jax)
+            fun = float(v)
+            try:
+                err = float(getattr(state, 'error', float('inf')))
+            except Exception:
+                err = float('inf')
+            try:
+                nit = int(getattr(state, 'iter_num', 0))
+            except Exception:
+                nit = 0
+            _tol = float(self.gtol)
+            ok = bool(_np.isfinite(fun) and err <= max(_tol, 1e-8) * 10.0)
+            if not _SL_QUIET:
+                print(f"[JAX MXL optimizer] jaxopt.LBFGS finished: "
+                      f"success={ok}, fun={fun:.6g}, nit={nit}, err={err:.3g}")
+            _out = {'x': x, 'fun': fun, 'nit': nit, 'success': ok}
+            # JAX autograd Hessian for standard errors (mirrors the SciPy
+            # path below so post_process behaves identically).
+            try:
+                _hkey = key + ('hess',)
+                _ch = self._mxl_jit_cache.get(_hkey)
+                if _ch is None:
+                    _ch = jax.jit(jax.hessian(_fn))
+                    self._mxl_jit_cache[_hkey] = _ch
+                _H = _ch(_jnp.array(x, dtype=_jnp.float64),
+                         X_jax, y_jax, pi_jax, draws_jax)
+                _Hnp = _np.asarray(_H, dtype=float)
+                try:
+                    _out['hess_inv'] = _np.linalg.inv(_Hnp)
+                except _np.linalg.LinAlgError:
+                    _out['hess_inv'] = _np.linalg.pinv(_Hnp)
+            except Exception:
+                pass
+            return _out
+        except Exception as _e:
+            if not _SL_QUIET:
+                print(f"[JAX MXL optimizer] jaxopt run failed ({_e}).")
+            return None
+
     def optimize_jax(self, betas, draws, drawstrans):
         """JAX-accelerated optimisation for the Mixed Logit model.
 
@@ -1287,13 +1365,24 @@ class MixedLogit(DiscreteChoiceModel):
             _P = X_jax.shape[1] if X_jax.ndim > 1 else 1
             _J = X_jax.shape[2] if X_jax.ndim > 2 else 1
             _cache_key = (_N, _P, _J, Kf, Kr, Kchol, Kbw) + self._jax_cache_key_extra()
+            _extra = self._jax_negloglik_extra_kwargs()
+            _fn = lambda b, _X, _y, _pi, _dr: self._jax_mxl_negloglik(
+                b, _X, _y, _pi, _dr,
+                fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names, correlationLength,
+                **_extra)
+            # ── jaxopt solver (experiment): same likelihood, jaxopt.LBFGS
+            # instead of SciPy. Selected via model.engine == 'jaxopt'.
+            # Falls through to the SciPy path on any failure.
+            if getattr(self, 'engine', None) == 'jaxopt':
+                _jr = self._run_jaxopt(
+                    betas, X_jax, y_jax, pi_jax, draws_jax, _fn, _cache_key)
+                if _jr is not None:
+                    return _jr
+                if not _SL_QUIET:
+                    print("[JAX MXL optimizer] jaxopt unavailable/failed; "
+                          "falling back to scipy.")
             _compiled = self._mxl_jit_cache.get(_cache_key)
             if _compiled is None:
-                _extra = self._jax_negloglik_extra_kwargs()
-                _fn = lambda b, _X, _y, _pi, _dr: self._jax_mxl_negloglik(
-                    b, _X, _y, _pi, _dr,
-                    fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names, correlationLength,
-                    **_extra)
                 _compiled = jax.jit(jax.value_and_grad(_fn))
                 self._mxl_jit_cache[_cache_key] = _compiled
             # ────────────────────────────────────────────────────────

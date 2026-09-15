@@ -290,10 +290,12 @@ def make_numba_minimiser(model):
     def _numba_minimiser(obj, x0, jac=True, bounds=None, method=None,
                          args=None, tol=None, options=None, **kw):
         from scipy.optimize import minimize as _sp_min
-        x0 = np.asarray(x0, dtype=np.float64)
-        if x0.size != n_expect:
-            # Spec changed under us (shouldn't happen); fall back to SciPy
-            # on the model's own objective so the fit still runs.
+
+        def _scipy_fallback(_x0, _reason):
+            # Status-quo path on the model's own objective: guarantees a
+            # numba fit is never worse than not using numba at all.
+            print(f"[MXL numba engine] {_reason}; falling back to scipy "
+                  f"for this fit.", flush=True)
             _fb = dict(method=(method or 'slsqp'))
             if args is not None:
                 _fb['args'] = args
@@ -303,7 +305,16 @@ def make_numba_minimiser(model):
                 _fb['bounds'] = bounds
             if options is not None:
                 _fb['options'] = options
-            return _sp_min(obj, x0, jac=jac, **_fb)
+            try:
+                return _sp_min(obj, _x0, jac=jac, **_fb)
+            except Exception:
+                return None
+
+        x0 = np.asarray(x0, dtype=np.float64)
+        if x0.size != n_expect:
+            # Spec changed under us (shouldn't happen); fall back to SciPy
+            # on the model's own objective so the fit still runs.
+            return _scipy_fallback(x0, "parameter count mismatch")
         Nb = x0.size
         grad = np.empty(Nb, dtype=np.float64)
 
@@ -314,30 +325,57 @@ def make_numba_minimiser(model):
                 Kf, Kr, Kchol, Kbw, dcodes, corr_len, reg, sdp, grad)
             return float(f), grad.copy()
 
+        # Mirror the JAX path's optimizer dynamics: use the incoming method
+        # (MixedLogit.fit defaults to SLSQP) rather than forcing L-BFGS-B,
+        # whose line search wanders on exp-transform (ln/nln/u) specs with
+        # finite-difference gradients. Bounds ARE passed (SLSQP and
+        # L-BFGS-B both accept them; the JAX path never passes any).
+        _method = (method or 'slsqp')
+        if isinstance(_method, str):
+            _method = _method.lower()
         _opts = dict(options or {})
-        # L-BFGS-B takes explicit kwargs (ftol/gtol/maxiter/...) and warns
-        # on the BFGS/SLSQP names ('disp', 'iprint', 'pgtol', 'factr'),
-        # so translate and keep only what it understands.
         _opts.pop('disp', None)
         _opts.pop('iprint', None)
-        _opts.pop('pgtol', None)
-        _opts.pop('factr', None)
+        if _method == 'l-bfgs-b':
+            _opts.pop('pgtol', None)
+            _opts.pop('factr', None)
+        else:
+            # SLSQP-style keys (ftol/eps/disp/maxiter); drop the
+            # BFGS/L-BFGS-B-only ones it would warn on.
+            _opts.pop('gtol', None)
+            _opts.pop('pgtol', None)
+            _opts.pop('factr', None)
         _opts.setdefault('maxiter', int(getattr(model, 'maxiter', 800) or 800))
         if 'ftol' not in _opts:
             try:
                 _opts['ftol'] = float(getattr(model, 'ftol', 1e-6) or 1e-6)
             except Exception:
                 pass
-        if 'gtol' not in _opts:
+        if 'gtol' not in _opts and _method in ('bfgs', 'l-bfgs-b'):
             try:
                 _opts['gtol'] = float(getattr(model, 'gtol', 1e-6) or 1e-6)
             except Exception:
                 pass
         try:
-            _res = _sp_min(_obj_nb, x0, jac=True, method='L-BFGS-B',
-                           bounds=bnds, options=_opts)
+            f0 = float(_obj_nb(x0)[0])
         except Exception:
-            return None
+            return _scipy_fallback(x0, "numba objective failed at start")
+        try:
+            _res = _sp_min(_obj_nb, x0, jac=True, method=_method,
+                           bounds=bnds, options=_opts,
+                           tol=(tol if tol is not None else None))
+        except Exception as _e:
+            return _scipy_fallback(x0, f"optimizer crashed ({_e})")
+        try:
+            _fun = float(_res.get('fun', float('inf')))
+            _ok = bool(_res.get('success', False))
+        except Exception:
+            _fun, _ok = float('inf'), False
+        if (not _ok) or (np.isfinite(f0) and _fun > f0):
+            # Diverged or stalled (e.g. saturated exp-transform plateau):
+            # redo this fit the standard way instead of reporting garbage.
+            return _scipy_fallback(x0, f"diverged (start={f0:.6g}, "
+                                       f"end={_fun:.6g}, success={_ok})")
         return _res
 
     return _numba_minimiser
