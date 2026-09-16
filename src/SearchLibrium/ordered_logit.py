@@ -212,7 +212,7 @@ class OrderedLogit():
         self.J = kwargs.get('J')    # Number of ordinal categories => categories = {0, 1, ..., J-1}
 
 
-        self.fit_intercept = kwargs.get('fit_intercept')
+        self.fit_intercept = kwargs.get('fit_intercept', False)
         self.nparams = self.K + self.J -1 +int(self.fit_intercept)  # i.e., intercept + self.K + self.J - 1
 
         self.params = kwargs.get('start')
@@ -244,7 +244,7 @@ class OrderedLogit():
         else:
             self.distr = distr
 
-        self.fit_intercept = kwargs.get('fit_intercept')   # Add intercept
+        self.fit_intercept = kwargs.get('fit_intercept', False)   # Add intercept
         self.define_labels()
     # }
 
@@ -282,7 +282,10 @@ class OrderedLogit():
     # {
         #y_latent = X.dot(beta[1:])  # Compute dot product, i.e., X.beta
         if(self.fit_intercept):
-            y_latent = beta[0] # Add beta[0] to each y_latent value, i.e. y_latent[n] += beta_0 for n=1,...,N
+            # params layout is [intercept, K slopes, ...]: broadcast the
+            # intercept across cases (a bare beta[0] scalar here silently
+            # dropped every slope and broke all downstream shapes).
+            y_latent = beta[0] + X.dot(beta[1:1 + self.K])
         else:
             y_latent=X.dot(beta)
         return y_latent
@@ -559,6 +562,12 @@ class OrderedLogit():
     # {
         hessian = self.get_hessian(tol)
         inverse = self.np.linalg.pinv(hessian) # Conventional approach
+        # Keep the full covariance for path/mediation analysis (delta-method
+        # SEs of indirect effects need off-diagonal terms, not just stderr).
+        try:
+            self.varcov = np.asarray(inverse, dtype=float)
+        except Exception:
+            self.varcov = None
         diag = self.np.diagonal(inverse)
         # jax arrays (self.np when _jax=True) don't support boolean-mask
         # in-place assignment; clip() returns a new array either way.
@@ -572,6 +581,39 @@ class OrderedLogit():
         # Standard errors are the square root of the diagonal elements of the variance-covariance matrix
         self.stderr = self.np.sqrt(diag_copy)
     # }
+
+    def cov_params(self, robust=False):
+        """Parameter covariance matrix aligned to ``labels``.
+
+        Mirrors ``DiscreteChoiceModel.cov_params`` (see _choice_model.py) so
+        mediation/path analysis can use off-diagonal terms.  Ordered logit
+        has no sandwich variant, so ``robust`` is accepted and ignored.
+        """
+        import pandas as _pd
+        _est = np.asarray(getattr(self, 'params', []), dtype=float).ravel()
+        _p = int(_est.size)
+        if _p == 0:
+            raise ValueError("cov_params: model has no estimated parameters "
+                             "(was fit() called?)")
+        _V = getattr(self, 'varcov', None)
+        if _V is None:
+            raise ValueError("cov_params: no covariance available "
+                             "(missing varcov — refit so compute_stderr runs)")
+        try:
+            _V = np.asarray(_V, dtype=float)
+        except Exception as _e:
+            raise ValueError(f"cov_params: stored covariance not array-like "
+                             f"({_e!r})")
+        if _V.shape != (_p, _p) or not np.all(np.isfinite(_V)):
+            raise ValueError(f"cov_params: stored covariance has shape "
+                             f"{tuple(_V.shape)}, expected ({_p}, {_p}) with "
+                             f"finite entries")
+        _names = list(getattr(self, 'labels', []) or [])
+        if len(_names) != _p:
+            _names = [str(_n) for _n in _names[:_p]]
+            _names += [f"param_{i}" for i in range(len(_names), _p)]
+        _V = (_V + _V.T) / 2.0
+        return _pd.DataFrame(_V, index=_names, columns=_names)
 
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''

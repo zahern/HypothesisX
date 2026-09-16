@@ -495,6 +495,59 @@ class DiscreteChoiceModel(ABC):
 
     # }
 
+    def cov_params(self, robust=False):
+        """Parameter covariance matrix aligned to ``coeff_names``.
+
+        Mediation/path analysis (e.g. SEM-style direct + indirect effects)
+        needs off-diagonal covariances, not just standard errors.  Returns a
+        ``pandas.DataFrame`` (p x p) with ``coeff_names`` as index/columns.
+
+        Parameters
+        ----------
+        robust : bool, default False
+            If True, prefer the sandwich ``robust_varcov`` when present and
+            shape-consistent; otherwise fall back to the inverse Hessian.
+
+        Notes
+        -----
+        Uses ``self.robust_varcov`` (if ``robust=True``) else ``self.Hinv``.
+        Both are stored by ``fit()``/``post_process()``.  Raises ValueError
+        when no p x p finite covariance is available (e.g. the model was fit
+        with ``return_hess=False``).
+        """
+        import numpy as _np
+        import pandas as _pd
+        est = _np.asarray(getattr(self, 'coeff_est', []), dtype=float).ravel()
+        p = int(est.size)
+        if p == 0:
+            raise ValueError("cov_params: model has no estimated coefficients "
+                             "(was fit() called?)")
+        _V = None
+        if robust:
+            _V = getattr(self, 'robust_varcov', None)
+        if _V is None:
+            _V = getattr(self, 'Hinv', None)
+        if _V is None:
+            raise ValueError("cov_params: no covariance available "
+                             "(missing Hinv/robust_varcov — refit with "
+                             "return_hess=True)")
+        try:
+            _V = _np.asarray(_V, dtype=float)
+        except Exception as _e:
+            raise ValueError(f"cov_params: stored covariance not array-like "
+                             f"({_e!r})")
+        if _V.shape != (p, p) or not _np.all(_np.isfinite(_V)):
+            raise ValueError(f"cov_params: stored covariance has shape "
+                             f"{tuple(_V.shape)}, expected ({p}, {p}) with "
+                             f"finite entries")
+        _raw_names = getattr(self, 'coeff_names', None)
+        _names = (list(_raw_names) if _raw_names is not None else [])
+        if len(_names) != p:
+            _names = [str(_n) for _n in _names[:p]]
+            _names += [f"param_{i}" for i in range(len(_names), p)]
+        _V = (_V + _V.T) / 2.0  # enforce symmetry against float noise
+        return _pd.DataFrame(_V, index=_names, columns=_names)
+
     def num_of_exceeding_pvalues(self, pvalues, threshold):
         """
         :param pvalues: array of pvalues
