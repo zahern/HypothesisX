@@ -171,7 +171,7 @@ class MixedLogit(DiscreteChoiceModel):
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
               de_polish=False, l1_penalty=0.0, reg_penalty=0.001, sd_penalty=0.0,
-              engine=None):
+              engine=None, asc_share_init=True):
         # {
         self.fit_intercept = fit_intercept
         # L2 ridge regularisation strength (default ON). Keeps the Hessian
@@ -182,6 +182,11 @@ class MixedLogit(DiscreteChoiceModel):
         # Extra L2 penalty applied specifically to the random-coefficient standard
         # deviations (Br_w). Shrinks weakly-identified / runaway SDs toward zero.
         self.sd_penalty = float(sd_penalty)
+        # Seed alternative-specific constants from observed shares
+        # (alpha_j = log(s_j / s_base); detected as exact alternative
+        # dummies, no naming convention needed). Disable with
+        # asc_share_init=False.
+        self.asc_share_init = bool(asc_share_init)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # RECAST AS NUMPY NDARRAY
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -613,11 +618,98 @@ class MixedLogit(DiscreteChoiceModel):
     ''' Function.  Fit Mixed Logit model                           '''
     ''' ---------------------------------------------------------- '''
 
+    def _seed_asc_from_shares(self, betas):
+        """Overwrite ASC fixed/random-mean starts with log-share ratios.
+
+        For alternative dummies the plain-logit MLE is closed form:
+        ``alpha_j = log(s_j / s_base)`` (the BLP-contraction starting
+        point; exact for intercepts-only, excellent with covariates).
+        ASC columns are detected from the design (columns exactly
+        indicating one alternative), so no naming convention is needed.
+        Positions without positive shares on both sides keep their
+        incoming value. Returns ``(betas, n_seeded)``; never raises.
+        """
+        try:
+            import numpy as _np
+            betas = _np.asarray(betas, dtype=float).copy()
+            Kf, Kr = int(self.Kf), int(self.Kr)
+            if Kf + Kr <= 0:
+                return betas, 0
+            X = _np.asarray(self.X, dtype=float)
+            if X.ndim != 4:
+                return betas, 0
+            N, P, J = X.shape[0], X.shape[1], X.shape[2]
+            if J < 2:
+                return betas, 0
+            # observed shares over valid choice situations
+            y = _np.asarray(self.y)
+            if y.ndim == 4:
+                y = y[..., 0]
+            if y.ndim == 3 and y.shape == (N, P, J):
+                _flat = y.reshape(N * P, J)
+                cnt = _flat.sum(axis=0)
+                den = float((_flat.sum(axis=1) > 0).sum())
+            elif y.ndim <= 2:
+                idx = y.astype(int).ravel()
+                idx = idx[(idx >= 0) & (idx < J)]
+                if idx.size == 0:
+                    return betas, 0
+                cnt = _np.bincount(idx, minlength=J).astype(float)
+                den = float(idx.size)
+            else:
+                return betas, 0
+            if not den > 0:
+                return betas, 0
+            shares = cnt / den
+            try:
+                base = int(self.base_alt)
+            except Exception:
+                base = 0
+            if not (0 <= base < J) or not shares[base] > 0:
+                return betas, 0
+            try:
+                fx = _np.where(_np.asarray(self.fxidx, dtype=bool))[0]
+                rv = _np.where(_np.asarray(self.rvidx, dtype=bool))[0]
+            except Exception:
+                return betas, 0
+            if len(fx) < Kf or len(rv) < Kr:
+                return betas, 0
+            alt1 = _np.arange(J)
+            n_seed = 0
+            for f in range(Kf):  # fixed means <-> design column fx[f]
+                col = X[:, :, :, int(fx[f])]
+                for j in range(J):
+                    if bool((col == (alt1 == j)).all()):
+                        if shares[j] > 0:
+                            betas[f] = float(_np.log(shares[j] / shares[base]))
+                            n_seed += 1
+                        break
+            for k in range(Kr):  # random means <-> design column rv[k]
+                col = X[:, :, :, int(rv[k])]
+                for j in range(J):
+                    if bool((col == (alt1 == j)).all()):
+                        if shares[j] > 0:
+                            betas[Kf + k] = float(
+                                _np.log(shares[j] / shares[base]))
+                            n_seed += 1
+                        break
+            return betas, n_seed
+        except Exception:
+            try:
+                import numpy as _np
+                return _np.asarray(betas, dtype=float), 0
+            except Exception:
+                return betas, 0
+
     def fit(self):
         # {
         # Generate draws:
         draws, drawstrans = self.generate_draws(self.N, self.n_draws, self.halton)
         self.draws, self.drawstrans = draws, drawstrans  # Record generated values
+        # Explicit caller-supplied starts are respected verbatim (no ASC
+        # share seeding); the MNL block below may still overwrite
+        # self.init_coeff when it runs.
+        _explicit_init = self.init_coeff is not None
 
         # Optional numba engine (first-class; the T4 minimise_func patch is
         # the equivalent for older installs). Resolved here so the JAX fast
@@ -691,6 +783,18 @@ class MixedLogit(DiscreteChoiceModel):
         if self.init_coeff is not None and len(self.init_coeff) != n_coeff and not hasattr(self, 'class_params_spec'):
             self.init_coeff = None
             betas = np.repeat(0.1, n_coeff)
+
+        # Log-share seeding for alternative-specific constants detected as
+        # exact alternative dummies: alpha_j = log(s_j / s_base). Cheap
+        # closed form; skipped for explicitly user-supplied starts.
+        if getattr(self, 'asc_share_init', True) and not _explicit_init:
+            try:
+                betas, _n_asc = self._seed_asc_from_shares(betas)
+                if _n_asc and not _SL_QUIET:
+                    print(f"[MXL] ASC share-init seeded {_n_asc} constants "
+                          f"(log-share ratios).")
+            except Exception:
+                pass
 
         positive_bound = (0, infinity)
         any_bound = (-infinity, infinity)
