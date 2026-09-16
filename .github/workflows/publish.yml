@@ -56,6 +56,31 @@ jobs:
       - name: Install build tools
         run: python -m pip install --upgrade pip build twine
 
+      - name: Validate version metadata
+        # Guard against the 2026-09-16 failure: a manual merge committed
+        # conflict markers into version.txt (both sides had bumped the same
+        # version), setuptools then failed the build with an opaque error and
+        # nothing reached PyPI. Fail here, with the reason, instead.
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          raw = pathlib.Path("src/SearchLibrium/version.txt").read_text()
+          if any(m in raw for m in ("<<<<<<<", ">>>>>>>", "=======")):
+              sys.exit("FATAL: merge conflict markers in "
+                       "src/SearchLibrium/version.txt - resolve the merge "
+                       "before publishing (take one side, delete the markers).")
+          ver = raw.strip()
+          if not re.fullmatch(r"\d+\.\d+\.\d+([.+-].+)?", ver):
+              sys.exit(f"FATAL: version.txt is not a valid version: {ver!r}")
+          pyproject = pathlib.Path("pyproject.toml").read_text()
+          m = re.search(r'current_version\s*=\s*"([^"]+)"', pyproject)
+          if m and m.group(1) != ver:
+              sys.exit(f"FATAL: version.txt ({ver}) != pyproject.toml "
+                       f"current_version ({m.group(1)}) - run bumpver or fix "
+                       "by hand before publishing.")
+          print(f"version metadata OK: {ver}")
+          PY
+
       - name: Build sdist and wheel
         run: python -m build
 
