@@ -804,7 +804,7 @@ class Parameters:
             'LCR', 'verbose', 'asc_ind', 'nests', 'lambdas', 'varnest',
             '_jax', 'all_sig', 'de_init', 'de_popsize', 'de_maxiter',
             'de_tol', 'de_polish', 'sd_penalty', 'halton_opts', 'latent_class',
-            'num_classes','min_classes', 'max_classes', 'Effective_Search',
+            'num_classes','min_classes', 'max_classes', 'Effective_Search','n_init', 'use_mc_style', 'use_pitch_ceiling'
         ]
         self.panels = panels
 
@@ -2337,7 +2337,7 @@ class Search():
                     chosen = [v for v in self.param.avail_asvars if self.param.generator.rand() < 0.6]
                     if not chosen:
                         chosen = [self.random_choice(self.param.avail_asvars)]
-                    class_params_spec[c] = sorted(chosen)
+                    class_params_spec[c] = np.array(sorted(chosen), dtype=object)
                 asvars = sorted({v for arr in class_params_spec for v in arr})
             if self.param.avail_isvars:
                 member_params_spec = np.empty(num_classes, dtype=object)
@@ -2345,7 +2345,7 @@ class Search():
                     chosen = [v for v in self.param.avail_isvars if self.param.generator.rand() < 0.6]
                     if not chosen:
                         chosen = [self.random_choice(self.param.avail_isvars)]
-                    member_params_spec[c] = sorted(chosen)
+                    member_params_spec[c] = np.array(sorted(chosen), dtype=object)
                 member_params_spec = self._enforce_membership_identifiability(member_params_spec)
                 isvars = sorted({v for arr in member_params_spec for v in arr})
        
@@ -3745,10 +3745,13 @@ class Search():
             names_by_class = [list(arr) for arr in class_params_spec]
         full_betas_map = ([dict(zip(names_by_class[c], class_betas[c])) for c in range(len(class_betas))]
                            if class_betas is not None else None)
+        full_gamma_map = getattr(model, 'gamma_maps', None) if model is not None else None
         return {'vars': np.asarray(names_by_class[dominant], dtype=object),
                 'member': np.asarray(member_params_spec[dominant], dtype=object) if member_params_spec is not None else np.array([], dtype=object),
                 'betas_map': full_betas_map[dominant] if full_betas_map is not None else {},
-                'full_betas_map': full_betas_map}
+                'full_betas_map': full_betas_map,
+                'gamma_map': full_gamma_map[dominant] if full_gamma_map is not None else {},
+                'full_gamma_map': full_gamma_map}
     
     def _hmcr_subsample(self, vars_arr, rate=0.5):
         """Keep each variable independently with probability `rate`
@@ -3813,7 +3816,18 @@ class Search():
         else:
             sol.pop('init_class_betas', None)
 
-        return sol  
+        dom_gamma_map = dominant_ref.get('gamma_map', {})
+        current_gamma_maps = sol.get('init_class_gammas') or dominant_ref.get('full_gamma_map')
+        if current_gamma_maps:
+            has_inter = any('_inter' in (gm or {}) for gm in current_gamma_maps)
+            new_member_incl_inter = list(new_member) + (['_inter'] if has_inter else [])
+            new_gamma_map = self._match_betas(dom_gamma_map, new_member_incl_inter)
+            extended_gamma = list(current_gamma_maps[:-1]) + [new_gamma_map] + [current_gamma_maps[-1]]
+            sol['init_class_gammas'] = extended_gamma
+        else:
+            sol.pop('init_class_gammas', None)
+
+        return sol 
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Randomly select randvar not already in solution  '''
@@ -4806,9 +4820,13 @@ class Search():
         a randomly chosen function from `choices` per attempt, discards any
         attempt whose tabu-key was already touched this round."""
 
-        #n_perturb = self.param.generator.randint(1, 10) # Number of random perturbations
-        #n_perturb = self.param.generator.randint(1, math.ceil(9 - (9 - 1) * pitch))
-        n_perturb = self.param.generator.randint(1, math.ceil(9 - (9 - 1) * (self._improv_iter / self.maxiter)))
+        if getattr(self.param, 'use_pitch_ceiling', False):
+            ceiling = max(1, round(10 - 10 * pitch))
+            floor_  = max(1, round(5 - 5 * pitch))
+            floor_  = min(floor_, ceiling)
+            n_perturb = self.param.generator.randint(floor_, ceiling + 1)   # ceiling inclusive
+        else:
+            n_perturb = self.param.generator.randint(1, math.ceil(9 - (9 - 1) * (self._improv_iter / self.maxiter)))
         new_sol = self.copy_solution(sol)
         touched, moves_detail = set(pre_touched or ()), [] # Seed with upstream (HMCR) keys, then track this round's own
         attempts, real = 0, 0 # Track how many attempts were made and how many were actually applied
@@ -5204,7 +5222,8 @@ class Search():
                 num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-20,
                 gtol_membership_func=1e-5, avail=None, avail_latent=None,
                 fit_intercept=True, weights=None, seed=None,
-                alts=None, ftol_lccm=1e-20, base_alt=None, ind_id=None, panels=None, betas0=None, n_init=10):
+                alts=None, ftol_lccm=1e-20, base_alt=None, ind_id=None, panels=None, betas0=None, n_init=10,
+                gamma0=None):
         """Fit a latent class multinomial logit model with optional membership equation.
 
         Uses the modern ``LatentClassMixedLogit`` from ``latent_class.py``.
@@ -5222,7 +5241,8 @@ class Search():
             n_classes=num_classes,
             maxiter=maxiter,
             #class_maxiter=100,
-            tol=gtol,
+            ftol=getattr(self.param, 'ftol', 1e-8),
+            gtol=getattr(self.param, 'gtol', 1e-5),
             random_state=seed if seed is not None else 0,
             optimise_membership=optimise_membership,
             #membership_maxiter=100,
@@ -5279,7 +5299,34 @@ class Search():
                 resolved_betas0.append(np.array(vals, dtype=float))
             betas0 = resolved_betas0
         #model.fit(em_method="squarem")
-        model.fit(betas0=betas0)
+        if gamma0 is not None:
+            n_inter, Km = model._n_inter, model.K_membership
+            v2c = {v: i for i, v in enumerate(model.membership_vars)} if model._has_membership else {}
+            inter_arr = np.zeros(n_inter)
+            gamma_arr = np.zeros((model.n_classes, Km))
+            for c in range(model.n_classes):
+                dom_map = gamma0[c] if c < len(gamma0) else {}
+                names_c = list(member_params_spec[c]) if member_params_spec is not None and c < len(member_params_spec) else []
+                if c in model._intercept_free_classes:
+                    names_c = ['_inter'] + names_c
+                tags = []
+                for v in names_c:
+                    if v in dom_map:
+                        val = dom_map[v]
+                        tags.append(f"{v}={val:.4f}")
+                    else:
+                        val = float(self.param.generator.normal(0, 0.05))
+                        tags.append(f"{v}=RANDOM({val:.4f})")
+                    if v == '_inter' and c in model._intercept_free_classes:
+                        inter_arr[model._intercept_free_classes.index(c)] = val
+                    elif v != '_inter' and v in v2c:
+                        gamma_arr[c, v2c[v]] = val
+                print(f"[WARM START MEMBERSHIP] Class {c + 1}:")
+                print(f"  Parent_Memory:[{', '.join(f'{k}={v:.4f}' for k, v in dom_map.items())}]")
+                print(f"  Warm_Start:[{', '.join(tags)}]")
+            model.fit(betas0=betas0, inter0=inter_arr, gamma0=gamma_arr)
+        else:
+            model.fit(betas0=betas0)
         if betas0 is not None:
             for c in range(model.n_classes):
                 names_c = [model.varnames[i] for i in model._class_specs[c]]
@@ -5469,7 +5516,7 @@ class Search():
                             gtol_membership_func=1e-5, avail=None, avail_latent=None,
                             fit_intercept=True, weights=None, seed=None,
                             alts=None, ftol_lccm=1e-6, base_alt=None, ind_id=None, panels=None,
-                            betas0=None, n_init=10):
+                            betas0=None, n_init=10, gamma0=None):
         """Fit a Latent Class Conditional Logit (LCCM, Vij et al. 2020): choice
         + purchase decision per occasion, sharing class-specific utility
         coefficients. Same contract as fit_lcm, plus `w` (purchase indicator).
@@ -5486,11 +5533,12 @@ class Search():
         model = LatentClassConditional(
             n_classes=num_classes,
             maxiter=maxiter,
-            tol=gtol,
+            ftol=getattr(self.param, 'ftol', 1e-8),
+            gtol=getattr(self.param, 'gtol', 1e-5),
             random_state=seed if seed is not None else 0,
             optimise_membership=optimise_membership,
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True, choice_correction=True
+            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=False, choice_correction=False
         )
 
         X_arr = X.values if hasattr(X, 'values') else np.asarray(X, dtype=float)
@@ -5508,10 +5556,24 @@ class Search():
             base_class=getattr(self.param, 'base_class', None),
             class_params_spec=class_params_spec, panels=panels, fit_intercept=fit_intercept, base_alt=base_alt
         )
-        model.fit(betas0=betas0)
+        if gamma0 is not None:
+            n_inter, Km = model._n_inter, model.K_membership
+            v2c = {v: i for i, v in enumerate(model.membership_vars)} if model._has_membership else {}
+            inter_arr = np.zeros(n_inter)
+            gamma_arr = np.zeros((model.n_classes, Km))
+            for c in range(model.n_classes):
+                dom_map = gamma0[c] if c < len(gamma0) else {}
+                if c in model._intercept_free_classes and '_inter' in dom_map:
+                    inter_arr[model._intercept_free_classes.index(c)] = dom_map['_inter']
+                for v, val in dom_map.items():
+                    if v != '_inter' and v in v2c:
+                        gamma_arr[c, v2c[v]] = val
+            model.fit(betas0=betas0, inter0=inter_arr, gamma0=gamma_arr)
+        else:
+            model.fit(betas0=betas0)
         model.get_loglik_null()
 
-        return model
+        return model       
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Fit and Evaluate Latent Class Conditional Model  '''
@@ -5586,7 +5648,9 @@ class Search():
             weights=self.param.weights,
             alts=alts,
             base_alt=self.param.base_alt, panels=panels,
-            ind_id=ind_id, betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10), fit_intercept=asc_ind
+            ind_id=ind_id, betas0=sol.get('init_class_betas'),
+            gamma0=sol.get('init_class_gammas'),
+            n_init=self.param.n_init, fit_intercept=asc_ind
         )
 
         sol['model'] = model
@@ -5721,7 +5785,9 @@ class Search():
             weights=self.param.weights,
             alts=alts,
             base_alt=self.param.base_alt, panels =  panels, 
-            ind_id=ind_id,betas0=sol.get('init_class_betas'), n_init=sol.get('n_init_override', 10), fit_intercept=asc_ind
+            ind_id=ind_id, betas0=sol.get('init_class_betas'),
+            gamma0=sol.get('init_class_gammas'),
+            n_init=self.param.n_init, fit_intercept=asc_ind
         )
 
         """

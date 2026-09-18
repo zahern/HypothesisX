@@ -180,6 +180,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                         )
                 self._class_specs.append(np.array(indices, dtype=int))
                 self._Ks.append(len(indices))
+            
             self._class_specs = self._class_specs
             self._Ks = np.array(self._Ks, dtype=int)
             self.K_tot = int(self._Ks.sum())
@@ -2013,14 +2014,16 @@ def _sig_stars(pv: float) -> str:
 class LatentClass(DiscreteChoiceModel):
     """Latent-class MNL with an exact-Newton EM engine and native panel support."""
 
-    def __init__(self, n_classes=2, maxiter=200, newton_inner_iter=5, tol=1e-6,
+    def __init__(self, n_classes=2, maxiter=200, newton_inner_iter=5, ftol=1e-8, gtol=1e-6,
                  random_state=0, n_init=1, base_class=None,
                  optimise_membership=True, l2_penalty=0.5, l1_penalty=0.0,membership_correction=True, choice_correction=True,
                  verbose=1):
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
         self.newton_inner_iter = int(newton_inner_iter)
-        self.tol = float(tol)
+        self.ftol = float(ftol)
+        self.gtol = float(gtol)
+        self.tol = self.ftol  # backward-compat: existing display/print code reads self.tol
         self.random_state = int(random_state)
         self.n_init = max(1, int(n_init))
         self._base_class_arg = base_class
@@ -2178,7 +2181,7 @@ class LatentClass(DiscreteChoiceModel):
             class_params_spec = [list(varnames) for _ in range(self.n_classes)]
         self._class_specs, Ks = [], []
         for c, spec in enumerate(class_params_spec):
-            idxs = []
+            idxs = []            
             for v in spec:
                 if v == '_inter':
                     continue
@@ -2289,7 +2292,9 @@ class LatentClass(DiscreteChoiceModel):
         return jnp.stack([self._class_ll(betas[c], c) for c in range(self.n_classes)], axis=1)
 
     def _estep(self, betas, inter, gamma, pi):
+       
         ll_c = self._class_ll_matrix(betas)
+
         if self._has_membership and self.optimise_membership:
             logH = self._membership_log_probs(inter, gamma)
         else:
@@ -2443,51 +2448,121 @@ class LatentClass(DiscreteChoiceModel):
     def fit(self, betas0=None, inter0=None, gamma0=None):
         t_fit0 = time.time()
         C = self.n_classes
+
+        if betas0 is not None and isinstance(betas0, list) and betas0 and isinstance(betas0[0], dict):
+            rng0 = np.random.default_rng(self.random_state)
+            resolved = []
+            for c in range(self.n_classes):
+                names_c = [self.varnames[i] for i in self._class_specs[c]]
+                dom_map = betas0[c] if c < len(betas0) else {}
+                vals = [dom_map.get(v, float(rng0.normal(scale=0.05))) for v in names_c]
+                if isinstance(self, LatentClassConditional):
+                    vals.append(dom_map.get('no_purchase', float(rng0.normal(scale=0.05))))
+                resolved.append(np.array(vals, dtype=float))
+            betas0 = resolved
+
         self._build_kernels()
         best = None
 
-        multistart_ll = []        
-
-        # When betas0 is provided, we do 10% exact + 30% jittered + 60% random initialisations. (For K+1 Class we use K betas)
-
-        n_exact = int(np.ceil(0.10 * self.n_init)) if betas0 is not None else 0
-        n_jitter = int(np.ceil(0.30 * self.n_init)) if betas0 is not None else 0
-        jitter_scales = np.linspace(0.05, 0.20, n_jitter) if n_jitter > 0 else np.array([])
-
+        multistart_ll = []
         multistart_kind = []
 
-        for init_idx in range(self.n_init):
+        # Each of betas0/inter0/gamma0 is independent: 10% exact + 30%
+        # jittered + 60% random initialisations, gated only on whether THAT
+        # specific piece was provided — passing betas0 alone doesn't force
+        # inter0/gamma0 to anything, they just fall back to random.
+        n_exact_b  = int(np.ceil(0.10 * self.n_init)) if betas0 is not None else 0
+        n_jitter_b = int(np.ceil(0.30 * self.n_init)) if betas0 is not None else 0
+        jitter_scales_b = np.linspace(0.05, 0.20, n_jitter_b) if n_jitter_b > 0 else np.array([])
+
+        n_inter, Km = self._n_inter, self.K_membership
+
+        if isinstance(inter0, dict):
+            inter0 = np.array([inter0.get(c, 0.0) for c in self._intercept_free_classes])
+
+        if isinstance(gamma0, list) and gamma0 and isinstance(gamma0[0], dict):
+            mem_vars = self.membership_vars or []
+            gamma_arr = np.zeros((C, Km))
+            for c in range(C):
+                dom_map = gamma0[c] if c < len(gamma0) else {}
+                for k, v in enumerate(mem_vars):
+                    if v in dom_map:
+                        gamma_arr[c, k] = dom_map[v]
+            gamma0 = gamma_arr
+
+        inter0_ok = inter0 is not None and np.asarray(inter0).shape == (n_inter,)
+        n_exact_i  = int(np.ceil(0.10 * self.n_init)) if inter0_ok else 0
+        n_jitter_i = int(np.ceil(0.30 * self.n_init)) if inter0_ok else 0
+        jitter_scales_i = np.linspace(0.05, 0.20, n_jitter_i) if n_jitter_i > 0 else np.array([])
+
+        gamma0_ok = gamma0 is not None and np.asarray(gamma0).shape == (C, Km)
+        n_exact_g  = int(np.ceil(0.10 * self.n_init)) if gamma0_ok else 0
+        n_jitter_g = int(np.ceil(0.30 * self.n_init)) if gamma0_ok else 0
+        jitter_scales_g = np.linspace(0.05, 0.20, n_jitter_g) if n_jitter_g > 0 else np.array([])
+
+        if inter0 is not None and not inter0_ok:
+            print(f"[LC] inter0 shape mismatch (expected ({n_inter},)) — ignoring, using random init.")
+        if gamma0 is not None and not gamma0_ok:
+            print(f"[LC] gamma0 shape mismatch (expected ({C}, {Km})) — ignoring, using random init.")
+
+        max_attempts = 2 * self.n_init
+        n_converged = 0
+        attempt = 0
+
+        all_attempts = []
+
+        while n_converged < self.n_init and attempt < max_attempts:
+            init_idx = attempt
+            attempt += 1
+            attempt_t0 = time.time()
             rng = np.random.default_rng(self.random_state + init_idx)
-            if betas0 is not None and init_idx < n_exact:
+
+            if betas0 is not None and init_idx < n_exact_b:
                 betas = [jnp.asarray(b) for b in betas0]
-                multistart_kind.append('memory')
-            elif betas0 is not None and init_idx < n_exact + n_jitter:
-                scale = float(jitter_scales[init_idx - n_exact])
+                kind_b = 'memory'
+            elif betas0 is not None and init_idx < n_exact_b + n_jitter_b:
+                scale = float(jitter_scales_b[init_idx - n_exact_b])
                 betas = [jnp.asarray(np.asarray(b) + rng.normal(scale=scale, size=len(b)))
                          for b in betas0]
-                multistart_kind.append('memory_jitter')
+                kind_b = 'memory_jitter'
             else:
                 betas = [jnp.asarray(rng.normal(scale=0.05, size=int(k))) for k in self._Ks]
-                multistart_kind.append('random')
+                kind_b = 'random'
 
-            n_inter, Km = self._n_inter, self.K_membership
-            inter = jnp.asarray(rng.normal(scale=0.01, size=n_inter))
-            gamma = jnp.asarray(rng.normal(scale=0.01, size=(C, Km)))
+            if inter0_ok and init_idx < n_exact_i:
+                inter = jnp.asarray(inter0)
+            elif inter0_ok and init_idx < n_exact_i + n_jitter_i:
+                scale = float(jitter_scales_i[init_idx - n_exact_i])
+                inter = jnp.asarray(np.asarray(inter0) + rng.normal(scale=scale, size=n_inter))
+            else:
+                inter = jnp.asarray(rng.normal(scale=0.01, size=n_inter))
+
+            if gamma0_ok and init_idx < n_exact_g:
+                gamma = jnp.asarray(gamma0)
+            elif gamma0_ok and init_idx < n_exact_g + n_jitter_g:
+                scale = float(jitter_scales_g[init_idx - n_exact_g])
+                gamma = jnp.asarray(np.asarray(gamma0) + rng.normal(scale=scale, size=(C, Km)))
+            else:
+                gamma = jnp.asarray(rng.normal(scale=0.01, size=(C, Km)))
+
+            kind = kind_b  # multistart_kind still reported off the betas schedule      
 
             pi = jnp.full(C, 1.0 / C)
-
+            
             prev_ll = -np.inf
             converged = False
             R_last = None
             n_iter = 0
+            ftol_res, gtol_res = float('inf'), float('inf')
+            if getattr(self, 'verbose_trace', True):
+                _, ll0 = self._estep(betas, inter, gamma, pi)
+                print(f"   0 | {float(ll0):>11.3f} |  (initial point, before first EM step)")
 
             for it in range(1, self.maxiter + 1):
                 n_iter = it
                 b1, i1, g1, p1, ll1, R1 = self._em_step(betas, inter, gamma, pi)
-                #breakpoint()
                 b2, i2, g2, p2, ll2, R2 = self._em_step(b1, i1, g1, p1)
 
-                # SQUAREM extrapolation on the flat [betas|inter|gamma|pi] vector
                 def flat(bts, ii, gg, pp):
                     return jnp.concatenate([jnp.concatenate(bts), ii, gg.ravel(), pp])
 
@@ -2527,6 +2602,14 @@ class LatentClass(DiscreteChoiceModel):
                 step_norm = float(jnp.linalg.norm(theta_after - th0))
                 delta_ll = ll - prev_ll
 
+                n_beta_tot = int(sum(int(k) for k in self._Ks))
+                max_beta_delta = float(jnp.max(jnp.abs(
+                    theta_after[:n_beta_tot] - th0[:n_beta_tot]
+                )))
+
+                max_beta_delta = float(jnp.max(jnp.abs(theta_after[:sum(int(k) for k in self._Ks)]
+                                                          - th0[:sum(int(k) for k in self._Ks)])))
+                
                 grad_choice_vecs = []
                 for c, beta_c in enumerate(betas):
                     _, g_active_c, _ = self._class_fgh[c]
@@ -2550,38 +2633,62 @@ class LatentClass(DiscreteChoiceModel):
                 if getattr(self, 'verbose_trace', False):
                     if it == 1:
                         gc_hdr = "".join(f" |g_ch|_C{c+1:<3}" for c in range(len(betas)))
-                        print(f"{'it':>4} | {'ll':>11} | {'d_ll':>10} | {'step':>8} |{gc_hdr} | |g_mem|")
-                        print("-" * (4 + 11 + 10 + 8 + len(betas) * 13 + 12))
+                        print(f"{'it':>4} | {'ll':>11} | {'d_ll':>10} | {'step':>8} | {'max_dB':>10} |{gc_hdr} | |g_mem|")
+                        print("-" * (4 + 11 + 10 + 8 + 13 + len(betas) * 13 + 12))
                     gc_str = "".join(f" {g:>11.3e}" for g in grad_choice_norms)
-                    print(f"{it:4d} | {ll:11.3f} | {delta_ll:10.3e} | {step_norm:8.3e} |{gc_str} | {grad_member_norm:.3e}")
+                    print(f"{it:4d} | {ll:11.3f} | {delta_ll:10.3e} | {step_norm:8.3e} | {max_beta_delta:10.3e} |{gc_str} | {grad_member_norm:.3e}")
 
-                if abs(ll - prev_ll) < self.tol:
+                ftol_res = abs(delta_ll)
+                gtol_res = max(max(grad_choice_norms) if grad_choice_norms else 0.0, grad_member_norm)
+                if ftol_res < self.ftol and gtol_res < self.gtol:
                     converged = True
                     break
                 prev_ll = ll
 
-            print(f"[LC] init {init_idx + 1}/{self.n_init}  iter {it:4d}/{self.maxiter}  loglik = {ll:.6f}")
-
-
+            ftol_ok = "OK" if ftol_res < self.ftol else "X"
+            gtol_ok = "OK" if gtol_res < self.gtol else "X"
+            kind_disp = kind.replace('_', ' ').title()
+            attempt_time = time.time() - attempt_t0
             is_degen = self._is_degenerate_candidate(betas, pi)
+            print(f"[LC] {n_converged + 1:>2}/{self.n_init}  ({kind_disp}) | iter{n_iter:4d}/{self.maxiter} | "
+                  f"LogLik = {ll:.6f} | ftol_res = {ftol_res:.2e} {ftol_ok} | gtol_res = {gtol_res:.2e} {gtol_ok} | "
+                  f"time={attempt_time:.1f}s | " + ("[CONVERGED]" if converged else "[NOT CONVERGED]")+
+                  (" [DEGENERATED]" if is_degen else ""))
+
+            if not converged:
+                continue
+
+            n_converged += 1            
             better = (
                 best is None
                 or (best['degenerate'] and not is_degen)
                 or (is_degen == best['degenerate'] and ll > best['loglik'])
             )
+            all_attempts.append(dict(betas=betas, inter=inter, gamma=gamma, pi=pi,
+                                      ll=ll, kind=kind, degenerate=is_degen))
             if better:
                 best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
                             converged=converged, n_iter=n_iter, posterior=R_last,
                             degenerate=is_degen, final_step=step_norm, final_delta_ll=delta_ll,
                             grad_choice_vecs=grad_choice_vecs, grad_member_vec=grad_member_vec)
-                
             multistart_ll.append(ll)
+            multistart_kind.append(kind)
 
-        if best['degenerate']:
-            print("[LC] WARNING: every multistart candidate looked degenerate "
-                  "(collapsed class share or a coefficient beyond the sanity "
-                  "bound) — the selected winner is the least-bad one. Consider "
-                  "more inits or a warm start.")
+        if best is None:
+            print(f"[LC] WARNING: no candidate reached genuine convergence "
+                  f"(ftol<{self.ftol:.0e} and gtol<{self.gtol:.0e}) within "
+                  f"{max_attempts} attempts. Model marked as NOT CONVERGED.")
+            best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
+                        converged=False, n_iter=n_iter, posterior=R_last,
+                        degenerate=self._is_degenerate_candidate(betas, pi),
+                        final_step=step_norm, final_delta_ll=delta_ll,
+                        grad_choice_vecs=grad_choice_vecs, grad_member_vec=grad_member_vec)
+        elif best['degenerate']:
+            print("[LC] WARNING: every converged multistart candidate looked "
+                  "degenerate (collapsed class share or a coefficient beyond "
+                  "the sanity bound) — the selected winner is the least-bad "
+                  "one. Consider more inits or a warm start.")
+        self.cluster_report = self._cluster_stability_report(all_attempts)          
         self._finalise(best, time.time() - t_fit0)
         self.multistart_loglik = multistart_ll
         self.multistart_kind = multistart_kind
@@ -2599,6 +2706,18 @@ class LatentClass(DiscreteChoiceModel):
         posterior = np.asarray(best['posterior'])
 
         self.class_betas = betas
+        self.gamma_maps = []
+        _v2c = {v: i for i, v in enumerate(self.membership_vars)} if self._has_membership else {}
+        for c in range(C):
+            m = {}
+            if c in self._intercept_free_classes:
+                idx = self._intercept_free_classes.index(c)
+                m['_inter'] = float(inter[idx])
+            for v in (self.member_params_spec[c] if self.member_params_spec is not None else []):
+                col = _v2c.get(v, -1)
+                if v != '_inter' and col >= 0 and self._member_mask[c, col] > 0:
+                    m[v] = float(gamma[c, col])
+            self.gamma_maps.append(m)
         self.posterior = posterior
         self.class_probs = self._normalize(posterior.mean(axis=0))
         self.loglik = float(best['loglik'])
@@ -2609,6 +2728,10 @@ class LatentClass(DiscreteChoiceModel):
         self.final_delta_ll = float(best.get('final_delta_ll', np.nan))
         self.final_grad_choice = best.get('grad_choice_vecs', [])
         self.final_grad_member = best.get('grad_member_vec', np.array([]))
+        _gc = max((float(np.max(np.abs(v))) for v in self.final_grad_choice if v.size), default=0.0)
+        _gm = float(np.max(np.abs(self.final_grad_member))) if self.final_grad_member.size else 0.0
+        self.gtol_res = max(_gc, _gm)
+        self.ftol_res = abs(best.get('final_delta_ll', float('nan')))
         self.pred_prob, self.obs_prob = self._compute_prop_alts(betas, posterior)
 
         n_inter, Km = self._n_inter, self.K_membership
@@ -2727,6 +2850,30 @@ class LatentClass(DiscreteChoiceModel):
         with np.errstate(divide='ignore', invalid='ignore'):
             z_full = np.where(se_full > 0, theta / se_full, np.nan)
         p_full = 2 * (1 - _scipy_norm.cdf(np.abs(z_full)))
+        # ---- OPG/BHHH-style SE (score outer-product), para comparar contra
+        # el Hessiano puro de arriba. Reusa unpack()/theta_j ya definidos.
+        def per_individual_ll_flat(v):
+            b, ii, gg = unpack(v)
+            ll_c = self._class_ll_matrix(b)
+            if self._has_membership:
+                logH = self._membership_log_probs(ii, gg)
+            else:
+                pi_arg = self._phi_to_pi(v[:n_phi])
+                logpi = jnp.log(jnp.clip(pi_arg, MIN_COMP))
+                logH = jnp.broadcast_to(logpi[None, :], (self.N, self.n_classes))
+            num = ll_c + logH
+            return jax.scipy.special.logsumexp(num, axis=1)  # (N,) — NO sumar
+
+        try:
+            jac_fn = jax.jit(jax.jacfwd(per_individual_ll_flat))
+            jac = np.asarray(jac_fn(theta_j))              # (N, n_theta)
+            JtJ = jac.T @ jac
+            cov_opg = np.linalg.pinv(JtJ)
+            opg_se_full = np.sqrt(np.clip(np.diag(cov_opg), 0.0, None))
+        except Exception:
+            opg_se_full = np.full_like(theta, np.nan)
+
+        self.opg_se = opg_se_full
 
         self.se_params = theta
         self.stderr = se_full
@@ -2740,13 +2887,20 @@ class LatentClass(DiscreteChoiceModel):
         gamma_se_d = se_full[gamma_start:]
         gamma_t_d = z_full[gamma_start:]
         gamma_p_d = p_full[gamma_start:]
+        gamma_opg_d = opg_se_full[gamma_start:]
+        print(f"[DEBUG] len(theta)={len(theta)}  len(opg_se_full)={len(opg_se_full)}")
+        print(f"[DEBUG] gamma_start={gamma_start}  n_inter={n_inter}  n_gamma_dense={n_gamma_dense}  Km={Km}  C={C}")
+        print(f"[DEBUG] len(gamma_theta)={len(gamma_theta)}  len(gamma_opg_d)={len(gamma_opg_d)}")
+        print(f"[DEBUG] jac.shape={jac.shape}  JtJ.shape={JtJ.shape}")
+#Done
 
-        gamma_names, gp, gs, gt, gpv = [], [], [], [], []
+        #gamma_names, gp, gs, gt, gpv = [], [], [], [], []
+        gamma_names, gp, gs, gt, gpv, gopg = [], [], [], [], [], []
         for i, c in enumerate(self._intercept_free_classes):
             gamma_names.append(f"gamma_intercept_class_{c + 1}")
             gp.append(gamma_theta[i]); gs.append(gamma_se_d[i])
-            gt.append(gamma_t_d[i]); gpv.append(gamma_p_d[i])
-
+            gt.append(gamma_t_d[i]); gpv.append(gamma_p_d[i])           
+            gopg.append(gamma_opg_d[i])
         mem_vars = self.membership_vars or []
         for c in range(C):
             for k in range(Km):
@@ -2755,12 +2909,15 @@ class LatentClass(DiscreteChoiceModel):
                     gamma_names.append(f"gamma_class_{c + 1}_{mem_vars[k]}")
                     gp.append(gamma_theta[idx]); gs.append(gamma_se_d[idx])
                     gt.append(gamma_t_d[idx]); gpv.append(gamma_p_d[idx])
+                   
+                    gopg.append(gamma_opg_d[idx])
 
         self.gamma_params = np.array(gp)
         self.gamma_se = np.array(gs)
         self.gamma_t_stats = np.array(gt)
         self.gamma_p_values = np.array(gpv)
         self.gamma_names = gamma_names
+        self.gamma_opg_se = np.array(gopg)
 
         self.class_gammas = gamma_theta  # flat [inter | gamma C*Km] dense, for parity/debug
 
@@ -2865,7 +3022,7 @@ class LatentClass(DiscreteChoiceModel):
         self.descr = "LCCM-Firth" if self.firth_summary["needed_correction"] else "LCCM"
 
     @staticmethod
-    def _is_degenerate_candidate(betas, pi, min_share=0.01, max_abs_beta=30.0):
+    def _is_degenerate_candidate(betas, pi, min_share=0.01, max_abs_beta=200.0):
         """Cheap, no-extra-estimation screen for the classic near-empty-class
         EM local optimum (see class_ratio_min discussion): a class collapsed
         to almost no weighted individuals lets its own coefficients diverge
@@ -2907,6 +3064,75 @@ class LatentClass(DiscreteChoiceModel):
                 share = np.maximum(share, vdp_k)
                 flag |= vdp_k > vdp_thresh
         return share, flag, float(ratio.min())
+    def _cluster_stability_report(self, attempts, vdp_thresh=0.5, ratio_thresh=1e-3):
+        """For every converged multistart attempt, rank classes by share
+        (descending) to sidestep label switching, then flag which variables
+        show VP > vdp_thresh in each ranked class. Returns a list of rows:
+        (ll, kind, class_rank, flagged_vars)."""
+        rows = []
+        for a in attempts:
+            betas, inter, gamma, pi, ll, kind = (
+                a['betas'], a['inter'], a['gamma'], a['pi'], a['ll'], a['kind']
+            )
+            R, _ = self._estep(betas, inter, gamma, pi)
+            share = np.asarray(R).mean(axis=0)
+            order = np.argsort(-share)
+            for rank, c in enumerate(order, start=1):
+                beta_j = jnp.asarray(betas[c])
+                w_j = jnp.asarray(R[:, c])
+                _, g_raw, h_raw = self._class_fgh_raw[c]
+                H = np.asarray(h_raw(beta_j, w_j) + jnp.eye(beta_j.shape[0], dtype=beta_j.dtype) * RIDGE)
+                ratio_min = float(np.linalg.eigvalsh(H).min() / np.linalg.eigvalsh(H).max())
+                vdp_share, flag, _ = self._collinearity_diag(H, ratio_thresh=ratio_thresh, vdp_thresh=vdp_thresh)
+                names_c = [self.varnames[i] for i in self._class_specs[c]]
+                flagged = [names_c[k] for k in range(len(names_c)) if flag[k]]
+                rows.append(dict(ll=float(ll), kind=kind, class_rank=rank,
+                                  share=float(share[c]), ratio_min=ratio_min,
+                                  flagged_vars=flagged))
+                rows[-1]['betas'] = dict(zip(names_c, np.asarray(betas[c]).tolist()))
+                if self._has_membership and c in self._intercept_free_classes:
+                    inter_idx = self._intercept_free_classes.index(c)
+                    rows[-1]['inter'] = float(np.asarray(inter)[inter_idx])
+                else:
+                    rows[-1]['inter'] = None
+
+                if self._has_membership and self.K_membership > 0:
+                    mem_vars = self.membership_vars or []
+                    gamma_c = np.asarray(gamma)[c]
+                    rows[-1]['gamma'] = {
+                        mem_vars[k]: float(gamma_c[k])
+                        for k in range(self.K_membership)
+                        if self._member_mask[c, k] > 0
+                    }
+                else:
+                    rows[-1]['gamma'] = {}
+
+        by_rank = {}
+        for row in rows:
+            by_rank.setdefault(row['class_rank'], []).append(row)
+
+        for rank, group in by_rank.items():
+            for field in ('betas', 'gamma'):
+                all_names = set()
+                for row in group:
+                    all_names.update(row[field].keys())
+                for name in all_names:
+                    vals = [row[field][name] for row in group if name in row[field]]
+                    if len(vals) < 2:
+                        continue
+                    spread = max(vals) - min(vals)
+                    for row in group:
+                        row.setdefault(f'max_{field}_spread', {})[name] = spread
+
+            inter_vals = [row['inter'] for row in group if row['inter'] is not None]
+            if len(inter_vals) >= 2:
+                inter_spread = max(inter_vals) - min(inter_vals)
+                for row in group:
+                    row['max_inter_spread'] = inter_spread if row['inter'] is not None else None
+            else:
+                for row in group:
+                    row['max_inter_spread'] = None
+        return rows
 
     @staticmethod
     def _relative_thresholds(ratio_mins, gap_factor=100.0, min_siblings=3):
@@ -2935,6 +3161,33 @@ class LatentClass(DiscreteChoiceModel):
         real = self.panel_mask > 0
         self.loglik_null = float(-np.sum(np.log(avail_counts[real])))
         return self.loglik_null
+    
+    def class_specific_choice_shares(self):
+        """Calcula la proporción de elección de cada alternativa dentro de cada clase."""
+        J = self.J
+        K = self.n_classes
+        real = self.panel_mask > 0                     # (N,P)
+        posterior = np.asarray(self.posterior)         # (N,K)
+
+        shares = np.zeros((K, J))                      # clase x alternativa
+        for c in range(K):
+            idx = self._class_specs[c]
+            Xc = self.X[:, :, :, idx]                  # (N,P,J,Kc)
+            util = np.einsum('npjk,k->npj', Xc, self.class_betas[c])
+            util = np.where(self.avail > 0, util, -1e10)
+            util = util - util.max(axis=2, keepdims=True)
+            expu = np.exp(util) * self.avail
+            denom = np.clip(expu.sum(axis=2, keepdims=True), 1e-300, None)
+            probs = expu / denom                       # (N,P,J)
+
+            # Ponderar por la probabilidad posterior de pertenencia a la clase c
+            w = posterior[:, c][:, None, None] * real[:, :, None]
+            numerator = (probs * w).sum(axis=(0,1))    # suma sobre individuos y ocasiones
+            denominator = w.sum()
+            shares[c] = numerator / denominator        # proporción dentro de la clase
+
+        return shares
+
 
 class LatentClassConditional(LatentClass):
     """

@@ -1208,13 +1208,13 @@ class DiscreteChoiceModel(ABC):
             gm = getattr(self, 'final_grad_member', np.array([]))
             grad_choice_max = max((np.max(np.abs(v)) for v in gc if v.size), default=float('nan'))
             grad_member_max = np.max(np.abs(gm)) if gm.size else float('nan')
-            ll_ok = "OK" if abs(getattr(self, 'final_delta_ll', np.inf)) < self.tol else "X"
-            gc_ok = "OK" if grad_choice_max < self.tol else "X"
-            gm_ok = "OK" if grad_member_max < self.tol else "X"
+            ll_ok = "OK" if abs(getattr(self, 'final_delta_ll', np.inf)) < self.ftol else "X"
+            gc_ok = "OK" if grad_choice_max < self.gtol else "X"
+            gm_ok = "OK" if grad_member_max < self.gtol else "X"
             lbl_w = len("Membership Level:")            
-            p(f"  {'Log-likelihood':<{lbl_w}} ftol={self.tol:<10.0e}|  Final ΔLL: {getattr(self, 'final_delta_ll', float('nan')):<10.2e}{ll_ok}")
-            p(f"  {'Choice Level:':<{lbl_w}} gtol={self.tol:<10.0e}|  Grad Norm: {grad_choice_max:<10.2e}{gc_ok}")
-            p(f"  {'Membership Level:':<{lbl_w}} gtol={self.tol:<10.0e}|  Grad Norm: {grad_member_max:<10.2e}{gm_ok}")
+            p(f"  {'Log-likelihood':<{lbl_w}} ftol={self.ftol:<10.0e}|  Final ΔLL: {getattr(self, 'final_delta_ll', float('nan')):<10.2e}{ll_ok}")
+            p(f"  {'Choice Level:':<{lbl_w}} gtol={self.gtol:<10.0e}|  Grad Norm: {grad_choice_max:<10.2e}{gc_ok}")
+            p(f"  {'Membership Level:':<{lbl_w}} gtol={self.gtol:<10.0e}|  Grad Norm: {grad_member_max:<10.2e}{gm_ok}")
             cr = getattr(self, 'class_ratio_min', None)
             if cr is not None and np.isfinite(cr).any():
                 p(f"  Hessian Condition Number (Worst Class): {1.0/np.nanmin(cr):.2e}")
@@ -1222,18 +1222,18 @@ class DiscreteChoiceModel(ABC):
                 p("  WARNING: Convergence was not reached. Estimates may not be reliable.")
                 p(f"  EM iterations: {self.total_iter}  (maxiter reached)")
                 if gc_ok == "X":
-                    p("  Parameters not meeting grad tolerance (choice):")
+                    p("  Parameters not meeting grad tolerance (Choice):")
                     coeff_class = np.concatenate([np.full(int(k), c) for c, k in enumerate(self._Ks)])
                     idx = 0
                     for c, v in enumerate(gc):
                         for k in range(len(v)):
-                            if abs(v[k]) > self.tol:
+                            if abs(v[k]) > self.gtol:
                                 p(f"    {self.coeff_names[idx]:<30}  grad = {v[k]:.4e}")
                             idx += 1
                 if gm_ok == "X":
-                    p("  Parameters not meeting grad tolerance (membership):")
+                    p("  Parameters not meeting grad tolerance (Membership):")
                     for k in range(len(gm)):
-                        if abs(gm[k]) > self.tol and k < len(self.gamma_names):
+                        if abs(gm[k]) > self.gtol and k < len(self.gamma_names):
                             p(f"    {self.gamma_names[k]:<30}  grad = {gm[k]:.4e}")       
         elif not self.converged:
             p(LINE)
@@ -1294,11 +1294,22 @@ class DiscreteChoiceModel(ABC):
             
         fs = getattr(self, 'firth_summary', None)
         show_diag = bool(fs.get('needed_correction', False)) if isinstance(fs, dict) else False
-
+        show_diag = True 
         def vp_str(share_arr, idx):
             if not show_diag or share_arr is None or idx >= len(share_arr) or not np.isfinite(share_arr[idx]):
                 return ""
             return f"  VP={share_arr[idx]:>5.2f}"
+        
+        def opg_str(idx):
+            opg = getattr(self, 'opg_se', None)
+            if opg is None or idx >= len(opg) or opg[idx] <= 0:
+                return ""
+            return f"  (OPG={opg[idx]:.4f})"
+        def gamma_opg_str(gi):
+            opg = getattr(self, 'gamma_opg_se', None)
+            if opg is None or gi >= len(opg) or opg[gi] <= 0:
+                return ""
+            return f"  (OPG={opg[gi]:.4f})"
 
         def id_tag(flag_arr, idx):
             if not show_diag or flag_arr is None or idx >= len(flag_arr):
@@ -1388,7 +1399,8 @@ class DiscreteChoiceModel(ABC):
 
                     row_vp = vp_str(getattr(self, 'collin_share', None), pi)
                     row_tag = id_tag(getattr(self, 'collin_flag', None), pi)
-                    p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])) + row_vp + row_tag)
+                    p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])) + row_vp + opg_str(pi) + row_tag)
+                    #p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])) + row_vp + row_tag)
                 offset_cum += K_c
             
                 if has_gamma:
@@ -1397,6 +1409,8 @@ class DiscreteChoiceModel(ABC):
                     p(LINE2)
                     inter_tag = f"gamma_intercept_class_{c + 1}"
                     var_tag = f"gamma_class_{c + 1}_"
+                    n_phi = self.n_classes - 1
+                    gamma_start = n_phi + sum(self._Ks)
                     for gi, gname in enumerate(self.gamma_names):
                         if gname == inter_tag:
                             var_name = f"Inter_C{c + 1}"
@@ -1407,8 +1421,11 @@ class DiscreteChoiceModel(ABC):
                         row_vp = vp_str(getattr(self, 'gamma_collin_share', None), gi)
                         row_tag = id_tag(getattr(self, 'gamma_collin_flag', None), gi)
                         p(fmt.format(var_name[:16], "", self.gamma_params[gi], self.gamma_se[gi],
-                                    self.gamma_t_stats[gi], self.gamma_p_values[gi],
-                                    sig(self.gamma_p_values[gi])) + row_vp + row_tag)
+                                self.gamma_t_stats[gi], self.gamma_p_values[gi],
+                                sig(self.gamma_p_values[gi])) + row_vp + gamma_opg_str(gi) + row_tag)
+                        #p(fmt.format(var_name[:16], "", self.gamma_params[gi], self.gamma_se[gi],
+                         #           self.gamma_t_stats[gi], self.gamma_p_values[gi],
+                          #          sig(self.gamma_p_values[gi])) + row_vp + row_tag)
             p()
             section("GOODNESS OF FIT")
             p(LINE)

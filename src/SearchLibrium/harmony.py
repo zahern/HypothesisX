@@ -295,6 +295,78 @@ class HarmonySearch(Search):
 
         return mem  # Return memory after exhausting attempts
 
+    def build_solution_mc(self, memory, HMCR=0.9, PAR=0.3):
+    # {
+        """
+        hmcr_moves  : (clase, variable, label, id_armonia_fuente) — solo variables
+                    que quedaron PRESENTES, con qué armonía de memoria las trajo
+                    ('random' si vino de la rama aleatoria, no de memoria)
+        moves_detail: (clase, variable, label, id_armonia_sobrescritura) — solo
+                    cuando PAR cambió el valor; guarda el sol_num de la fuente
+                    usada para sobrescribir ('best' en memoria, 'flip' en aleatorio)
+        """
+        num_classes = getattr(self.param, 'num_classes', 2)
+        base = getattr(self.param, 'base_class', None)
+        if base is None:
+            base = num_classes - 1
+
+        memory_sorted = self.sort_memory(memory)
+        global_best = memory_sorted[0]
+        best_id = global_best.get('sol_num', 'best')
+
+        new_sol = Solution(nb_crit=self.nb_crit)
+        new_sol['asc_ind'] = self.param.fit_intercept if self.param.fit_intercept is not None else self.select_asc_ind()
+        hmcr_moves, moves_detail = [], []
+
+        def resolve(v, c, spec_key, label):
+            if self.random_uniform() < HMCR:
+                idx = self.random_choice(range(len(memory_sorted)))
+                src = memory_sorted[idx]
+                src_id = src.get('sol_num', idx)
+                present = v in src[spec_key][c]
+                if present:
+                    hmcr_moves.append((c, v, label, src_id))            # e.g. [C1,X1,3]
+                if self.random_uniform() < PAR:
+                    par_present = v in global_best[spec_key][c]
+                    if par_present != present:
+                        moves_detail.append((c, v, label, best_id if par_present else f'remove_by_{best_id}'))
+                    present = par_present
+            else:
+                present = self.random_uniform() < 0.6
+                if present:
+                    hmcr_moves.append((c, v, label, 'random'))          # e.g. [C1,X4,random]
+                if self.random_uniform() < PAR:
+                    flipped = not present
+                    if flipped != present:
+                        moves_detail.append((c, v, label, 'flip'))
+                    present = flipped
+            return present
+
+        class_params_spec = np.empty(num_classes, dtype=object)
+        for c in range(num_classes):
+            chosen = [v for v in self.param.avail_asvars if resolve(v, c, 'class_params_spec', 'class_params')]
+            class_params_spec[c] = np.sort(np.array(chosen, dtype=object)) if chosen else np.array([], dtype=object)
+        new_sol['class_params_spec'] = class_params_spec
+
+        member_params_spec = np.empty(num_classes, dtype=object)
+        for c in range(num_classes):
+            if c == base:
+                member_params_spec[c] = np.array([], dtype=object)
+                continue
+            chosen = [v for v in self.param.avail_isvars if resolve(v, c, 'member_params_spec', 'member_params')]
+            member_params_spec[c] = np.sort(np.array(chosen, dtype=object)) if chosen else np.array([], dtype=object)
+
+        member_params_spec = self._enforce_membership_identifiability(member_params_spec)
+        new_sol['member_params_spec'] = member_params_spec
+
+        new_sol['hmcr_moves'] = hmcr_moves
+        new_sol['hmcr_touched'] = {(mv[0], mv[1]) for mv in hmcr_moves}
+
+        new_sol = self.repair_solution_lc(new_sol)
+        new_sol, converged = self.evaluate_solution(new_sol)
+        return new_sol, converged, moves_detail
+    # }
+
     ''' ---------------------------------------------------------- '''
     ''' Function. Build new solution using Harmony Memory          '''
     ''' A new solution, could either be built from an existing one '''
@@ -1221,16 +1293,37 @@ class HarmonySearch(Search):
             self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * sine_iter
             self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * sine_iter
 
-            new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate) # Create a single new solution and perform an adjustment
-            self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
-                'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
+            #new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate) # Create a single new solution and perform an adjustment
+
+            if getattr(self.param, 'use_mc_style', False) and self.param.latent_class:
+                curr_sol, converged, mc_moves_detail = self.build_solution_mc(self.memory, HMCR=self.harm_rate, PAR=self.pitch)
+                new_sol = curr_sol
+                origin, chosen_sol_num = ('new' if self.harm_rate <= 0 else 'memory'), None
+                self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
+                    'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
+                self._csv_context['moves_detail'] = mc_moves_detail
+                self._csv_context['n_perturb'] = len(mc_moves_detail)
+            else:
+                new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate)
+                self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
+                    'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
+                if origin == 'memory':
+                    curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)
+                else:
+                    new_sol = self.repair_solution(new_sol)
+                    curr_sol, converged = self.evaluate_solution(new_sol)
             
+            
+            """
+
+            self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
+                            'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
             if origin == 'memory': # If the new solution is derived from the memory, perform pitch adjustment
                 curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)   # Perform additional perturbations
             else: #If the new solution is generated randomly, evaluate it directly
                 new_sol = self.repair_solution(new_sol)
                 curr_sol, converged = self.evaluate_solution(new_sol)
-
+            """
             if converged:
             # {
                 self.insert_solution(curr_sol)
