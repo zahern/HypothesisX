@@ -507,7 +507,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         if hasattr(self, cache_key):
             return getattr(self, cache_key)
 
-        if not self._jax_enabled or len(set(self._Ks)) != 1 or self._panelled:
+        if not self._jax_enabled or len(set(self._Ks)) != 1:
             setattr(self, cache_key, None)
             return None
 
@@ -531,6 +531,13 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         l2 = self.l2_penalty
         l1 = self.l1_penalty
 
+        # Panel aggregation: the class marginalisation is per decision-maker, so
+        # per-task log-choice is segment-summed into M = n_panels person totals.
+        panelled = bool(self._panelled)
+        M = int(self.n_panels)
+        panel_idx_b = self.jnp.asarray(self.panel_idx) if panelled else None
+        seg_sum = self.jax.ops.segment_sum
+
         def _negloglik_flat(params):
             phi = params[:n_phi]
             beta_flat = params[n_phi:n_phi + C * K]
@@ -543,11 +550,15 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             denom = jnp.clip(exp_u.sum(axis=2, keepdims=True), 1e-300)
             probs = exp_u / denom
             chosen = jnp.clip((probs * y_b[:, None, :]).sum(axis=2), 1e-300)
-            log_chosen = jnp.log(chosen)
+            log_chosen_task = jnp.log(chosen)
+            if panelled:
+                log_chosen = seg_sum(log_chosen_task, panel_idx_b, num_segments=M)
+            else:
+                log_chosen = log_chosen_task
 
             if has_memb:
                 gammas = params[n_phi + C * K:].reshape(C - 1, Km)
-                logits = jnp.zeros((N, C))
+                logits = jnp.zeros((M, C))
                 for c in range(C - 1):
                     logits = logits.at[:, c].set(X_memb @ gammas[c])
                 logits = logits - jnp.max(logits, axis=1, keepdims=True)
@@ -557,7 +568,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             else:
                 phi_full = jnp.concatenate([phi, jnp.zeros(1)])
                 log_priors_raw = phi_full - self.jax_logsumexp(phi_full)
-                log_prior = jnp.broadcast_to(log_priors_raw[None, :], (N, C))
+                log_prior = jnp.broadcast_to(log_priors_raw[None, :], (M, C))
 
             log_joint = log_chosen + log_prior
             log_marg = self.jax_logsumexp(log_joint, axis=1)
@@ -1595,6 +1606,9 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         ll = float(logsumexp(log_joint, axis=1).sum())
         ll -= self._regularize_l2_betas(betas)
         ll -= self._regularize_l1_betas(betas)
+        if has_gamma:
+            ll -= self._regularize_l2_gammas(gammas)
+            ll -= self._regularize_l1_gammas(gammas)
         return ll
 
     def _autograd_hessian(self, params: np.ndarray) -> np.ndarray | None:
@@ -1611,10 +1625,6 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             return None
         if len(set(self._Ks)) != 1:
             print("[LC] Autograd Hessian requires all classes to share the same variable set.")
-            return None
-        if self._panelled:
-            # The JIT objective marginalises per task, not per person; use the
-            # panel-aware finite-difference Hessian instead.
             return None
 
         cache_key = "_cached_autograd_hessian_fn"
@@ -1782,25 +1792,41 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             info = -H_num   # observed info = -hessian(loglik)
             se_method = "numerical-hessian (finite differences)"
 
+        # When a membership equation is active the class-share logits (phi) do
+        # not enter the likelihood — they are exactly unidentified, which makes
+        # the observed-information matrix exactly singular in those directions
+        # (an artefact, not a genuinely ill-conditioned model).  Invert only the
+        # identified block; phi rows/cols are reinstated with zero covariance.
+        P = len(params)
+        if has_gamma and n_phi > 0:
+            keep = np.arange(n_phi, P)
+        else:
+            keep = np.arange(P)
+        info_id = info[np.ix_(keep, keep)]
+
         cond_number = np.nan
-        cov = None
+        cov_id = None
         try:
-            eigvals = np.linalg.eigvalsh(info)
+            eigvals = np.linalg.eigvalsh(info_id)
             cond_number = float(eigvals.max() / max(eigvals.min(), 1e-300))
 
             if eigvals.min() < 1e-8 * eigvals.max():
                 ridge = 1e-6 * eigvals.max()
-                info_reg = info + ridge * np.eye(len(params))
-                cov = np.linalg.inv(info_reg)
+                info_reg = info_id + ridge * np.eye(len(keep))
+                cov_id = np.linalg.inv(info_reg)
                 se_method = "hessian (ridge-regularised)"
             else:
-                cov = np.linalg.inv(info)
+                cov_id = np.linalg.inv(info_id)
         except np.linalg.LinAlgError:
-            cov = np.linalg.pinv(info)
+            cov_id = np.linalg.pinv(info_id)
             se_method = "hessian (pinv fallback)"
 
-        if cov is None:
-            cov = np.linalg.pinv(info)
+        if cov_id is None:
+            cov_id = np.linalg.pinv(info_id)
+
+        # Re-embed the identified covariance into the full parameter space.
+        cov = np.zeros((P, P))
+        cov[np.ix_(keep, keep)] = cov_id
 
         se = np.sqrt(np.clip(np.diag(cov), 0.0, None))
 
