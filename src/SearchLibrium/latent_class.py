@@ -57,6 +57,9 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         smart_jitter=0.5,
         min_share=0.05,
         sort_classes=True,
+        gamma_max_abs=None,
+        share_floor=0.0,
+        membership_standardize=False,
     ):
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
@@ -80,6 +83,22 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.smart_jitter = float(smart_jitter)
         self.min_share = float(min_share)
         self.sort_classes = bool(sort_classes)
+        # ── membership identification guardrails (all opt-in) ──────────
+        # gamma_max_abs : box bound |gamma| <= B on membership coefficients in
+        #   the L-BFGS-B M-step. Stops one covariate from saturating the
+        #   membership softmax and collapsing a class. None = unbounded.
+        # share_floor : minimum allowed implied class share; after each
+        #   membership M-step, gammas shrink toward 0 until every class
+        #   clears the floor. 0.0 = off.
+        # membership_standardize : z-score X_membership at setup so bounds and
+        #   penalties are scale-free (fitted gammas then live in standardized
+        #   units; means/stds are kept in _memb_standardize_).
+        self.gamma_max_abs = (None if gamma_max_abs is None
+                              else float(gamma_max_abs))
+        self.share_floor = float(share_floor)
+        self.membership_standardize = bool(membership_standardize)
+        self._memb_standardize_ = None
+        self._memb_floor_shrinks_ = 0
         # Diagnostics populated by fit()/fit_direct().
         self.starts_ = []
         self.sort_perm_ = None
@@ -299,6 +318,21 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             self.K_membership = 0
             self.X_membership = None
 
+        # ── Optional membership standardisation (scale-free bounds) ──────
+        # Applied here so the L-BFGS-B box, the L1/L2 penalties and the VIP
+        # swing diagnostics all operate in comparable units.
+        if (getattr(self, 'membership_standardize', False)
+                and self.X_membership is not None and self.K_membership > 0):
+            _mu = np.nanmean(self.X_membership, axis=0)
+            _sd = np.nanstd(self.X_membership, axis=0)
+            _sd = np.where(np.isfinite(_sd) & (_sd > 0), _sd, 1.0)
+            self.X_membership = ((self.X_membership - _mu) / _sd).astype(float)
+            self._memb_standardize_ = {
+                'mean': np.asarray(_mu, dtype=float),
+                'std': np.asarray(_sd, dtype=float),
+                'vars': list(self.membership_vars or []),
+            }
+
         self._prepare_backend_arrays()
         self._prepare_membership_backend()
         return self
@@ -439,14 +473,60 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         if gamma0.ndim > 1:
             gamma0 = gamma0.ravel()
 
+        # Opt-in box bound: stops one covariate from saturating the membership
+        # softmax (the class-collapse pathology). None = unbounded (legacy).
+        _B = getattr(self, 'gamma_max_abs', None)
+        _bounds = None
+        if _B is not None:
+            try:
+                _b = float(_B)
+                if np.isfinite(_b) and _b > 0:
+                    _bounds = [(-_b, _b)] * int(np.asarray(gamma0).size)
+            except Exception:
+                _bounds = None
+
         result = minimize(
             lambda g: self._membership_loglik_and_grad(g, weights),
             gamma0,
             method="L-BFGS-B",
             jac=True,
+            bounds=_bounds,
             options={"maxiter": self.membership_maxiter},
         )
-        return result.x.reshape(C - 1, Km)
+        _g = result.x.reshape(C - 1, Km)
+        return self._project_gammas_to_share_floor(_g)
+
+    def _project_gammas_to_share_floor(self, gammas):
+        """Shrink membership coefficients until every implied class clears
+        ``share_floor`` (or give up after 25 halvings and return as-is).
+
+        A saturated membership equation assigns ~everyone by one covariate;
+        pulling gammas toward 0 moves priors back toward uniform, which
+        re-inflates the emptied class and keeps its utility parameters
+        identified. Only active when ``share_floor > 0``.
+        """
+        _floor = float(getattr(self, 'share_floor', 0.0) or 0.0)
+        if (not _floor > 0 or not self._has_membership
+                or self.X_membership is None or self.K_membership <= 0):
+            return gammas
+        _g = np.asarray(gammas, dtype=float)
+        for _ in range(25):
+            try:
+                _priors = self._compute_membership_priors(_g)
+            except Exception:
+                break
+            try:
+                _shares = np.asarray(_priors, dtype=float).mean(axis=0)
+            except Exception:
+                break
+            if bool(np.all(np.isfinite(_shares))) and bool(np.all(_shares >= _floor)):
+                break
+            _g = 0.5 * _g
+            try:
+                self._memb_floor_shrinks_ = int(getattr(self, '_memb_floor_shrinks_', 0)) + 1
+            except Exception:
+                pass
+        return _g
 
     def _make_initial_gammas(self, rng, gammas0=None):
         """Initialise membership coefficients."""
@@ -1493,6 +1573,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         member_params_spec=None,
         class_params_spec=None,
         panels=None,
+        ident_penalty_kwargs=None,
         **kwargs,
     ):
         """Search over number of latent classes, optionally using DE warm-start.
@@ -1550,10 +1631,19 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             # Pareto-style significance prioritisation:
             #  1) prefer fewer insignificant variable groups,
             #  2) among models with equal nsig, prefer lower criterion (e.g. BIC).
+            # criterion="penalized_bic" adds the latent_spec identification
+            # penalty (collapse / saturation / weak-identification) to BIC so
+            # degenerate specs lose even when their raw likelihood is good.
             from .search import count_insig_groups
             nsig = count_insig_groups(model.coeff_names, model.pvalues,
                                       p_val=kwargs.get('p_val', 0.05))
-            score = getattr(model, criterion)
+            if criterion == "penalized_bic":
+                from .latent_spec import score_spec as _score_spec
+                _sc = _score_spec(model,
+                                  **(ident_penalty_kwargs or {}))
+                score = _sc["penalized_bic"]
+            else:
+                score = getattr(model, criterion)
             if (best_model is None
                 or nsig < _best_nsig
                 or (nsig == _best_nsig and score < getattr(best_model, criterion))):

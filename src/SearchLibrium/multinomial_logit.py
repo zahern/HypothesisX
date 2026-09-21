@@ -156,7 +156,12 @@ class MultinomialLogit(DiscreteChoiceModel):
     bool return_hess:   Flag to calculate the hessian in _loglik_and_gradient / default=True
     method:             Optimisation method for scipy.optimize.minimize / string / default="bfgs"
     bool scipy_optimisation : Flag to apply optimiser / default=False / When false use own bfgs method.
-    
+    dtype: optional numpy dtype (e.g. np.float32) for the stored design in setup();
+        default None keeps caller dtype (float64). Opt-in memory saver for
+        search-phase fits; finals should stay float64.
+    Attribute bootstrap_reps: int, default 0. Set model.bootstrap_reps = N to
+        run N bootstrap refits for SEs inside the robust block; 0 disables them.
+
     Assumption: "varnames must match the number and order of columns in X
     """
 
@@ -246,7 +251,8 @@ class MultinomialLogit(DiscreteChoiceModel):
         transformation="boxcox", ids=None, weights=None, avail=None,
         base_alt=None, fit_intercept=False, init_coeff=None, maxiter=2000,
         ftol=1e-6, gtol=1e-6, return_grad=True, return_hess=True,
-        method="slsqp", scipy_optimisation=True, l2_penalty=0.5, l1_penalty=0.1):
+        method="slsqp", scipy_optimisation=True, l2_penalty=0.5, l1_penalty=0.1,
+        dtype=None):
     # {
 
         self.l2_penalty = float(l2_penalty)
@@ -270,6 +276,16 @@ class MultinomialLogit(DiscreteChoiceModel):
         # RECORD PARAMETERS AS MEMBER VARIABLES
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.X, self.y = X, y
+        # Opt-in storage dtype (e.g. dtype=np.float32) to halve the design
+        # footprint during search-phase fits. Default None = keep caller dtype
+        # (historically float64). Does not change numerics unless requested.
+        if dtype is not None:
+            self.X = np.asarray(self.X, dtype=dtype)
+            self.y = np.asarray(self.y, dtype=dtype)
+            if weights is not None:
+                weights = np.asarray(weights, dtype=dtype)
+            if avail is not None:
+                avail = np.asarray(avail, dtype=dtype)
 
         if self.X.shape[1] > 0 and self.X[0].dtype == np.object_:
             Xis_numeric = pd.to_numeric(self.X.flatten(), errors='coerce').reshape(self.X.shape)
@@ -380,19 +396,25 @@ class MultinomialLogit(DiscreteChoiceModel):
         else:
             ids = np.asarray(ids, dtype=np.int32)
 
-        rows = []
+        # Preallocate the long-format arrays once instead of building K
+        # per-alternative chunks and vstacking them (which transiently holds
+        # ~2x the final memory). Layout matches the old code: alt-major blocks,
+        # then the same lexsort by (ids, alt) below.
+        _nF = X_wide.shape[1]
+        X_long = np.empty((N * K, _nF), dtype=float)
+        y_long = np.empty(N * K, dtype=float)
+        ids_long = np.empty(N * K, dtype=np.int32)
+        _y_is_alt = (np.asarray(y_chosen).reshape(-1) == np.arange(K)[:, None])
         for alt in range(K):
-            chunk = np.zeros((N, X_wide.shape[1] + 2))
-            chunk[:, :X_wide.shape[1]] = X_wide
-            chunk[:, -2] = float(alt)
-            chunk[:, -1] = (y_chosen == alt).astype(float)
-            rows.append(chunk)
-        long = np.vstack(rows)
-        ids_long = np.tile(ids, K)
+            _sl = slice(alt * N, (alt + 1) * N)
+            X_long[_sl] = X_wide
+            y_long[_sl] = _y_is_alt[alt].astype(float)
+            ids_long[_sl] = ids
+        _alt_col = np.repeat(np.arange(K, dtype=np.int32), N)
 
-        sort_idx = np.lexsort((long[:, -2].astype(np.int32), ids_long))
-        X_long = long[sort_idx, :-2].astype(float)
-        y_long = long[sort_idx, -1].astype(float)
+        sort_idx = np.lexsort((_alt_col, ids_long))
+        X_long = X_long[sort_idx]
+        y_long = y_long[sort_idx]
         ids_sorted = ids_long[sort_idx]
         alts = np.arange(K, dtype=np.int32)
         full_varnames = list(varnames)
@@ -795,14 +817,21 @@ class MultinomialLogit(DiscreteChoiceModel):
                 # 5️ Optional: robust correlation matrix
                 self.robust_corr = robust_varcov / np.outer(robust_se, robust_se)
 
-                self.bootstrap_se = self._calculate_bootstrap_se(
-                    num_bootstrap=1000,
-                    X=X,
-                    y=y,
-                    weights=weights,
-                    avail=avail,
-                    betas=betas
-                )
+                # Bootstrap SEs refit the model num_bootstrap times: opt-in only
+                # via model.bootstrap_reps (default 0 = off) to avoid unbounded
+                # time/memory inside search-phase fits.
+                _n_boot = int(getattr(self, 'bootstrap_reps', 0) or 0)
+                if _n_boot > 0:
+                    self.bootstrap_se = self._calculate_bootstrap_se(
+                        num_bootstrap=_n_boot,
+                        X=X,
+                        y=y,
+                        weights=weights,
+                        avail=avail,
+                        betas=betas
+                    )
+                else:
+                    self.bootstrap_se = None
 
 
 

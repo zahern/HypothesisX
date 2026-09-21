@@ -140,6 +140,8 @@ try:
     from .selection_models import BinaryProbit, HeckmanTwoStep
     from .zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
     from .latent_class import LatentClassMixedLogit
+    from .latent_spec import (vip_table, near_unidentified_report,
+                              align_classes, propose_class_params_spec)
     from .mdcev import MDCEVFitResult, MDCEVModel
     from .multinomial_probit import MultinomialProbit
     from .MixedLogitGSE import MixedLogitGSE
@@ -173,6 +175,8 @@ except Exception:
         from selection_models import BinaryProbit, HeckmanTwoStep
         from zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
         from latent_class import LatentClassMixedLogit
+        from latent_spec import (vip_table, near_unidentified_report,
+                                 align_classes, propose_class_params_spec)
         from mdcev import MDCEVFitResult, MDCEVModel
         from multinomial_probit import MultinomialProbit
         from MixedLogitGSE import MixedLogitGSE
@@ -209,7 +213,8 @@ __all__ = [
     "RandomRegret", "MixedRandomRegret", "OrderedLogit", "OrderedLogitLong", "ExplodedLogit", "MixedExplodedLogit",
     "BinaryProbit", "HeckmanTwoStep",
     "ZeroInflatedOrderedProbit", "ZeroInflatedProbit",
-    "LatentClassMixedLogit", "MDCEVFitResult", "MDCEVModel", "MultinomialProbit",
+    "LatentClassMixedLogit", "vip_table", "near_unidentified_report",
+    "align_classes", "propose_class_params_spec", "MDCEVFitResult", "MDCEVModel", "MultinomialProbit",
     "MixedLogitGSE", "RandomParameters", "ConstraintBuilder", "create_constraints",
     "Parameters", "misc",
     "SAPBIL", "ProbabilityMatrix", "HSPBIL", "SparseEAAGDS", "BanditSA", "PerturbationBandit",
