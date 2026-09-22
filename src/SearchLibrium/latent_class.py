@@ -32,6 +32,103 @@ def _sig_stars(pv: float) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Numba engine: fused weighted-MNL (value, grad) for the EM M-steps.
+# ---------------------------------------------------------------------------
+# The numpy path allocates several (N, J)/(N, J, K) temporaries per objective
+# evaluation; the numba kernel fuses the whole case loop into one pass with
+# O(J*K) stack temporaries. Numerics mirror the numpy branch exactly
+# (max-subtraction, 1e-300 clipping, L1/L2/sd penalties). Compiled once and
+# cached at module level; all dtypes are float64.
+
+_NB_MNL_OBJ = {"fn": None}
+
+
+def _numba_weighted_mnl():
+    """Return the cached njit weighted-MNL objective, or raise."""
+    if _NB_MNL_OBJ["fn"] is not None:
+        return _NB_MNL_OBJ["fn"]
+    try:
+        import numba as _nb
+    except Exception as exc:
+        raise RuntimeError(
+            "engine='numba' requested but numba is not importable. "
+            "Install numba or use engine='auto'/'jax'/'numpy'.") from exc
+
+    @_nb.njit(cache=True)
+    def _obj(beta, Xc, y, w, avail, l2, l1, sd_pen, sd_k):
+        n_obs = Xc.shape[0]
+        n_alts = Xc.shape[1]
+        n_par = Xc.shape[2]
+        ll = 0.0
+        grad = np.zeros(n_par, dtype=np.float64)
+        U = np.empty(n_alts, dtype=np.float64)
+        E = np.empty(n_alts, dtype=np.float64)
+        for n in range(n_obs):
+            wn = w[n]
+            umax = -1e300
+            for j in range(n_alts):
+                if avail[n, j] > 0.0:
+                    uj = 0.0
+                    for k in range(n_par):
+                        uj += Xc[n, j, k] * beta[k]
+                    U[j] = uj
+                    if uj > umax:
+                        umax = uj
+                else:
+                    U[j] = -1e300
+            s = 0.0
+            for j in range(n_alts):
+                if avail[n, j] > 0.0:
+                    ej = np.exp(U[j] - umax)
+                    E[j] = ej
+                    s += ej
+                else:
+                    E[j] = 0.0
+            if s <= 0.0:
+                continue  # no available alternative: skip (numpy path yields p=0)
+            for j in range(n_alts):
+                if avail[n, j] <= 0.0:
+                    continue
+                p = E[j] / s
+                yij = y[n, j]
+                if yij > 0.0:
+                    cp = p if p > 1e-300 else 1e-300
+                    ll += wn * np.log(cp)
+                d = (yij - p) * wn
+                if d != 0.0:
+                    for k in range(n_par):
+                        grad[k] += d * Xc[n, j, k]
+        s2 = 0.0
+        s1 = 0.0
+        for k in range(n_par):
+            s2 += beta[k] * beta[k]
+            ak = beta[k] if beta[k] >= 0.0 else -beta[k]
+            s1 += ak
+        pen = l2 * s2 + l1 * s1
+        if sd_pen > 0.0 and sd_k > 0 and sd_k <= n_par:
+            sds = 0.0
+            for k in range(n_par - sd_k, n_par):
+                sds += beta[k] * beta[k]
+            pen += sd_pen * sds
+        value = -ll + pen
+        for k in range(n_par):
+            b = beta[k]
+            g = -grad[k] + 2.0 * l2 * b
+            if b > 0.0:
+                g += l1
+            elif b < 0.0:
+                g -= l1
+            grad[k] = g
+        if sd_pen > 0.0 and sd_k > 0 and sd_k <= n_par:
+            for k in range(n_par - sd_k, n_par):
+                grad[k] += 2.0 * sd_pen * beta[k]
+        return value, grad
+
+    _NB_MNL_OBJ["fn"] = _obj
+    return _obj
+
+
 class LatentClassMixedLogit(DiscreteChoiceModel):
     """Fast latent-class discrete choice model with optional JAX acceleration.
 
@@ -60,6 +157,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         gamma_max_abs=None,
         share_floor=0.0,
         membership_standardize=False,
+        engine="auto",
     ):
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
@@ -99,6 +197,17 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.membership_standardize = bool(membership_standardize)
         self._memb_standardize_ = None
         self._memb_floor_shrinks_ = 0
+        # ── compute engine for the EM weighted M-steps ───────────────
+        # "auto" (default): JAX when available, else numpy/scipy.
+        # "jax" / "numba" / "numpy": force that backend (numba falls back
+        # with a warning when not importable). search() forwards **kwargs,
+        # so engine="numba" works there too.
+        eng = str(engine or "auto").strip().lower()
+        if eng not in ("auto", "jax", "numba", "numpy"):
+            warnings.warn(f"Unknown engine={engine!r}; using 'auto'.")
+            eng = "auto"
+        self.engine = eng
+        self._backend = None  # resolved lazily by _resolve_backend()
         # Diagnostics populated by fit()/fit_direct().
         self.starts_ = []
         self.sort_perm_ = None
@@ -703,6 +812,36 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         setattr(self, cache_grad, self.jit(self.value_and_grad(objective)))
         return objective
 
+    def _resolve_backend(self) -> str:
+        """Resolve the effective compute backend for EM M-steps.
+
+        Returns one of "jax" | "numba" | "numpy". Result is cached on
+        ``self._backend``; explicit ``engine="jax"/"numba"`` falls back with a
+        warning when the backend is unavailable.
+        """
+        if self._backend in ("jax", "numba", "numpy"):
+            return self._backend
+        eng = str(getattr(self, "engine", "auto") or "auto").lower()
+        if eng == "numba":
+            try:
+                import numba  # noqa: F401
+                self._backend = "numba"
+                return self._backend
+            except Exception:
+                warnings.warn("engine='numba' requested but numba is not "
+                              "importable; falling back.")
+        elif eng == "jax":
+            if self._jax_enabled:
+                self._backend = "jax"
+                return self._backend
+            warnings.warn("engine='jax' requested but JAX is unavailable; "
+                          "falling back.")
+        if eng == "numpy":
+            self._backend = "numpy"
+        else:  # "auto" or any fallback above
+            self._backend = "jax" if self._jax_enabled else "numpy"
+        return self._backend
+
     def _weighted_m_step(self, beta0, weights, class_idx=None):
         """Weighted M-step for a single class's betas."""
         weights = np.asarray(weights, dtype=float)
@@ -712,9 +851,35 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         else:
             X_c = self.X
 
-        use_jax = self._jax_enabled
+        use_jax = self._resolve_backend() == "jax"
+        use_numba = self._resolve_backend() == "numba"
 
-        if use_jax:
+        if use_numba:
+            # Fused njit objective: one pass per evaluation, no (N,J,K)
+            # temporaries. Arrays are made contiguous once per M-step (not per
+            # iteration) since L-BFGS-B calls `objective` hundreds of times.
+            _Xc = np.ascontiguousarray(X_c, dtype=np.float64)
+            _y = np.ascontiguousarray(self.y, dtype=np.float64)
+            _w = np.ascontiguousarray(weights, dtype=np.float64)
+            _a = np.ascontiguousarray(self.avail, dtype=np.float64)
+            _sd_pen, _sd_k = 0.0, 0
+            if hasattr(self, 'sd_penalty') and self.sd_penalty > 0:
+                _kbw = getattr(self, '_Kbw', getattr(self, 'Kr', 0))
+                try:
+                    _kbw = int(_kbw)
+                except Exception:
+                    _kbw = 0
+                if _kbw > 0 and int(np.asarray(beta0).size) >= _kbw:
+                    _sd_pen, _sd_k = float(self.sd_penalty), _kbw
+            _fn = _numba_weighted_mnl()
+
+            def objective(beta):
+                _bb = np.ascontiguousarray(np.asarray(beta, dtype=float))
+                _v, _g = _fn(_bb, _Xc, _y, _w, _a,
+                             float(self.l2_penalty), float(self.l1_penalty),
+                             _sd_pen, _sd_k)
+                return float(_v), np.asarray(_g, dtype=float)
+        elif use_jax:
             self._build_jax_weighted_objective(
                 X_c if class_idx is not None else None,
                 class_idx=class_idx
