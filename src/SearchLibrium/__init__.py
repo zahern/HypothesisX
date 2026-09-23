@@ -161,6 +161,13 @@ try:
     from .skims import omx_to_dataframe, read_omx_skims, prepare_skims_from_omx, merge_skim_component
     from .accessibility import gravity_accessibility, compute_accessibility, logsum_accessibility
     from .abm import available_stages, stage_search_config
+    from .mh_choice_estimator import (
+        ChoiceEstimate, ChoiceEstimateResult, ChoiceSetFrame,
+        GaussianRandomWalkProposal,
+        BlockRandomWalkProposal, HHTSCompetingPrior,
+        chain_diagnostics, effective_sample_size, split_rhat, r_hat,
+        estimate_dest_choice, estimate_stage_choice,
+    )
 except Exception:
     try:
         from multinomial_logit import MultinomialLogit
@@ -196,6 +203,13 @@ except Exception:
         from skims import omx_to_dataframe, read_omx_skims, prepare_skims_from_omx, merge_skim_component
         from accessibility import gravity_accessibility, compute_accessibility, logsum_accessibility
         from abm import available_stages, stage_search_config
+        from mh_choice_estimator import (
+            ChoiceEstimate, ChoiceEstimateResult, ChoiceSetFrame,
+            GaussianRandomWalkProposal,
+            BlockRandomWalkProposal, HHTSCompetingPrior,
+            chain_diagnostics, effective_sample_size, split_rhat, r_hat,
+            estimate_dest_choice, estimate_stage_choice,
+        )
     except Exception as e:
         warnings.warn(f"SearchLibrium: some modules failed to import: {e}")
 
@@ -217,6 +231,11 @@ __all__ = [
     "align_classes", "propose_class_params_spec", "MDCEVFitResult", "MDCEVModel", "MultinomialProbit",
     "MixedLogitGSE", "RandomParameters", "ConstraintBuilder", "create_constraints",
     "Parameters", "misc",
+    "ChoiceEstimate", "ChoiceEstimateResult", "ChoiceSetFrame",
+    "GaussianRandomWalkProposal",
+    "BlockRandomWalkProposal", "HHTSCompetingPrior",
+    "chain_diagnostics", "effective_sample_size", "split_rhat", "r_hat",
+    "estimate_dest_choice", "estimate_stage_choice",
     "SAPBIL", "ProbabilityMatrix", "HSPBIL", "SparseEAAGDS", "BanditSA", "PerturbationBandit",
     "call_search", "call_siman", "call_harmony", "call_harmony_pbil", "call_sapbil",
     "call_banditsa", "call_parsa", "call_parcopsa", "call_agds", "estimate_ctrl",
