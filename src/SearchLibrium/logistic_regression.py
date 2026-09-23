@@ -41,7 +41,7 @@ from .multinomial_logit import MultinomialLogit
 class LogisticRegression(MultinomialLogit):
     """Binomial logistic regression fitted by SearchLibrium's MNL estimator."""
 
-    def __init__(self, _jax: bool = True, base_alt: int = 0, **kwargs):
+    def __init__(self, _jax=None, base_alt: int = 0, **kwargs):
         super().__init__(_jax=_jax)
         self.base_alt = int(base_alt)          # reference alternative (0 = no event)
         self._varnames: Optional[list] = None

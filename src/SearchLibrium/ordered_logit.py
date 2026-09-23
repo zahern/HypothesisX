@@ -58,11 +58,11 @@ GOAL: Identify optimal thr and betas
 ''' ---------------------------------------------------------- '''
 import numpy as np
 try:
-    from _choice_model import DiscreteChoiceModel
+    from _choice_model import DiscreteChoiceModel, resolve_jax_backend
     from Halton import Draws
     from MixedLogit import*
 except ImportError:
-    from ._choice_model import DiscreteChoiceModel
+    from ._choice_model import DiscreteChoiceModel, resolve_jax_backend
     from .Halton import Draws
     from .MixedLogit import *    
 from scipy import stats
@@ -146,17 +146,12 @@ class OrderedLogit():
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, _jax=True, **kwargs):
+    def __init__(self, _jax=None, **kwargs):
     # {
         self.descr = "ORL"
         self.delta_transform = kwargs.get('dt',True)
-        self._jax = _jax
-        if self._jax:
-            import jax.numpy as jnp
-            self.np = jnp
-        else:
-            import numpy as np
-            self.np = np
+        # None follows the global default engine (numba -> numpy, no JAX).
+        self._jax, self.np = resolve_jax_backend(_jax)
         self.setup(**kwargs)
     # }
 
@@ -271,7 +266,18 @@ class OrderedLogit():
         return get_first_elements(params, int(self.fit_intercept)+ self.K) # Return params[0],...,params[self.K]
 
     def set_beta(self, beta:np.ndarray):
-        set_first_elements(self.params, 1 + self.K, beta)
+        set_first_elements(self.params, int(self.fit_intercept) + self.K, beta)
+
+    def reported_params(self)->np.ndarray:
+        """Point estimates aligned to ``labels``: ``[beta | thresholds]``.
+
+        The optimiser works in ``[beta | delta]`` increments
+        (``thresholds = cumsum(delta)``), so ``self.params`` must never be
+        paired directly with threshold labels / standard errors.
+        """
+        beta = np.asarray(self.get_beta(self.params), dtype=float).ravel()
+        thr = np.asarray(self.get_thresholds(self.params), dtype=float).ravel()
+        return np.concatenate([beta, thr])
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Linear prediction of latent variable             '''
@@ -393,8 +399,8 @@ class OrderedLogit():
     # {
         self.K = K
         self.X = X
-        self.nparams = self.K + self.J
-        self.names = names
+        self.varnames = list(names)
+        self.nparams = self.K + self.J - 1 + int(self.fit_intercept)
         self.define_labels()
         self.params = self.np.zeros(self.nparams)
         self.stderr = self.np.zeros(self.nparams)
@@ -560,6 +566,16 @@ class OrderedLogit():
     '''
     def compute_stderr(self, tol):
     # {
+    # Working covariance is for the optimiser space [beta | delta]. The
+    # reported quantities are [beta | thresholds] with thresholds =
+    # cumsum(delta), so the threshold block needs the delta method:
+    # Cov(t) = C Cov(delta) C' with C lower-triangular ones. Previously the
+    # raw delta SEs were printed next to threshold estimates (and paired
+    # with them in z/p/CIs), which is why threshold rows showed CIs that
+    # did not even contain the estimate.
+    # self.stderr is stored REPORT-aligned (beta SEs + threshold SEs) so it
+    # matches labels/zvalues/pvalues/CIs; self.varcov stays in working
+    # space, with the reported-space counterpart in self.varcov_reported.
         hessian = self.get_hessian(tol)
         inverse = self.np.linalg.pinv(hessian) # Conventional approach
         # Keep the full covariance for path/mediation analysis (delta-method
@@ -568,18 +584,41 @@ class OrderedLogit():
             self.varcov = np.asarray(inverse, dtype=float)
         except Exception:
             self.varcov = None
-        diag = self.np.diagonal(inverse)
-        # jax arrays (self.np when _jax=True) don't support boolean-mask
-        # in-place assignment; clip() returns a new array either way.
-        diag_copy = self.np.clip(self.np.copy(diag), minval, None)
-
-        # DEBUG:
-        #for i, value in enumerate(diag_copy):
-        #    if value < 0:
-        #        diag_copy[i] = 0
-
+        rep = self.reported_params()
+        n_beta = int(np.asarray(self.get_beta(self.params), dtype=float).size)
+        n_thr = int(self.J - 1)
+        if (self.varcov is not None and self.varcov.shape == (self.nparams, self.nparams)
+                and n_beta + n_thr == self.nparams and np.all(np.isfinite(self.varcov))):
+            _C = np.tril(np.ones((n_thr, n_thr)))
+            _J = np.zeros((self.nparams, self.nparams))
+            _J[:n_beta, :n_beta] = np.eye(n_beta)
+            _J[n_beta:, n_beta:] = _C
+            _Vrep = _J @ self.varcov @ _J.T
+            _Vrep = (_Vrep + _Vrep.T) / 2.0
+            self.varcov_reported = _Vrep
+            diag = np.clip(np.diag(_Vrep), minval, None)
+        else:  # exotic layout (e.g. mixed variants): fall back to working SEs
+            self.varcov_reported = None
+            try:
+                diag = np.clip(np.diag(np.asarray(inverse, dtype=float)), minval, None)
+            except Exception:
+                diag = np.full(self.nparams, np.nan)
         # Standard errors are the square root of the diagonal elements of the variance-covariance matrix
-        self.stderr = self.np.sqrt(diag_copy)
+        self.stderr = np.sqrt(diag)
+        self.stderr_thr = np.asarray(self.stderr[n_beta:], dtype=float)
+        # Increments pinned at the optimiser lower bound make the
+        # finite-difference Hessian (through the cumsum/clip kink)
+        # unreliable — flag it instead of reporting a bogus ~0 SE.
+        try:
+            _delta_raw = np.asarray(self.params, dtype=float).ravel()[n_beta:]
+            if _delta_raw.size and bool(np.any(_delta_raw[1:] <= 1e-12)):
+                import warnings as _warnings
+                _warnings.warn(
+                    "OrderedLogit: a threshold increment sits at its lower "
+                    "bound; threshold standard errors are unreliable "
+                    "(boundary solution).")
+        except Exception:
+            pass
     # }
 
     def cov_params(self, robust=False):
@@ -595,7 +634,11 @@ class OrderedLogit():
         if _p == 0:
             raise ValueError("cov_params: model has no estimated parameters "
                              "(was fit() called?)")
-        _V = getattr(self, 'varcov', None)
+        _V = getattr(self, 'varcov_reported', None)
+        if _V is None:
+            # No delta-method covariance (exotic layout): fall back to the
+            # working-space matrix so the call still succeeds.
+            _V = getattr(self, 'varcov', None)
         if _V is None:
             raise ValueError("cov_params: no covariance available "
                              "(missing varcov — refit so compute_stderr runs)")
@@ -623,8 +666,12 @@ class OrderedLogit():
         lie with a given confidence level..
     '''
     def compute_confidence_intervals(self):
-        self.signif_lb = self.params - 1.96 * self.stderr # i.e. signif_lb[i] = params[i] - 1.96 * stderr[i]
-        self.signif_ub = self.params + 1.96 * self.stderr # i.e.,signif_ub[i] = params[i] + 1.96 * stderr[i]
+        rep = self.reported_params()
+        se = np.asarray(self.stderr, dtype=float)
+        # Align lengths defensively (exotic layouts fall back to working SEs).
+        _n = min(int(rep.size), int(se.size))
+        self.signif_lb = rep[:_n] - 1.96 * se[:_n] # i.e. signif_lb[i] = params[i] - 1.96 * stderr[i]
+        self.signif_ub = rep[:_n] + 1.96 * se[:_n] # i.e.,signif_ub[i] = params[i] + 1.96 * stderr[i]
 
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
@@ -636,14 +683,19 @@ class OrderedLogit():
     '''
     def compute_zvalues(self):
     # {
-        for i in range(self.nparams):
+    # z-values pair REPORTED estimates (beta | thresholds) with their SEs.
+    # Using raw optimiser deltas here previously produced threshold z-rows
+    # that belonged to the increments, not the thresholds.
+        rep = np.asarray(self.reported_params(), dtype=float)
+        se = np.asarray(self.stderr, dtype=float)
+        _n = min(int(rep.size), int(se.size), int(self.nparams))
+        z = np.full(_n, np.nan)
+        for i in range(_n):
         # {
-            if self.stderr[i] > minval:
-                self.zvalues[i] = self.params[i] / self.stderr[i]
-            else:
-                self.zvalues[i] = self.np.nan
+            if se[i] > minval:
+                z[i] = rep[i] / se[i]
         # }
-        self.zvalues = self.np.clip(self.zvalues, -self.np.inf, self.np.inf)  # Set limits
+        self.zvalues = np.clip(z, -np.inf, np.inf)  # Set limits
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -726,13 +778,21 @@ class OrderedLogit():
 
         thr = self.get_thresholds(self.params)
         beta = self.get_beta(self.params)
-        params = self.np.concatenate((beta, thr))
+        params = self.reported_params()
+        se = np.asarray(self.stderr, dtype=float)
+        zv = np.asarray(self.zvalues, dtype=float)
+        pv = np.asarray(self.pvalues, dtype=float)
+        ci_lb = np.asarray(self.signif_lb, dtype=float)
+        ci_ub = np.asarray(self.signif_ub, dtype=float)
+        _n = min(int(self.nparams), int(params.size), int(se.size),
+                 int(zv.size), int(pv.size), int(ci_lb.size), int(ci_ub.size),
+                 len(self.labels))
 
-        for i in range(lb, self.nparams):
+        for i in range(lb, _n):
         # {
-            formatted_str = cond.format(self.labels[i], params[i], self.stderr[i],
-                self.zvalues[i], self.pvalues[i], self.signif_lb[i], self.signif_ub[i])
-            if self.pvalues[i] < 0.05:
+            formatted_str = cond.format(self.labels[i], params[i], se[i],
+                zv[i], pv[i], ci_lb[i], ci_ub[i])
+            if pv[i] < 0.05:
                 formatted_str += (" (*)")
             print(formatted_str)
         # }
@@ -783,14 +843,9 @@ class OrderedLogitLong(OrderedLogit):
         # object.__init__() instead, so self._jax/self.np (normally set in
         # OrderedLogit.__init__) were never initialized -- replicate that
         # minimal setup here directly.
-        _jax = kwargs.get('_jax', True)
-        self._jax = _jax
-        if _jax:
-            import jax.numpy as jnp
-            self.np = jnp
-        else:
-            import numpy as np
-            self.np = np
+        _jax = kwargs.get('_jax', None)
+        # None follows the global default engine (numba -> numpy, no JAX).
+        self._jax, self.np = resolve_jax_backend(_jax)
         self.delta_transform = True
         self.setup(**kwargs)
 
@@ -854,6 +909,16 @@ class OrderedLogitLong(OrderedLogit):
             raise ValueError("J must be greater than 1 (at least two ordinal categories).")
         if self.y.min() < 0 or self.y.max() >= self.J:
             raise ValueError("y must be in the range [0, J-1].")
+        # Long format carries one row per case x alternative with a binary
+        # choice indicator, i.e. one-hot rows. Anything else silently
+        # corrupts the likelihood (each row must pick exactly one category).
+        _row_sums = np.asarray(self.y, dtype=float).sum(axis=1)
+        if not bool(np.all(np.isin(np.asarray(self.y).ravel(), [0, 1]))) \
+                or not bool(np.allclose(_row_sums, 1.0)):
+            raise ValueError(
+                "OrderedLogitLong expects one-hot y rows (exactly one 1 per "
+                f"case x {self.J} alternatives); got row sums "
+                f"min={float(_row_sums.min()):.3g} max={float(_row_sums.max()):.3g}.")
 
 
         # Model parameters
@@ -980,23 +1045,27 @@ class OrderedLogitLong(OrderedLogit):
 
         # Define boundaries for ordinal categories
         cut = np.concatenate(([-np.inf], thresholds, [np.inf]))  # Add -inf and +inf
-        low = cut[:-1] - latent_utilities  # Shape: (N, J, J)
-        high = cut[1:] - latent_utilities  # Shape: (N, J, J)
+        low = cut[:-1] - latent_utilities  # Shape: (N, J)
+        high = cut[1:] - latent_utilities  # Shape: (N, J)
 
         # Compute probabilities for all categories
         prob = self.prob_interval(low, high)
-       # prob = self.distr.cdf(high) - self.distr.cdf(low)  # Shape: (N, J, J)
+       # prob = self.distr.cdf(high) - self.distr.cdf(low)  # Shape: (N, J)
         prob = np.clip(prob, 1e-16, 1)  # Avoid log(0)
 
 
-        # Select probabilities for observed categories
-        #prob is N(n, J)
-        chosen_probs = prob[self.y]
+        # Select probabilities for observed categories.
+        # self.y is one-hot over the J columns (long format: one row per
+        # case x alternative). Fancy-indexing prob with the 2D y array
+        # (prob[self.y]) produces an (N, J, J) tensor and sums N*J*J terms
+        # instead of N -- weight by the indicator rows instead.
+        w = np.asarray(self.y, dtype=float)
+        chosen_probs = (prob * w).sum(axis=1)
         #chosen_probs_ = p
         # Compute log-likelihood
         loglik = np.log(chosen_probs)
 
-        return loglik  # Return loglike_obs
+        return loglik  # Return loglike_obs (N,)
 
 
 
@@ -1016,25 +1085,32 @@ class OrderedLogitLong(OrderedLogit):
         """
 
 
+        self.method = method
         if method == 'L-BFGS-B':
-            self.delta_transform =False
+            self.delta_transform = False
             tol = 1e-8
             if start is None:
-                start = [0] * self.params
+                start = [0] * self.nparams
                 value = [0.2] * (self.J - 2)  # These are the deltas
                 set_last_elements(start, self.J - 2, value)
 
             delta = self.np.ones(self.nparams) * tol
-            bounds_beta = [(-self.np.inf, self.np.inf)] * (self.K)  # K+1 betas + 1 threshold. [-inf, inf]
-            bounds_delta = [(minval, self.np.inf)] * (self.J - 1)  # These are deltas. [0, inf]
-            bounds = self.np.concatenate((bounds_beta, bounds_delta))
+            # Layout is [K slopes | t1 level | J-2 increments]: the first
+            # threshold is a level (unbounded, may be negative); only the
+            # increments are bounded below. Bounding all J-1 threshold
+            # params at >= 0 pins t1 at 0 whenever the true cut is negative.
+            bounds_beta = [(-self.np.inf, self.np.inf)] * (self.K + 1)
+            bounds_delta = [(minval, self.np.inf)] * (self.J - 2)
+            # Plain lists of tuples: jax.numpy (self.np when _jax=True)
+            # requires actual ndarrays for concatenate (as in OrderedLogit.fit).
+            bounds = self.np.concatenate((self.np.array(bounds_beta), self.np.array(bounds_delta)))
             args = (delta,)  # Make sure this is a tuple by adding a comma
             result = minimize(fun=self.get_loglike_gradient, x0=start, args=args,
                                        method='L-BFGS-B', jac = True, tol=tol, bounds=bounds)
 
         else:
             if start is None:
-                start = [0] * self.params
+                start = [0] * self.nparams
                 value = [.2] * (self.J - 2)  # These are the deltas
                 set_last_elements(start, self.J - 2, value)
                 super(OrderedLogit, self).__setattr__('delta_transform', True)
@@ -1468,17 +1544,20 @@ class MixedOrderedLogit(OrderedLogitLong, MixedLogit):
 
         # Compute probabilities for all categories
         prob = self.prob_interval(low, high)
-        # prob = self.distr.cdf(high) - self.distr.cdf(low)  # Shape: (N, J, J)
+        # prob = self.distr.cdf(high) - self.distr.cdf(low)  # Shape: (N, J)
         prob = np.clip(prob, 1e-16, 1)  # Avoid log(0)
 
-        # Select probabilities for observed categories
-        # prob is N(n, J)
-        chosen_probs = prob[self.y]
+        # Select probabilities for observed categories.
+        # self.y is one-hot over the J columns; fancy-indexing prob with
+        # the 2D y array (prob[self.y]) produces an (N, J, J) tensor --
+        # weight by the indicator rows instead (as in OrderedLogitLong).
+        w = np.asarray(self.y, dtype=float)
+        chosen_probs = (prob * w).sum(axis=1)
         # chosen_probs_ = p
         # Compute log-likelihood
         loglik = np.log(chosen_probs)
 
-        return loglik  # Return loglike_obs
+        return loglik  # Return loglike_obs (N,)
 
 
 
@@ -1652,16 +1731,10 @@ class ExplodedLogit:
     
     def __init__(self, X, y, ids, ranks, alt_var, origin_var=None, avail=None,
                  varnames=None, fit_intercept=False, maxiter=2000,
-                 ftol=1e-6, gtol=1e-6, _jax=True):
+                  ftol=1e-6, gtol=1e-6, _jax=None):
         import numpy as np
-        self._jax = _jax
-        if _jax:
-            import jax.numpy as jnp
-            self.np = jnp
-        else:
-            import numpy as np
-            self.np = np
-        
+        # None follows the global default engine (numba -> numpy, no JAX).
+        self._jax, self.np = resolve_jax_backend(_jax)
         self.X = self.np.asarray(X, dtype=float)
         self.y = self.np.asarray(y, dtype=float)
         self.ids = self.np.asarray(ids)
@@ -1943,16 +2016,10 @@ class MixedExplodedLogit:
                  distributions=None, n_draws=1000, halton_opts=None,
                  fit_intercept=False, maxiter=2000, ftol=1e-6, gtol=1e-6,
                  reg_penalty=0.5, l1_penalty=0.1, sd_penalty=0.001,
-                 _jax=True):
+                  _jax=None):
         import numpy as np
-        self._jax = _jax
-        if _jax:
-            import jax.numpy as jnp
-            self.np = jnp
-        else:
-            import numpy as np
-            self.np = np
-        
+        # None follows the global default engine (numba -> numpy, no JAX).
+        self._jax, self.np = resolve_jax_backend(_jax)
         self.X = self.np.asarray(X, dtype=float)
         self.y = self.np.asarray(y, dtype=float)
         self.ids = self.np.asarray(ids)

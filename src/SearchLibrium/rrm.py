@@ -654,8 +654,18 @@ class RandomRegret(DiscreteChoiceModel):
         self.fit_start_time = time()  # Set the start time for runtime calculation
         # Optional numba engine: njit likelihood + prange gradient under the
         # same BFGS contract (sets coeff_est/beta/converged + post_process).
+        # An explicit model.engine wins; otherwise the global default
+        # (SL_ENGINE env var or numba_engine.set_default_engine) applies.
         # Any failure falls through to the standard path below.
-        if getattr(self, 'engine', None) == 'numba':
+        try:
+            try:
+                from numba_engine import effective_engine as _rrm_eff_eng
+            except ImportError:
+                from .numba_engine import effective_engine as _rrm_eff_eng
+            _rrm_use_numba = (_rrm_eff_eng(self) == 'numba')
+        except Exception:
+            _rrm_use_numba = (getattr(self, 'engine', None) == 'numba')
+        if _rrm_use_numba:
             try:
                 try:
                     from numba_rrm import fit_rrm_numba

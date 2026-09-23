@@ -116,7 +116,19 @@ class MixedLogitGSE(MixedLogit):
                 rng = np.random.default_rng(None if _seed is None
                                             else int(_seed) + 10007 * self.Kgrad)
                 self.gamma_draws = rng.standard_normal((self.N, self.Kgrad))
-        # Force JAX-only (scipy fallback doesn't handle gradient loadings)
+        # Force JAX-only (scipy fallback doesn't handle gradient loadings,
+        # and there is no numba port for the gradient-latent terms yet).
+        # If numba is the global default, say so instead of silently using JAX.
+        try:
+            try:
+                from numba_engine import numba_as_default as _gse_nad
+            except ImportError:
+                from .numba_engine import numba_as_default as _gse_nad
+            if bool(_gse_nad()):
+                print("[MixedLogitGSE] gradient loadings require JAX; ignoring "
+                      "the global numba default for this fit.")
+        except Exception:
+            pass
         self._jax = True
         super().fit()
 

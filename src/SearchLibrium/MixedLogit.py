@@ -63,7 +63,7 @@ def _panel_weighted_shares(prob_np, panel_info):
     return ind, np.mean(ind, axis=0)
 
 class MixedLogit(DiscreteChoiceModel):
-    def __init__(self, halton_opts=None, distributions=['n', 'ln', 'nln', 't', 'tn', 'u'], _jax=True):
+    def __init__(self, halton_opts=None, distributions=['n', 'ln', 'nln', 't', 'tn', 'u'], _jax=None):
         super().__init__(_jax)
         self.descr = "MXL"
         self.halton_opts = halton_opts
@@ -713,8 +713,17 @@ class MixedLogit(DiscreteChoiceModel):
 
         # Optional numba engine (first-class; the T4 minimise_func patch is
         # the equivalent for older installs). Resolved here so the JAX fast
-        # path below is skipped when numba is selected.
-        use_numba = (getattr(self, 'engine', None) == 'numba')
+        # path below is skipped when numba is selected. An explicit
+        # model.engine wins; otherwise the global default (SL_ENGINE env var
+        # or numba_engine.set_default_engine) applies.
+        try:
+            try:
+                from numba_engine import effective_engine as _mx_eff_eng
+            except ImportError:
+                from .numba_engine import effective_engine as _mx_eff_eng
+            use_numba = (_mx_eff_eng(self) == 'numba')
+        except Exception:
+            use_numba = (getattr(self, 'engine', None) == 'numba')
 
         # 2x Kftrans - mean and lambda, 3x Krtrans - mean, s.d., lambda
         # Kchol, Kbw - relate to random variables, non-transformed

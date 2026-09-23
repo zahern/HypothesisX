@@ -12,30 +12,39 @@ class NestedLogit(MultinomialLogit):
     Handles nested structure of alternatives.
     """
 
-    def __init__(self, _jax = True):
+    def __init__(self, _jax = None):
         super(NestedLogit, self).__init__(_jax)
         self.descr = "Nested Logit"
         self.robust = False
         self.robust_corr = None
 
-        # Dynamically set the backend once during initialization
-        if _jax:
-            import jax
-            jax.config.update("jax_enable_x64", True)  #
-            import jax.numpy as jnp
-            from jax import grad, jacfwd, jit, lax, vmap
-            from scipy.optimize import  minimize
-            self.np = jnp  # Assign JAX's NumPy-like module
-            self.jaxgrad = grad
-            self.vmap = vmap
-            self.lax = lax
-            self.jacfwd = jacfwd
-            self.jit = jit
-            from jaxopt import ScipyMinimize
-            from scipy.stats import norm
-            self.jaxoptmin = ScipyMinimize
-            self.minimize = minimize
-        else:
+        # Dynamically set the backend once during initialization.
+        # self._jax is already resolved by the base class (None follows the
+        # global default engine: numba -> numpy backend, no JAX import).
+        if self._jax:
+            try:
+                import jax
+                jax.config.update("jax_enable_x64", True)  #
+                import jax.numpy as jnp
+                from jax import grad, jacfwd, jit, lax, vmap
+                from scipy.optimize import  minimize
+                self.np = jnp  # Assign JAX's NumPy-like module
+                self.jaxgrad = grad
+                self.vmap = vmap
+                self.lax = lax
+                self.jacfwd = jacfwd
+                self.jit = jit
+                from jaxopt import ScipyMinimize
+                from scipy.stats import norm
+                self.jaxoptmin = ScipyMinimize
+                self.minimize = minimize
+            except ImportError:
+                import warnings as _warnings
+                _warnings.warn(
+                    "JAX backend requested but jax/jaxopt is not importable; "
+                    "falling back to the numpy backend.")
+                self._jax = False
+        if not self._jax:
             import numpy as np
             from scipy.optimize import minimize
             self.np = np  # Assign standard NumPy
@@ -63,22 +72,25 @@ class NestedLogit(MultinomialLogit):
         self.__dict__.update(state)
         # Re-import the right modules based on _jax flag
         if getattr(self, "_jax", False):
-            import jax
-            jax.config.update("jax_enable_x64", True)
-            import jax.numpy as jnp
-            from jax import grad, jacfwd, jit, lax, vmap
-            from jaxopt import ScipyMinimize
-            from scipy.optimize import minimize
+            try:
+                import jax
+                jax.config.update("jax_enable_x64", True)
+                import jax.numpy as jnp
+                from jax import grad, jacfwd, jit, lax, vmap
+                from jaxopt import ScipyMinimize
+                from scipy.optimize import minimize
 
-            self.np = jnp
-            self.jaxgrad = grad
-            self.vmap = vmap
-            self.lax = lax
-            self.jacfwd = jacfwd
-            self.jit = jit
-            self.jaxoptmin = ScipyMinimize
-            self.minimize = minimize
-        else:
+                self.np = jnp
+                self.jaxgrad = grad
+                self.vmap = vmap
+                self.lax = lax
+                self.jacfwd = jacfwd
+                self.jit = jit
+                self.jaxoptmin = ScipyMinimize
+                self.minimize = minimize
+            except ImportError:
+                self._jax = False
+        if not getattr(self, "_jax", False):
             import numpy as np
             from scipy.optimize import minimize
 

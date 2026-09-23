@@ -36,7 +36,7 @@ class ZeroInflatedOrderedProbit(DiscreteChoiceModel):
     explanatory variables.
     """
 
-    def __init__(self, _jax=True):
+    def __init__(self, _jax=None):
         super(ZeroInflatedOrderedProbit, self).__init__(_jax)
         self.descr = "Zero-Inflated Ordered Probit"
         self.result = None

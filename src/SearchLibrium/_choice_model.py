@@ -67,7 +67,12 @@ from time import time
 import numpy as np
 import pandas as pd
 import scipy.stats as ss
-import jax.numpy as jnp
+try:
+    import jax.numpy as jnp
+    JAX_AVAILABLE = True
+except ImportError:  # pragma: no cover - jax is required; guard is import robustness only
+    jnp = None
+    JAX_AVAILABLE = False
 
 
 
@@ -87,8 +92,65 @@ except ImportError:
 # A dictionary to manage backends
 BACKENDS = {
     "numpy": np,
-    "jax": jnp,
 }
+if JAX_AVAILABLE:
+    BACKENDS["jax"] = jnp
+
+_JAX_MISSING_WARNED = False
+
+
+def _warn_jax_missing():
+    """Warn once that JAX was requested but is not installed."""
+    global _JAX_MISSING_WARNED
+    if not _JAX_MISSING_WARNED:
+        _JAX_MISSING_WARNED = True
+        warnings.warn(
+            "JAX was requested but could not be imported; falling back to "
+            "the numpy/scipy backend. JAX is a required dependency — check "
+            "your installation.",
+            ImportWarning, stacklevel=3,
+        )
+
+
+def _numba_is_global_default():
+    """True when the process-wide default engine is numba (SL_ENGINE/env)."""
+    try:
+        try:
+            from .numba_engine import numba_as_default as _nad
+        except ImportError:
+            try:
+                from numba_engine import numba_as_default as _nad
+            except ImportError:
+                _nad = None
+        if _nad is not None:
+            return bool(_nad())
+    except Exception:
+        pass
+    try:
+        import os as _os
+        return str(_os.environ.get('SL_ENGINE', '')).strip().lower() == 'numba'
+    except Exception:
+        return False
+
+
+def resolve_jax_backend(requested=None):
+    """Resolve the array backend for ``_jax=<requested>``.
+
+    Returns ``(use_jax, backend_module)``. ``None`` (the default) follows
+    the global default engine: ``False``/numpy when numba is the global
+    default (``SL_ENGINE=numba`` or ``numba_engine.set_default_engine``),
+    ``True``/jax.numpy otherwise (legacy JAX-first behaviour). Explicit
+    ``True``/``False`` is honoured verbatim. When JAX is requested but not
+    installed this degrades to ``(False, numpy)`` with a one-time warning
+    instead of raising.
+    """
+    if requested is None:
+        requested = not _numba_is_global_default()
+    if requested and JAX_AVAILABLE:
+        return True, jnp
+    if requested:
+        _warn_jax_missing()
+    return False, np
 
 # Utility function to select the backend
 def get_backend(jax=True):
@@ -159,8 +221,11 @@ class DiscreteChoiceModel(ABC):
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
-    def __init__(self, jax = True):
+    def __init__(self, jax = None):
     # {
+        # jax=None follows the global default engine (JAX-first unless
+        # SL_ENGINE=numba / set_default_engine('numba')); explicit
+        # True/False is honoured verbatim.
 
         self.reset_attributes()
         self.fit_intercept = False
@@ -202,8 +267,7 @@ class DiscreteChoiceModel(ABC):
         self.X_original, self.y_original = [], []
         self.weights, self.avail = [], []
         self.init_coeff = []
-        self._jax = jax
-        self.backend = get_backend(jax)
+        self._jax, self.backend = resolve_jax_backend(jax)
         self.descr = ""
     # }
 

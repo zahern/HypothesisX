@@ -144,7 +144,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         class_maxiter=50,
         tol=1e-6,
         random_state=0,
-        _jax=True,
+        _jax=None,
         n_init=1,
         optimise_membership=True,
         membership_maxiter=50,
@@ -233,8 +233,23 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.total_iter = 0
         self.num_params = None
         self.search_results = None
-        self._jax = bool(_jax)
         self._jax_enabled = False
+
+        if _jax is None:
+            # Follow the global default engine (SL_ENGINE=numba ->
+            # numpy/numba paths, no JAX); otherwise legacy JAX-first.
+            try:
+                from ._choice_model import resolve_jax_backend as _rjb
+            except ImportError:
+                try:
+                    from _choice_model import resolve_jax_backend as _rjb
+                except ImportError:
+                    _rjb = None
+            if _rjb is not None:
+                _jax = bool(_rjb(None)[0])
+            else:
+                _jax = True
+        self._jax = bool(_jax)
 
         if self._jax:
             try:
@@ -812,6 +827,26 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         setattr(self, cache_grad, self.jit(self.value_and_grad(objective)))
         return objective
 
+    def _numba_global_default(self) -> bool:
+        """True when the process-wide default engine is numba."""
+        try:
+            from .numba_engine import numba_as_default as _nad
+        except ImportError:
+            try:
+                from numba_engine import numba_as_default as _nad
+            except ImportError:
+                _nad = None
+        if _nad is not None:
+            try:
+                return bool(_nad())
+            except Exception:
+                return False
+        try:
+            import os as _os
+            return str(_os.environ.get('SL_ENGINE', '')).strip().lower() == 'numba'
+        except Exception:
+            return False
+
     def _resolve_backend(self) -> str:
         """Resolve the effective compute backend for EM M-steps.
 
@@ -839,6 +874,13 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         if eng == "numpy":
             self._backend = "numpy"
         else:  # "auto" or any fallback above
+            if self._numba_global_default():
+                try:
+                    import numba  # noqa: F401
+                    self._backend = "numba"
+                    return self._backend
+                except Exception:
+                    pass
             self._backend = "jax" if self._jax_enabled else "numpy"
         return self._backend
 

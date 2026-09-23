@@ -13,9 +13,8 @@ class MixedNested(MixedLogit, NestedLogit):
     Mixed Nested Logit Model.
     """
 
-    def __init__(self, _jax=True):
+    def __init__(self, _jax=None):
         MixedLogit.__init__(self, _jax=_jax)
-        self._jax = _jax
         self._set_backend(_jax)
         self.descr = "Mixed Nested Logit"
         self.nests = {}
@@ -25,12 +24,25 @@ class MixedNested(MixedLogit, NestedLogit):
         self.base_param_count = 0
 
     def _set_backend(self, use_jax):
+        if use_jax is None:
+            # Follow the global default engine (numba -> numpy backend).
+            try:
+                from ._choice_model import resolve_jax_backend
+            except ImportError:
+                from _choice_model import resolve_jax_backend
+            use_jax, _be = resolve_jax_backend(None)
+        self._jax = bool(use_jax)
         if use_jax:
-            import jax
-
-            jax.config.update("jax_enable_x64", True)
-            import jax.numpy as jnp
-
+            try:
+                import jax
+                jax.config.update("jax_enable_x64", True)
+                import jax.numpy as jnp
+            except ImportError:
+                import numpy as _np_fallback
+                self._jax = False
+                self.np = _np_fallback
+                self.backend = _np_fallback
+                return
             self.np = jnp
             self.backend = jnp
         else:

@@ -5172,7 +5172,7 @@ class Search():
             fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params,
             halton_opts=None):
         # {
-        model = MixedLogit(_jax=getattr(self.param, '_jax', True))
+        model = MixedLogit(_jax=getattr(self.param, '_jax', None))
         # Optional execution engine (e.g. params.engine='numba'); honoured
         # by installs carrying the engine kwarg, harmlessly ignored by old
         # ones (their fit() never reads it).
@@ -5237,6 +5237,8 @@ class Search():
             smart_jitter=getattr(self.param, 'lc_smart_jitter', 0.5),
             min_share=getattr(self.param, 'lc_min_share', 0.05),
             sort_classes=getattr(self.param, 'lc_sort_classes', True),
+            _jax=getattr(self.param, '_jax', None),
+            engine=getattr(self.param, 'engine', 'auto'),
         )
 
         membership_vars = None
@@ -5716,7 +5718,7 @@ class Search():
         X_nest = self.param.df[nest_vars]
         y = self.param.choices
 
-        model = NestedLogit(_jax=getattr(self.param, '_jax', True))
+        model = NestedLogit(_jax=getattr(self.param, '_jax', None))
         model.setup(X=X, X_nest=X_nest, y=y, varnames=all_vars, isvars=is_vars,
                     alts=self.param.alt_var, ids=self.param.choice_id,
                     nests=nests, lambdas=lambdas, fit_intercept=asc_ind,
@@ -5775,7 +5777,7 @@ class Search():
         X, all_vars = self._get_orthogonalized_X(all_vars)
         y = self.param.choices
 
-        model = MixedNested(_jax=getattr(self.param, '_jax', True))
+        model = MixedNested(_jax=getattr(self.param, '_jax', None))
         model.setup(
             X=X, y=y,
             varnames=all_vars,
@@ -5918,7 +5920,18 @@ class Search():
 
         return sub, all_attr_vars
 
-    def fit_random_regret(self, df, use_jax=True, transvars=None):
+    def fit_random_regret(self, df, use_jax=None, transvars=None):
+        # use_jax=None follows the global default engine (SL_ENGINE=numba ->
+        # numba/scipy path via model.fit()); explicit True/False is honoured.
+        if use_jax is None:
+            try:
+                try:
+                    from numba_engine import numba_as_default as _nad
+                except ImportError:
+                    from .numba_engine import numba_as_default as _nad
+                use_jax = not bool(_nad())
+            except Exception:
+                use_jax = True
         if transvars:
             # Build model via setup() so transvars flow through pre_process
             # RRM uses attribute_vars as the model variables

@@ -413,8 +413,18 @@ class MixedRandomRegret(RandomRegret, MixedLogit):
             # RandomRegret.fit directly (NOT fit_jax: its fallback invokes
             # self.fit(), which would recurse back here via the MRO).
             return RandomRegret.fit(self)
+        # Engine resolution: explicit model.engine wins, otherwise the global
+        # default (SL_ENGINE env var or numba_engine.set_default_engine).
         try:
-            if getattr(self, 'engine', None) == 'numba':
+            try:
+                from numba_engine import effective_engine as _mrrm_eff_eng
+            except ImportError:
+                from .numba_engine import effective_engine as _mrrm_eff_eng
+            _mrrm_use_numba = (_mrrm_eff_eng(self) == 'numba')
+        except Exception:
+            _mrrm_use_numba = (getattr(self, 'engine', None) == 'numba')
+        try:
+            if _mrrm_use_numba:
                 try:
                     from numba_rrm import fit_mrrm_numba
                 except ImportError:

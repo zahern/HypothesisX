@@ -184,7 +184,7 @@ class MultinomialLogit(DiscreteChoiceModel):
     ''' --------------------------------- '''
     ''' Function. Constructor             '''
     ''' --------------------------------- '''
-    def __init__(self, _jax = True): # {
+    def __init__(self, _jax = None): # {
         super(MultinomialLogit, self).__init__(_jax)  # Base class initialisations
         self.descr = "MNL"
     # }
