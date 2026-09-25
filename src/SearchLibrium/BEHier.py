@@ -322,9 +322,13 @@ def _behier_latent(search_instance, sol, max_passes=10):
 
         parent_loglik = float(ref_sol['loglik'])
         converged, loglik = False, float('-inf')
+        prev_n_init = search_instance.param.n_init
         for n_init_try in (1, 5):
-            trial['n_init_override'] = n_init_try
-            aic, bic, loglik, mae, _, _, _, _, _, converged, trial = search_instance.evaluate_model(trial)
+            search_instance.param.n_init = n_init_try
+            try:
+                aic, bic, loglik, mae, _, _, _, _, _, converged, trial = search_instance.evaluate_model(trial)
+            finally:
+                search_instance.param.n_init = prev_n_init
             trial['aic'], trial['bic'], trial['loglik'], trial['mae'] = aic, bic, loglik, mae
             _drop = parent_loglik - loglik if (converged and math.isfinite(loglik)) else float('nan')
             _crit = chi2.ppf(0.95, df) if df > 0 else float('nan')

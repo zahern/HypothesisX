@@ -6,9 +6,19 @@ import time
 
 try:  
     from _choice_model import  DiscreteChoiceModel
+    from separation_screen import (
+        is_degenerate_candidate, collinearity_diag, cluster_stability_report,
+        konis_separation_test, attribute_separation,sign_breakdown,
+    )
+   
     
 except ImportError:    
     from ._choice_model import DiscreteChoiceModel
+    from .separation_screen import (
+        is_degenerate_candidate, collinearity_diag, cluster_stability_report,
+        konis_separation_test, attribute_separation,sign_breakdown,
+    )
+   
     
 
 
@@ -89,6 +99,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             try:
                 import jax
                 import jax.numpy as jnp
+                from jax import lax
                 from jax import jit, value_and_grad
                 from jax.scipy.special import logsumexp as jax_logsumexp
 
@@ -1985,6 +1996,7 @@ except ImportError:
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 from jax import grad, hessian
 
 jax.config.update("jax_enable_x64", True)
@@ -2014,10 +2026,13 @@ def _sig_stars(pv: float) -> str:
 class LatentClass(DiscreteChoiceModel):
     """Latent-class MNL with an exact-Newton EM engine and native panel support."""
 
-    def __init__(self, n_classes=2, maxiter=200, newton_inner_iter=5, ftol=1e-8, gtol=1e-6,
+    def __init__(self, n_classes=2, maxiter=1000, newton_inner_iter=5, ftol=1e-10, gtol=1e-6,
                  random_state=0, n_init=1, base_class=None,
                  optimise_membership=True, l2_penalty=0.5, l1_penalty=0.0,membership_correction=True, choice_correction=True,
-                 verbose=1):
+                 verbose=1, step_tol=1e-8, max_stagnant=20,):
+
+        self.step_tol = float(step_tol)
+        self.max_stagnant = int(max_stagnant)         
         self.n_classes = int(n_classes)
         self.maxiter = int(maxiter)
         self.newton_inner_iter = int(newton_inner_iter)
@@ -2068,7 +2083,7 @@ class LatentClass(DiscreteChoiceModel):
     def setup(self, X, y, varnames, ids, alts, avail=None,
               class_params_spec=None, member_params_spec=None,
               base_class=None, panels=False, ind_id=None,
-              fit_intercept=False, base_alt=None, l1_penalty=None, l2_penalty=None):
+              fit_intercept=False, base_alt=None, l1_penalty=None, l2_penalty=None,maxiter=1000):
         """
         ids     : choice-situation id — one situation = one block of J rows.
         panels  : False (default) -> one situation == one individual, exactly
@@ -2273,6 +2288,28 @@ class LatentClass(DiscreteChoiceModel):
         ll_np = jnp.sum(self._yd * logp, axis=2)                    # (N,P)
         return jnp.sum(ll_np * self._maskd, axis=1)                 # (N,)
 
+    def _separation_xbar(self, c, betas, w_i):
+        """Weighted Konis (2007) structure vectors for class c's standard
+        multinomial choice stage: chosen-vs-each-available-alternative
+        contrasts (Konis 2007, Sec. 1.4). w_i: (N,) posterior weight for
+        class c. Returns an (n_rows, Kc) array ready for konis_separation_test."""
+        idx = self._class_specs[c]
+        Xc = np.asarray(self.X)[:, :, :, idx]                        # (N,P,J,Kc)
+        yc = np.asarray(self.y)                                      # (N,P,J)
+        avail = np.asarray(self.avail)                                # (N,P,J)
+        real = np.asarray(self.panel_mask) > 0                        # (N,P)
+        j_chosen = np.argmax(yc, axis=2)                               # (N,P)
+        x_chosen = np.take_along_axis(
+            Xc, j_chosen[:, :, None, None], axis=2)[:, :, 0, :]         # (N,P,Kc)
+
+        rows = []
+        for j in range(self.J):
+            mask = (avail[:, :, j] > 0) & (j_chosen != j) & real
+            diff = x_chosen - Xc[:, :, j, :]                            # (N,P,Kc)
+            w = w_i[:, None] * mask
+            rows.append((w[:, :, None] * diff).reshape(-1, diff.shape[-1]))
+        return np.concatenate(rows, axis=0)
+    
     def _membership_logits(self, inter, gamma):
         C = self.n_classes
         logits = jnp.zeros((self.N, C))
@@ -2287,6 +2324,28 @@ class LatentClass(DiscreteChoiceModel):
         logits = self._membership_logits(inter, gamma)
         logits = logits - jnp.max(logits, axis=1, keepdims=True)
         return logits - jnp.log(jnp.clip(jnp.sum(jnp.exp(logits), axis=1, keepdims=True), MIN_COMP))
+    
+    def _separation_xbar_membership(self, s, R_last):
+        """Weighted Konis (2007) structure vectors for class s's membership
+        logit (one-vs-rest contrasts against every other class, Sec. 1.4),
+        using R_last directly as fractional ('soft-label') weights — this
+        mirrors exactly how the M-step already estimates gamma via weighted
+        MLE, no hard class assignment is introduced. Returns an
+        (n_rows, Km_active) array, or (0,0) if class s has no free gamma."""
+        if not self._has_membership or self.K_membership == 0:
+            return np.zeros((0, 0))
+        active = np.where(self._member_mask[s] > 0)[0]
+        if active.size == 0:
+            return np.zeros((0, 0))
+        Z = np.asarray(self.X_membership)[:, active]                # (N,Km_active)
+        R = np.asarray(R_last)                                       # (N,C)
+        rows = []
+        for sp in range(R.shape[1]):
+            if sp == s:
+                continue
+            rows.append(R[:, s][:, None] * Z)
+            rows.append(-R[:, sp][:, None] * Z)
+        return np.concatenate(rows, axis=0)
 
     def _class_ll_matrix(self, betas):
         return jnp.stack([self._class_ll(betas[c], c) for c in range(self.n_classes)], axis=1)
@@ -2499,6 +2558,7 @@ class LatentClass(DiscreteChoiceModel):
         n_exact_g  = int(np.ceil(0.10 * self.n_init)) if gamma0_ok else 0
         n_jitter_g = int(np.ceil(0.30 * self.n_init)) if gamma0_ok else 0
         jitter_scales_g = np.linspace(0.05, 0.20, n_jitter_g) if n_jitter_g > 0 else np.array([])
+        
 
         if inter0 is not None and not inter0_ok:
             print(f"[LC] inter0 shape mismatch (expected ({n_inter},)) — ignoring, using random init.")
@@ -2546,14 +2606,17 @@ class LatentClass(DiscreteChoiceModel):
                 gamma = jnp.asarray(rng.normal(scale=0.01, size=(C, Km)))
 
             kind = kind_b  # multistart_kind still reported off the betas schedule      
-
+            #print(f"[SEQ init {init_idx}] betas={[np.asarray(b) for b in betas]} "
+             #   f"inter={np.asarray(inter)} gamma={np.asarray(gamma)}", flush=True)
             pi = jnp.full(C, 1.0 / C)
             
             prev_ll = -np.inf
             converged = False
             R_last = None
             n_iter = 0
+            stagnant_iter = 0 
             ftol_res, gtol_res = float('inf'), float('inf')
+            self.verbose_trace=False
             if getattr(self, 'verbose_trace', True):
                 _, ll0 = self._estep(betas, inter, gamma, pi)
                 print(f"   0 | {float(ll0):>11.3f} |  (initial point, before first EM step)")
@@ -2640,21 +2703,99 @@ class LatentClass(DiscreteChoiceModel):
 
                 ftol_res = abs(delta_ll)
                 gtol_res = max(max(grad_choice_norms) if grad_choice_norms else 0.0, grad_member_norm)
+                 # ---- Convergence by both criteria --------------------------
                 if ftol_res < self.ftol and gtol_res < self.gtol:
                     converged = True
                     break
+
+                # ---- Early stopping on stagnation --------------------------
+                # step_norm < step_tol means neither the outer SQUAREM
+                # extrapolation nor the inner Newton steps produced any
+                # movement. If this repeats for max_stagnant iterations,
+                # the optimiser cannot make further progress even though
+                # the gradient is not zero (typically because the Armijo
+                # line search inside _newton rejects every step, e.g. when
+                # the penalised objective has lost convexity along the
+                # current direction). Exit with converged=False so that
+                # the caller counts this attempt as failed.
+                if step_norm < self.step_tol:
+                    stagnant_iter += 1
+                    if stagnant_iter >= self.max_stagnant:
+                        print(f"[LC] EARLY STOP at iter {it}/{self.maxiter}: "
+                              f"step_norm < {self.step_tol:.0e} for "
+                              f"{self.max_stagnant} consecutive iterations; "
+                              f"final |g| = {gtol_res:.3e} (gtol = {self.gtol:.0e}). "
+                              f"Optimiser is stuck, not converged. "
+                              f"Marking attempt as NOT converged.")
+                        converged = False
+                        break
+                else:
+                    stagnant_iter = 0
                 prev_ll = ll
 
             ftol_ok = "OK" if ftol_res < self.ftol else "X"
             gtol_ok = "OK" if gtol_res < self.gtol else "X"
             kind_disp = kind.replace('_', ' ').title()
             attempt_time = time.time() - attempt_t0
-            is_degen = self._is_degenerate_candidate(betas, pi)
+            is_degen = is_degenerate_candidate(betas, np.asarray(R_last.mean(axis=0)))
+            is_sep_choice = any(
+                konis_separation_test(self._separation_xbar(c, betas, np.asarray(R_last)[:, c]))['separated']
+                for c in range(len(betas))
+            )
+            is_sep_member = any(
+                konis_separation_test(self._separation_xbar_membership(c, R_last))['separated']
+                for c in self._intercept_free_classes
+            ) if self._has_membership else False
+            is_sep = is_sep_choice or is_sep_member
+
             print(f"[LC] {n_converged + 1:>2}/{self.n_init}  ({kind_disp}) | iter{n_iter:4d}/{self.maxiter} | "
                   f"LogLik = {ll:.6f} | ftol_res = {ftol_res:.2e} {ftol_ok} | gtol_res = {gtol_res:.2e} {gtol_ok} | "
                   f"time={attempt_time:.1f}s | " + ("[CONVERGED]" if converged else "[NOT CONVERGED]")+
-                  (" [DEGENERATED]" if is_degen else ""))
+                  (" [DEGENERATED]" if is_degen else "")
+                  + (" [SEPARATED:CHOICE]" if is_sep_choice else "")
+                  + (" [SEPARATED:MEMBER]" if is_sep_member else ""))
 
+            if (is_sep_choice or is_sep_member):
+                if is_sep_choice:
+                    for c in range(len(betas)):
+                        xbar_c = self._separation_xbar(c, betas, np.asarray(R_last)[:, c])
+                        if konis_separation_test(xbar_c)['separated']:
+                            names_c = [self.varnames[i] for i in self._class_specs[c]]
+                            culprits = attribute_separation(xbar_c, names_c)
+                            print(f"    [SEPARATION DEBUG] choice, class {c + 1}: {culprits}")
+                            for name in culprits:
+                                k = names_c.index(name)
+                                sb = sign_breakdown(xbar_c, k)
+                                print(f"        {name:20s} rows: +{sb['positive']}  "
+                                      f"-{sb['negative']}  0:{sb['zero']}")
+                if is_sep_member and self._has_membership:
+                    for c in self._intercept_free_classes:
+                        xbar_m = self._separation_xbar_membership(c, R_last)
+                        if xbar_m.shape[0] and konis_separation_test(xbar_m)['separated']:
+                            active = np.where(self._member_mask[c] > 0)[0]
+                            names_m = [self.membership_vars[i] for i in active]
+                            culprits = attribute_separation(xbar_m, names_m)
+                            print(f"    [SEPARATION DEBUG] member, class {c + 1}: {culprits}")
+                            for name in culprits:
+                                k = names_m.index(name)
+                                sb = sign_breakdown(xbar_m, k)
+                                print(f"        {name:20s} rows: +{sb['positive']}  "
+                                      f"-{sb['negative']}  0:{sb['zero']}")
+
+            #if  converged:
+                """
+                print(f"\n{'='*70}\n[DEBUG] Full diagnostics — attempt {n_converged + 1}/{self.n_init} "
+                      f"({kind_disp}, LogLik={ll:.4f})\n{'='*70}")
+                debug_sol = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
+                                  converged=converged, n_iter=n_iter, posterior=R_last,
+                                  degenerate=is_degen, separated=is_sep,
+                                  final_step=step_norm, final_delta_ll=delta_ll,
+                                  grad_choice_vecs=grad_choice_vecs, grad_member_vec=grad_member_vec)
+                #self._finalise(debug_sol, time.time() - attempt_t0)
+                #self.summarise()
+                """
+            #if getattr(self, 'debug_joint_firth', False) and converged:
+                #compare_all_three(self, betas, inter, gamma, R_last, n_steps=1)
             if not converged:
                 continue
 
@@ -2662,14 +2803,15 @@ class LatentClass(DiscreteChoiceModel):
             better = (
                 best is None
                 or (best['degenerate'] and not is_degen)
-                or (is_degen == best['degenerate'] and ll > best['loglik'])
+                or (is_degen == best['degenerate'] and best['separated'] and not is_sep)
+                or (is_degen == best['degenerate'] and is_sep == best['separated'] and ll > best['loglik'])
             )
             all_attempts.append(dict(betas=betas, inter=inter, gamma=gamma, pi=pi,
-                                      ll=ll, kind=kind, degenerate=is_degen))
+                                      ll=ll, kind=kind, degenerate=is_degen, separated=is_sep))
             if better:
                 best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
                             converged=converged, n_iter=n_iter, posterior=R_last,
-                            degenerate=is_degen, final_step=step_norm, final_delta_ll=delta_ll,
+                            degenerate=is_degen, separated=is_sep, final_step=step_norm, final_delta_ll=delta_ll,
                             grad_choice_vecs=grad_choice_vecs, grad_member_vec=grad_member_vec)
             multistart_ll.append(ll)
             multistart_kind.append(kind)
@@ -2680,7 +2822,14 @@ class LatentClass(DiscreteChoiceModel):
                   f"{max_attempts} attempts. Model marked as NOT CONVERGED.")
             best = dict(betas=betas, inter=inter, gamma=gamma, pi=pi, loglik=ll,
                         converged=False, n_iter=n_iter, posterior=R_last,
-                        degenerate=self._is_degenerate_candidate(betas, pi),
+                        degenerate=is_degenerate_candidate(betas, pi),
+                        separated=any(
+                            konis_separation_test(self._separation_xbar(c, betas, np.asarray(R_last)[:, c]))['separated']
+                            for c in range(len(betas))
+                        ) or (self._has_membership and any(
+                            konis_separation_test(self._separation_xbar_membership(c, R_last))['separated']
+                            for c in self._intercept_free_classes
+                        )),
                         final_step=step_norm, final_delta_ll=delta_ll,
                         grad_choice_vecs=grad_choice_vecs, grad_member_vec=grad_member_vec)
         elif best['degenerate']:
@@ -2688,7 +2837,7 @@ class LatentClass(DiscreteChoiceModel):
                   "degenerate (collapsed class share or a coefficient beyond "
                   "the sanity bound) — the selected winner is the least-bad "
                   "one. Consider more inits or a warm start.")
-        self.cluster_report = self._cluster_stability_report(all_attempts)          
+        self.cluster_report = cluster_stability_report(self, all_attempts)          
         self._finalise(best, time.time() - t_fit0)
         self.multistart_loglik = multistart_ll
         self.multistart_kind = multistart_kind
@@ -2888,11 +3037,7 @@ class LatentClass(DiscreteChoiceModel):
         gamma_t_d = z_full[gamma_start:]
         gamma_p_d = p_full[gamma_start:]
         gamma_opg_d = opg_se_full[gamma_start:]
-        print(f"[DEBUG] len(theta)={len(theta)}  len(opg_se_full)={len(opg_se_full)}")
-        print(f"[DEBUG] gamma_start={gamma_start}  n_inter={n_inter}  n_gamma_dense={n_gamma_dense}  Km={Km}  C={C}")
-        print(f"[DEBUG] len(gamma_theta)={len(gamma_theta)}  len(gamma_opg_d)={len(gamma_opg_d)}")
-        print(f"[DEBUG] jac.shape={jac.shape}  JtJ.shape={JtJ.shape}")
-#Done
+       
 
         #gamma_names, gp, gs, gt, gpv = [], [], [], [], []
         gamma_names, gp, gs, gt, gpv, gopg = [], [], [], [], [], []
@@ -2943,9 +3088,9 @@ class LatentClass(DiscreteChoiceModel):
 
         offset = n_phi
         for c, beta_c in enumerate(betas):
-            share_abs, flag_abs, _ = self._collinearity_diag(H_list[c], ratio_thresh=1e-3)
+            share_abs, flag_abs, _ = collinearity_diag(H_list[c], ratio_thresh=1e-3)
             if rel_thresh[c] > 0:
-                share_rel, flag_rel, _ = self._collinearity_diag(H_list[c], ratio_thresh=rel_thresh[c])
+                share_rel, flag_rel, _ = collinearity_diag(H_list[c], ratio_thresh=rel_thresh[c])
             else:
                 share_rel, flag_rel = np.zeros_like(share_abs), np.zeros_like(flag_abs)
             self.class_ratio_min_abs_flag[c] = flag_abs.any()
@@ -2979,7 +3124,7 @@ class LatentClass(DiscreteChoiceModel):
             H_active = H_full[np.ix_(active_idx, active_idx)]
             info_inv_active = np.linalg.inv(H_active)
             se_raw_active = np.sqrt(np.clip(np.diag(info_inv_active), 0, None))
-            share_active, flag_active, _ = self._collinearity_diag(H_active)
+            share_active, flag_active, _ = collinearity_diag(H_active)
 
             gamma_se_raw_dense[active_idx] = se_raw_active
             gamma_collin_dense[active_idx] = share_active
@@ -3019,120 +3164,8 @@ class LatentClass(DiscreteChoiceModel):
             "choice_vars_flagged": vars_flagged,
             "membership_vars_flagged": gamma_vars_flagged,
         }
-        self.descr = "LCCM-Firth" if self.firth_summary["needed_correction"] else "LCCM"
+        self.descr = "LCCM-Firth" if (self.choice_correction or self.membership_correction) else "LCCM"
 
-    @staticmethod
-    def _is_degenerate_candidate(betas, pi, min_share=0.01, max_abs_beta=200.0):
-        """Cheap, no-extra-estimation screen for the classic near-empty-class
-        EM local optimum (see class_ratio_min discussion): a class collapsed
-        to almost no weighted individuals lets its own coefficients diverge
-        with no real contradicting cases to stop them, producing a spuriously
-        HIGHER raw loglik than a healthy solution. Uses only `betas`/`pi`,
-        already computed for every multistart candidate — no Hessian, no
-        re-estimation. `max_abs_beta` is a sanity bound, not a hard science:
-        it should sit well above any plausible coefficient for the model's
-        variable scales; NaN/inf always count as degenerate regardless."""
-        pi_np = np.asarray(pi)
-        if not np.all(np.isfinite(pi_np)) or np.any(pi_np < min_share):
-            return True
-        for b in betas:
-            b_np = np.asarray(b)
-            if not np.all(np.isfinite(b_np)) or np.any(np.abs(b_np) > max_abs_beta):
-                return True
-        return False
-    @staticmethod
-    def _collinearity_diag(H, ratio_thresh=1e-3, vdp_thresh=0.5):
-        """Cole (2020) / Gimenez et al. (2004) 'Hessian method': flag a
-        direction as near non-identified when lambda_k/lambda_max falls
-        below `ratio_thresh` (raw, unscaled eigen-decomposition — scaling
-        to a correlation matrix would hide univariate separation). For
-        every flagged direction, attribute it to parameters via the
-        Belsley-Kuh-Welsch (1980) variance-decomposition proportion:
-        share_j = (v_kj^2/lambda_k) / Var(theta_j); share_j > vdp_thresh
-        (0.5, the standard BKW cutoff) marks parameter j as implicated.
-        Returns (share, flag) arrays aligned with H's row/column order."""
-        lam, V = np.linalg.eigh(H)
-        lam = np.clip(lam, 1e-300, None)
-        ratio = lam / lam.max()
-        var_j = np.sum(V ** 2 / lam[None, :], axis=1)
-        p = H.shape[0]
-        share = np.zeros(p)
-        flag = np.zeros(p, dtype=bool)
-        for k in range(p):
-            if ratio[k] < ratio_thresh:
-                vdp_k = (V[:, k] ** 2 / lam[k]) / var_j
-                share = np.maximum(share, vdp_k)
-                flag |= vdp_k > vdp_thresh
-        return share, flag, float(ratio.min())
-    def _cluster_stability_report(self, attempts, vdp_thresh=0.5, ratio_thresh=1e-3):
-        """For every converged multistart attempt, rank classes by share
-        (descending) to sidestep label switching, then flag which variables
-        show VP > vdp_thresh in each ranked class. Returns a list of rows:
-        (ll, kind, class_rank, flagged_vars)."""
-        rows = []
-        for a in attempts:
-            betas, inter, gamma, pi, ll, kind = (
-                a['betas'], a['inter'], a['gamma'], a['pi'], a['ll'], a['kind']
-            )
-            R, _ = self._estep(betas, inter, gamma, pi)
-            share = np.asarray(R).mean(axis=0)
-            order = np.argsort(-share)
-            for rank, c in enumerate(order, start=1):
-                beta_j = jnp.asarray(betas[c])
-                w_j = jnp.asarray(R[:, c])
-                _, g_raw, h_raw = self._class_fgh_raw[c]
-                H = np.asarray(h_raw(beta_j, w_j) + jnp.eye(beta_j.shape[0], dtype=beta_j.dtype) * RIDGE)
-                ratio_min = float(np.linalg.eigvalsh(H).min() / np.linalg.eigvalsh(H).max())
-                vdp_share, flag, _ = self._collinearity_diag(H, ratio_thresh=ratio_thresh, vdp_thresh=vdp_thresh)
-                names_c = [self.varnames[i] for i in self._class_specs[c]]
-                flagged = [names_c[k] for k in range(len(names_c)) if flag[k]]
-                rows.append(dict(ll=float(ll), kind=kind, class_rank=rank,
-                                  share=float(share[c]), ratio_min=ratio_min,
-                                  flagged_vars=flagged))
-                rows[-1]['betas'] = dict(zip(names_c, np.asarray(betas[c]).tolist()))
-                if self._has_membership and c in self._intercept_free_classes:
-                    inter_idx = self._intercept_free_classes.index(c)
-                    rows[-1]['inter'] = float(np.asarray(inter)[inter_idx])
-                else:
-                    rows[-1]['inter'] = None
-
-                if self._has_membership and self.K_membership > 0:
-                    mem_vars = self.membership_vars or []
-                    gamma_c = np.asarray(gamma)[c]
-                    rows[-1]['gamma'] = {
-                        mem_vars[k]: float(gamma_c[k])
-                        for k in range(self.K_membership)
-                        if self._member_mask[c, k] > 0
-                    }
-                else:
-                    rows[-1]['gamma'] = {}
-
-        by_rank = {}
-        for row in rows:
-            by_rank.setdefault(row['class_rank'], []).append(row)
-
-        for rank, group in by_rank.items():
-            for field in ('betas', 'gamma'):
-                all_names = set()
-                for row in group:
-                    all_names.update(row[field].keys())
-                for name in all_names:
-                    vals = [row[field][name] for row in group if name in row[field]]
-                    if len(vals) < 2:
-                        continue
-                    spread = max(vals) - min(vals)
-                    for row in group:
-                        row.setdefault(f'max_{field}_spread', {})[name] = spread
-
-            inter_vals = [row['inter'] for row in group if row['inter'] is not None]
-            if len(inter_vals) >= 2:
-                inter_spread = max(inter_vals) - min(inter_vals)
-                for row in group:
-                    row['max_inter_spread'] = inter_spread if row['inter'] is not None else None
-            else:
-                for row in group:
-                    row['max_inter_spread'] = None
-        return rows
 
     @staticmethod
     def _relative_thresholds(ratio_mins, gap_factor=100.0, min_siblings=3):
@@ -3304,6 +3337,26 @@ class LatentClassConditional(LatentClass):
         ll_np = ll_choice + ll_purchase
         return jnp.sum(ll_np * self._maskd, axis=1)                 # (N,)
 
+    def _separation_xbar(self, c, betas, w_i):
+        """Purchase-stage Konis structure vectors. v_s is a scalar, not a
+        row of X (see class docstring), so the structure vector is
+        [x_chosen, -1], matching beta_active's [beta_x, v_s] layout."""
+        idx = self._class_specs[c]
+        Xc = np.asarray(self.X)[:, :, :, idx]                        # (N,P,J,Kc)
+        yc = np.asarray(self.y)                                      # (N,P,J)
+        real = np.asarray(self.panel_mask) > 0                        # (N,P)
+        w_purch = np.asarray(self.w)                                  # (N,P)
+        j_chosen = np.argmax(yc, axis=2)                               # (N,P)
+        x_chosen = np.take_along_axis(
+            Xc, j_chosen[:, :, None, None], axis=2)[:, :, 0, :]         # (N,P,Kc)
+
+        neg_one = -np.ones(x_chosen.shape[:2] + (1,))
+        x_full = np.concatenate([x_chosen, neg_one], axis=2)          # (N,P,Kc+1)
+        ytilde = 2 * w_purch - 1
+        w = w_i[:, None] * real
+        xbar = ytilde[:, :, None] * x_full
+        return (w[:, :, None] * xbar).reshape(-1, x_full.shape[-1])
+
     # ------------------------------------------------------------------
     # NULL LOG-LIKELIHOOD — choice (equally-likely, panel-aware) +
     # purchase (equally-likely binary), same "random choice" convention.
@@ -3381,4 +3434,757 @@ class LatentClassConditional(LatentClass):
                 self.coeff_names.append(f"class_{c + 1}_{v}")
             self.coeff_names.append(f"class_{c + 1}_no_purchase")
 
+        return self
+    
+    def class_specific_choice_shares(self):
+        """Shares por clase con dos correcciones propias del Conditional:
+        (1) durante summarise() _class_specs se extiende temporalmente con
+            un índice fake para no_purchase; hay que filtrarlo para no
+            indexar X fuera de rango.
+        (2) class_betas[c] incluye v_s (el intercept de purchase) al final,
+            que NO es una columna de X; hay que recortarlo para que el
+            einsum 'npjk,k->npj' tenga shapes compatibles.
+
+        Devuelve un array (K, J+1):
+        - columnas 0..J-1  : prob. predicha de cada alternativa (choice stage)
+        - columna  J       : purchase rate observada (peso posterior medio
+                                del indicador binario self.w, second stage)
+        summarise() solo lee las primeras J columnas (enumerate(self.alts));
+        la última se expone para callers que la necesiten (p.ej. un print
+        adicional tras el summary)."""
+        n_cols = self.X.shape[3]
+        J = self.J
+        K = self.n_classes
+        real = self.panel_mask > 0                       # (N,P)
+        posterior = np.asarray(self.posterior)           # (N,K)
+        w_obs = np.asarray(self.w)                       # (N,P) — indicador de compra
+
+        shares = np.zeros((K, J + 1))
+        for c in range(K):
+            spec = np.asarray(self._class_specs[c])
+            real_idx = spec[spec < n_cols]                # descarta el fake
+            Xc = self.X[:, :, :, real_idx]                # (N,P,J,Kc)
+            beta_x = np.asarray(self.class_betas[c])[:len(real_idx)]  # recorta v_s
+
+            # --- choice stage (igual que antes) ---
+            util = np.einsum('npjk,k->npj', Xc, beta_x)
+            util = np.where(self.avail > 0, util, -1e10)
+            util = util - util.max(axis=2, keepdims=True)
+            expu = np.exp(util) * self.avail
+            denom = np.clip(expu.sum(axis=2, keepdims=True), 1e-300, None)
+            probs = expu / denom                         # (N,P,J)
+
+            w = posterior[:, c][:, None, None] * real[:, :, None]
+            numerator = (probs * w).sum(axis=(0, 1))
+            denominator = w.sum()
+            shares[c, :J] = numerator / denominator
+
+            # --- purchase stage: media ponderada del indicador binario w_obs ---
+            w2 = posterior[:, c][:, None] * real         # (N,P)
+            mass = float(w2.sum())
+            shares[c, J] = float((w2 * w_obs).sum() / mass) if mass > 0 else float('nan')
+
+        return shares
+
+
+    def class_specific_purchase_rates(self):
+        """Conveniencia: devuelve solo la tasa de compra por clase (columna J
+        del array anterior). Útil para un print adicional tras summarise()."""
+        return self.class_specific_choice_shares()[:, self.J]
+
+
+class LatentClassWTP(LatentClassConditional):
+    """
+    LCCM estimado en espacio WTP.
+    
+    Para cada clase c, la utilidad de la alternativa j en la tarea t se
+    reparametriza como:
+    
+        U_ctj = mu_c * ( sum_{k != Cost} delta_ck * X_ctjk  -  Cost_ctj )
+    
+    con:
+        delta_ck  = WTP marginal por el atributo k (en dólares)
+        mu_c > 0  = sensibilidad al precio de la clase c
+    
+    Equivale a los coeficientes en espacio natural:
+        beta_Cost,c = -mu_c
+        beta_k,c    =  mu_c * delta_ck
+    
+    El stage de compra (v_s,c) se mantiene sin cambios respecto a
+    LatentClassConditional, pero se interpreta en las MISMAS unidades
+    escaladas que las utilidades del choice.
+    
+    El vector de parámetros por clase tiene la MISMA longitud que en el
+    padre: [delta_1, ..., delta_{Kc-1}, log_mu_c, v_s_c], donde los
+    deltas corresponden a los atributos de _class_specs[c] excepto Cost.
+    """
+    
+    def __init__(self, *args, cost_var='Cost', **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cost_var = cost_var
+        self.descr = "LCC-WTP"
+    
+    def setup(self, X, y, w, varnames, ids, alts, avail=None, **kwargs):
+        if self.cost_var not in varnames:
+            raise ValueError(
+                f"cost_var='{self.cost_var}' no encontrado en varnames."
+            )
+        
+        super().setup(X=X, y=y, w=w, varnames=varnames, ids=ids, alts=alts,
+                      avail=avail, **kwargs)
+        
+        cost_idx = varnames.index(self.cost_var)
+        self._cost_pos = []
+        for c in range(self.n_classes):
+            spec = np.asarray(self._class_specs[c])
+            mask = (spec == cost_idx)
+            if not mask.any():
+                raise ValueError(
+                    f"La clase {c} no incluye '{self.cost_var}'. "
+                    f"LatentClassWTP requiere Cost en todas las clases "
+                    f"(se usa como numeraire)."
+                )
+            self._cost_pos.append(int(np.where(mask)[0][0]))
+        
+        return self
+    
+    def _class_ll(self, beta_active, c):
+        # beta_active = [delta_1, ..., delta_{Kc-1}, log_mu_c, v_s_c]
+        Kc = len(self._class_specs[c])
+        cost_pos = self._cost_pos[c]
+        
+        deltas = beta_active[:Kc - 1]
+        log_mu = beta_active[Kc - 1]
+        v_s    = beta_active[Kc]
+        
+        mu = jnp.exp(log_mu)   # garantiza mu > 0
+        
+        # Reconstruye el vector natural-space [beta_1, ..., beta_{Kc}, v_s]
+        beta_full = jnp.zeros(Kc, dtype=beta_active.dtype)
+        non_cost_pos = [i for i in range(Kc) if i != cost_pos]
+        beta_full = beta_full.at[jnp.asarray(non_cost_pos)].set(mu * deltas)
+        beta_full = beta_full.at[cost_pos].set(-mu)
+        
+        beta_natural = jnp.concatenate([beta_full, jnp.atleast_1d(v_s)])
+        
+        return super()._class_ll(beta_natural, c)
+    
+    def get_natural_space_betas(self):
+        """Convierte la estimación WTP a espacio natural, para
+        comparaciones con LatentClassConditional estándar."""
+        natural = []
+        for c in range(self.n_classes):
+            wtp = np.asarray(self.class_betas[c])
+            Kc = len(self._class_specs[c])
+            cost_pos = self._cost_pos[c]
+            
+            deltas = wtp[:Kc - 1]
+            mu = np.exp(wtp[Kc - 1])
+            v_s = wtp[Kc]
+            
+            beta_full = np.zeros(Kc)
+            for i, pos in enumerate([i for i in range(Kc) if i != cost_pos]):
+                beta_full[pos] = mu * deltas[i]
+            beta_full[cost_pos] = -mu
+            
+            natural.append(np.concatenate([beta_full, [v_s]]))
+        return natural
+
+# =====================================================================
+# LatentClassFAST — vmap-batched multistart via jax.vmap
+# =====================================================================
+# Hereda todo de LatentClass (setup, _estep, _em_step, summarise,
+# _finalise, _compute_se, _build_kernels, diagnósticos, etc.) y solo
+# agrega un método nuevo: fit_batched(). Los n_init EM+SQUAREM corren
+# en paralelo sobre una sola GPU usando un eje inicial leading. Los
+# diagnósticos y errores estándar se calculan después sobre el ganador
+# vía _finalise.
+#
+# Uso:
+#     model = LatentClassFAST(n_classes=5, n_init=10, ...)
+#     model.setup(...)
+#     model.fit_batched(betas0=..., gamma0=..., inter0=...)
+#     model.summarise()
+
+def _fast_flatten(betas, inter, gamma, pi):
+    """[betas | inter | gamma | pi] → (n, n_total)."""
+    n = betas[0].shape[0]
+    parts = [b.reshape(n, -1) for b in betas]
+    parts.append(inter.reshape(n, -1))
+    if gamma.size > 0:
+        parts.append(gamma.reshape(n, -1))
+    parts.append(pi.reshape(n, -1))
+    return jnp.concatenate(parts, axis=1)
+
+
+def _fast_unflatten(flat, model):
+    """Inverso de _fast_flatten."""
+    n = flat.shape[0]
+    Ks = model._Ks
+    n_inter = model._n_inter
+    C = model.n_classes
+    Km = model.K_membership
+    pos = 0
+    betas = []
+    for k in Ks:
+        k_int = int(k)
+        betas.append(flat[:, pos:pos + k_int])
+        pos += k_int
+    inter = flat[:, pos:pos + n_inter]; pos += n_inter
+    if Km > 0:
+        gamma = flat[:, pos:pos + C * Km].reshape(n, C, Km)
+        pos += C * Km
+    else:
+        gamma = jnp.zeros((n, C, 0), dtype=flat.dtype)
+    pi = flat[:, pos:pos + C]
+    return betas, inter, gamma, pi
+
+
+def _fast_newton(f_j, g_j, h_j, x0, w, inner_iter, tol=1e-10):
+    """Newton de presupuesto fijo, sin control de flujo Python.
+    Seguro dentro de jax.vmap. Devuelve (x_final, any_accepted)."""
+    Kc = x0.shape[-1]
+
+    def body(carry):
+        x, any_accepted, i = carry
+        g = g_j(x, w)
+        H = h_j(x, w) + RIDGE * jnp.eye(Kc, dtype=x.dtype)
+        step_v = jnp.linalg.solve(H, g)
+        step_v = jnp.where(jnp.isfinite(step_v), step_v, jnp.zeros_like(step_v))
+        f0 = f_j(x, w)
+
+        def ls_b(c):
+            t, x_cur, accepted, j = c
+            cand = x - t * step_v
+            fc = f_j(cand, w)
+            ok = jnp.isfinite(fc) & (fc <= f0 + 1e-12)
+            x_new = jnp.where(ok, cand, x_cur)
+            return t * 0.5, x_new, ok, j + 1
+
+        def ls_c(c):
+            _, _, accepted, j = c
+            return (j < 20) & (~accepted)
+
+        _, x_ls, accepted, _ = lax.while_loop(
+            ls_c, ls_b,
+            (jnp.array(1.0, dtype=x.dtype), x,
+             jnp.array(False), jnp.array(0)),
+        )
+        x_next = jnp.where(accepted, x_ls, x)
+        return x_next, any_accepted | accepted, i + 1
+
+    def cond(carry):
+        _, _, i = carry
+        return i < inner_iter
+
+    x_final, any_accepted, _ = lax.while_loop(
+        cond, body, (x0, jnp.array(False), jnp.array(0)),
+    )
+    g_final = g_j(x_final, w)
+    gnorm = jnp.linalg.norm(g_final)
+    return x_final, any_accepted, gnorm
+
+
+def _fast_em_step(model, betas, inter, gamma, pi):
+    """Single-chain análogo de model._em_step, seguro dentro de vmap."""
+    R, ll = model._estep(betas, inter, gamma, pi)
+
+    new_betas = []
+    accepted_list = []
+    gnorm_list = []
+    for c in range(model.n_classes):
+        f_j, g_j, h_j = model._class_fgh[c]
+        x_c, acc_c, gn_c = _fast_newton(
+            f_j, g_j, h_j, betas[c], R[:, c],
+            model.newton_inner_iter,
+        )
+        new_betas.append(x_c)
+        accepted_list.append(acc_c)
+        gnorm_list.append(gn_c)
+
+    if model._has_membership and model.optimise_membership:
+        Km = model.K_membership
+        v0 = jnp.concatenate([inter, gamma.ravel()])
+        f_m, g_m, h_m = model._mem_fgh
+        v1, acc_m, gn_m = _fast_newton(
+            f_m, g_m, h_m, v0, R, model.newton_inner_iter,
+        )
+        gnorm_list.append(gn_m)
+        n_inter = model._n_inter
+        new_inter = v1[:n_inter]
+        new_gamma = v1[n_inter:].reshape(model.n_classes, Km)
+        new_pi = pi
+    else:
+        new_inter, new_gamma = inter, gamma
+        new_pi = R.mean(axis=0)
+        new_pi = new_pi / jnp.sum(new_pi)
+
+    any_accepted = jnp.stack(accepted_list).any()
+    if model._has_membership and model.optimise_membership:
+        any_accepted = any_accepted | acc_m
+
+    gnorm_max = jnp.stack(gnorm_list).max()
+
+    return new_betas, new_inter, new_gamma, new_pi, ll, R, any_accepted, gnorm_max
+
+
+class LatentClassFAST(LatentClass):
+    """
+    LatentClass con multistart vmap-batched.
+
+    Hereda todo de LatentClass. Agrega fit_batched(), que corre los
+    n_init EM+SQUAREM en paralelo sobre una sola GPU usando un eje
+    inicial leading. Los diagnósticos y errores estándar se calculan
+    después sobre el ganador vía _finalise.
+
+    Parámetros extra (respecto al padre)
+    ------------------------------------
+    max_stagnant : int
+        Número de iteraciones externas consecutivas sin que se acepte
+        ningún paso interno de Newton antes de matar una cadena. Sirve
+        para escapar del dead-lock que aparece bajo Firth block-wise
+        cuando el line search rechaza todos los pasos. Default 20.
+    """
+    import jax
+    import jax.numpy as jnp
+    from jax import lax          # <-- esta línea
+
+    def __init__(self, *args, max_stagnant=20, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_stagnant = int(max_stagnant)
+
+    def fit_batched(self, betas0=None, inter0=None, gamma0=None,
+                    maxiter_batched=None, max_stagnant=None, verbose=True):
+        """
+        Multistart vmap-batched.
+
+        betas0, inter0, gamma0 : mismo formato que fit()
+        maxiter_batched : int, opcional (default = self.maxiter)
+        max_stagnant : int, opcional (default = self.max_stagnant)
+        verbose : bool
+        """
+        t_fit0 = time.time()
+        C = self.n_classes
+        n_init = self.n_init
+        maxiter = maxiter_batched or self.maxiter
+        max_stag = max_stagnant if max_stagnant is not None else self.max_stagnant
+
+        # Resolver betas0/inter0/gamma0 en formato dict (igual que el padre)
+        if betas0 is not None and isinstance(betas0, list) and betas0 \
+                and isinstance(betas0[0], dict):
+            rng0 = np.random.default_rng(self.random_state)
+            resolved = []
+            for c in range(self.n_classes):
+                names_c = [self.varnames[i] for i in self._class_specs[c]]
+                dom_map = betas0[c] if c < len(betas0) else {}
+                vals = [dom_map.get(v, float(rng0.normal(scale=0.05)))
+                        for v in names_c]
+                if isinstance(self, LatentClassConditional):
+                    vals.append(dom_map.get('no_purchase',
+                                             float(rng0.normal(scale=0.05))))
+                resolved.append(np.array(vals, dtype=float))
+            betas0 = resolved
+
+        if isinstance(inter0, dict):
+            inter0 = np.array([inter0.get(c, 0.0)
+                                for c in self._intercept_free_classes])
+
+        if isinstance(gamma0, list) and gamma0 and isinstance(gamma0[0], dict):
+            mem_vars = self.membership_vars or []
+            gamma_arr = np.zeros((C, self.K_membership))
+            for c in range(C):
+                dom_map = gamma0[c] if c < len(gamma0) else {}
+                for k, v in enumerate(mem_vars):
+                    if v in dom_map:
+                        gamma_arr[c, k] = dom_map[v]
+            gamma0 = gamma_arr
+
+        self._build_kernels()
+
+        # ---- construir estados iniciales batched ---------------------
+       
+        b_stacked = []
+        i_list, g_list = [], []
+        for k in range(n_init):
+            rng = np.random.default_rng(self.random_state + k)
+            if betas0 is not None:
+                if k == 0:
+                    b_k = [jnp.asarray(b) for b in betas0]
+                else:
+                    b_k = [jnp.asarray(b) + jnp.asarray(
+                        rng.normal(scale=0.05, size=np.asarray(b).shape))
+                        for b in betas0]
+            else:
+                b_k = [jnp.asarray(rng.normal(scale=0.05, size=int(kc)))
+                       for kc in self._Ks]
+            if inter0 is not None:
+                i_k = (jnp.asarray(inter0) if k == 0 else
+                       jnp.asarray(inter0) + jnp.asarray(
+                           rng.normal(scale=0.01, size=self._n_inter)))
+            else:
+                i_k = jnp.asarray(rng.normal(scale=0.01, size=self._n_inter))
+            if gamma0 is not None:
+                g_k = (jnp.asarray(gamma0) if k == 0 else
+                       jnp.asarray(gamma0) + jnp.asarray(
+                           rng.normal(scale=0.01,
+                                      size=(C, self.K_membership))))
+            else:
+                g_k = jnp.asarray(rng.normal(
+                    scale=0.01, size=(C, self.K_membership)))
+            b_stacked.append(b_k)
+            i_list.append(i_k)
+            g_list.append(g_k)
+            
+            #print(f"[FAST init {k}] "
+             #   f"betas={[np.asarray(b) for b in b_stacked[k]]} "
+              #  f"inter={np.asarray(i_list[k])} "
+               # f"gamma={np.asarray(g_list[k])}", flush=True)
+        betas_b = [jnp.stack([b_stacked[k][c] for k in range(n_init)])
+                   for c in range(C)]
+        inter_b = jnp.stack(i_list)
+        gamma_b = jnp.stack(g_list)
+        pi_b = jnp.full((n_init, C), 1.0 / C)
+        
+        # ---- vmap del paso EM single-chain ---------------------------
+        def _one_step(betas, inter, gamma, pi):
+            return _fast_em_step(self, betas, inter, gamma, pi)
+
+        step_vmapped = jax.vmap(_one_step, in_axes=([0] * C, 0, 0, 0))
+
+        def _estep_batched(betas, inter, gamma, pi):
+            def _e(b, i, g, p):
+                return self._estep(b, i, g, p)
+            return jax.vmap(_e, in_axes=([0] * C, 0, 0, 0))(
+                betas, inter, gamma, pi)
+
+        # ---- outer body: SQUAREM + kill-on-stagnation ----------------
+        def outer_body(carry):
+            (betas, inter, gamma, pi, ll_prev, done, n_stag, it) = carry
+
+            b1, i1, g1, p1, ll1, _, acc1, gn1 = step_vmapped(
+                betas, inter, gamma, pi)
+            b2, i2, g2, p2, ll2, _, acc2, gn2 = step_vmapped(b1, i1, g1, p1)
+
+            th0 = _fast_flatten(betas, inter, gamma, pi)
+            th1 = _fast_flatten(b1, i1, g1, p1)
+            th2 = _fast_flatten(b2, i2, g2, p2)
+
+            r = th1 - th0
+            v = th2 - 2.0 * th1 + th0
+            nv = jnp.linalg.norm(v, axis=-1)
+            nr = jnp.linalg.norm(r, axis=-1)
+            use_squarem = nv > 1e-14
+
+            alpha_init = jnp.minimum(-nr / jnp.maximum(nv, 1e-14),
+                                      -1.0).reshape(-1, 1)
+
+            def ls_cond(c):
+                _, _, _, accepted, j = c
+                return (j < 10) & (~jnp.all(accepted))
+
+            def ls_body(c):
+                alpha, th_acc, ll_acc, accepted, j = c
+                th_p = th0 - 2.0 * alpha * r + alpha ** 2 * v
+                bp, ip, gp, pp = _fast_unflatten(th_p, self)
+                _, ll_p = _estep_batched(bp, ip, gp, pp)
+                ok = jnp.isfinite(ll_p) & (ll_p >= ll1)
+                take = (~accepted) & ok
+                th_acc = jnp.where(take[:, None], th_p, th_acc)
+                ll_acc = jnp.where(take, ll_p, ll_acc)
+                accepted = accepted | ok
+                return (alpha - 1.0) / 2.0, th_acc, ll_acc, accepted, j + 1
+
+            _, th_acc, ll_acc, accepted, _ = lax.while_loop(
+                ls_cond, ls_body,
+                (alpha_init, th2, ll2,
+                 jnp.zeros((n_init,), dtype=bool), jnp.array(0)),
+            )
+            th_sq = jnp.where(accepted[:, None], th_acc, th2)
+            ll_sq = jnp.where(accepted, ll_acc, ll2)
+            th_final = jnp.where(use_squarem[:, None], th_sq, th2)
+            ll_final = jnp.where(use_squarem, ll_sq, ll2)
+
+            b_f, i_f, g_f, p_f = _fast_unflatten(th_final, self)
+
+            def _gn_at(b, i, g, p):
+                R, _ = self._estep(b, i, g, p)
+                gn_max = jnp.array(0.0)
+                for c in range(C):
+                    _, g_j, _ = self._class_fgh[c]
+                    gc = g_j(b[c], R[:, c])
+                    gn_max = jnp.maximum(gn_max, jnp.max(jnp.abs(gc)))
+                if self._has_membership and self.optimise_membership:
+                    _, g_m, _ = self._mem_fgh
+                    v = jnp.concatenate([i, g.ravel()])
+                    gm = g_m(v, R)
+                    gn_max = jnp.maximum(gn_max, jnp.max(jnp.abs(gm)))
+                return gn_max
+            gn_f = jax.vmap(_gn_at, in_axes=([0] * C, 0, 0, 0))(
+                b_f, i_f, g_f, p_f)
+
+            dll = jnp.abs(ll_final - ll_prev)
+            done_new = done | ((dll < self.ftol) & (gn_f < self.gtol))
+
+            step_norm = jnp.linalg.norm(th_final - th0, axis=-1)
+            stalled = step_norm < self.step_tol
+            n_stag_new = jnp.where(stalled, n_stag + 1, 0)
+            done_new = done_new | (n_stag_new >= max_stag)
+
+            already = done
+            b_f = [jnp.where(already[:, None], betas[c], b_f[c])
+                   for c in range(C)]
+            i_f = jnp.where(already[:, None], inter, i_f)
+            g_f = jnp.where(already[:, None, None], gamma, g_f)
+            p_f = jnp.where(already[:, None], pi, p_f)
+            ll_final = jnp.where(already, ll_prev, ll_final)
+            n_stag_new = jnp.where(already, n_stag, n_stag_new)
+
+            return (b_f, i_f, g_f, p_f, ll_final, done_new,
+                    n_stag_new, it + 1)
+
+        def outer_cond(carry):
+            _, _, _, _, _, done, _, it = carry
+            return (it < maxiter) & (~jnp.all(done))
+
+        ll_init = jnp.full((n_init,), -jnp.inf)
+        done_init = jnp.zeros((n_init,), dtype=bool)
+        stag_init = jnp.zeros((n_init,), dtype=jnp.int32)
+
+        (betas_f, inter_f, gamma_f, pi_f, ll_f, done_f, stag_f, it_f) = \
+            lax.while_loop(
+                outer_cond, outer_body,
+                (betas_b, inter_b, gamma_b, pi_b,
+                 ll_init, done_init, stag_init, jnp.array(0)),
+            )
+        jax.block_until_ready(ll_f)
+
+        # ---- posterior por cadena, shares, degenerados ----
+        R_all, _ = _estep_batched(betas_f, inter_f, gamma_f, pi_f)
+        shares_all = np.asarray(R_all.mean(axis=1))
+        degen_flags = np.array([is_degenerate_candidate(
+            [np.asarray(betas_f[c][k]) for c in range(C)], shares_all[k])
+            for k in range(n_init)])
+
+        # ---- per-chain Konis separation test ----
+        R_np = np.asarray(R_all)
+        sep_choice = np.zeros(n_init, dtype=bool)
+        sep_member = np.zeros(n_init, dtype=bool)
+        for k in range(n_init):
+            betas_k = [np.asarray(betas_f[c][k]) for c in range(C)]
+            for c in range(C):
+                xbar = self._separation_xbar(c, betas_k, R_np[k, :, c])
+                if xbar.shape[0] and konis_separation_test(xbar)["separated"]:
+                    sep_choice[k] = True
+                    break
+            if self._has_membership:
+                for c in self._intercept_free_classes:
+                    xbar_m = self._separation_xbar_membership(c, R_np[k])
+                    if xbar_m.shape[0] and konis_separation_test(xbar_m)["separated"]:
+                        sep_member[k] = True
+                        break
+
+        if verbose:
+            print(f"[FAST] batched EM+SQUAREM: {int(it_f)} outer iters x "
+                  f"{n_init} chains")
+            for k in range(n_init):
+                conv = bool(done_f[k]) and int(stag_f[k]) < max_stag
+                tag = "CONVERGED" if conv else (
+                    "STAGNATED" if int(stag_f[k]) >= max_stag else "STOPPED")
+                tag = f"[{tag}]"
+                if degen_flags[k]:
+                    tag += (f" [DEGENERATED: class "
+                            f"{int(np.argmin(shares_all[k])) + 1} "
+                            f"share={shares_all[k].min():.4f}]")
+                if sep_choice[k]:
+                    tag += " [SEPARATED:CHOICE]"
+                if sep_member[k]:
+                    tag += " [SEPARATED:MEMBER]"
+                print(f"  chain {k}: ll = {float(ll_f[k]):.4f}  "
+                      f"n_stag = {int(stag_f[k])}  {tag}")
+
+            for k in range(n_init):
+                if sep_choice[k]:
+                    betas_k = [np.asarray(betas_f[c][k]) for c in range(C)]
+                    for c in range(C):
+                        xbar = self._separation_xbar(c, betas_k, R_np[k, :, c])
+                        if xbar.shape[0] and konis_separation_test(xbar)["separated"]:
+                            names_c = [self.varnames[i] for i in self._class_specs[c]]
+                            culprits = attribute_separation(xbar, names_c)
+                            print(f"    chain {k} SEPARATED:CHOICE class {c+1}: {culprits}")
+                if sep_member[k] and self._has_membership:
+                    for c in self._intercept_free_classes:
+                        xbar_m = self._separation_xbar_membership(c, R_np[k])
+                        if xbar_m.shape[0] and konis_separation_test(xbar_m)["separated"]:
+                            active = np.where(self._member_mask[c] > 0)[0]
+                            names_m = [self.membership_vars[i] for i in active]
+                            culprits = attribute_separation(xbar_m, names_m)
+                            print(f"    chain {k} SEPARATED:MEMBER class {c+1}: {culprits}")
+
+        # ---- winner: clean (no degenerada, sin separación) ----
+        LL_TOL = 50.0
+        best_overall_idx = int(np.argmax(np.asarray(ll_f)))
+        best_overall_ll  = float(ll_f[best_overall_idx])
+
+        eligible = np.where(~degen_flags & ~sep_choice & ~sep_member)[0]
+        if eligible.size == 0:
+            eligible = np.where(~degen_flags)[0]
+            if verbose and eligible.size == 0:
+                print("[FAST] WARNING: all chains degenerate; "
+                      "picking best ll (least-bad).")
+
+        if eligible.size == 0:
+            winner = best_overall_idx
+        else:
+            best_elig = int(eligible[np.argmax(np.asarray(ll_f)[eligible])])
+            gap = best_overall_ll - float(ll_f[best_elig])
+            if gap <= LL_TOL:
+                winner = best_elig
+            else:
+                if verbose:
+                    print(f"[FAST] best clean chain is {gap:.1f} ll worse than "
+                          f"global best; picking global best.")
+                winner = best_overall_idx
+
+        if verbose:
+            flags = []
+            if degen_flags[winner]: flags.append("DEGENERATED")
+            if sep_choice[winner]: flags.append("SEPARATED:CHOICE")
+            if sep_member[winner]: flags.append("SEPARATED:MEMBER")
+            tag = "CLEAN" if not flags else " ".join(flags)
+            print(f"[FAST] winner = chain {winner}  "
+                  f"(ll={float(ll_f[winner]):.4f}, {tag})")
+
+        self.multistart_separation_choice = sep_choice.tolist()
+        self.multistart_separation_member = sep_member.tolist()
+
+        betas_w = [np.asarray(betas_f[c][winner]) for c in range(C)]
+        inter_w = np.asarray(inter_f[winner])
+        gamma_w = np.asarray(gamma_f[winner])
+        pi_w    = np.asarray(pi_f[winner])
+
+        R_w, _ = self._estep(
+            [jnp.asarray(b) for b in betas_w],
+            jnp.asarray(inter_w), jnp.asarray(gamma_w), jnp.asarray(pi_w))
+
+        # gradientes finales en el ganador
+        grad_choice_vecs = []
+        for c in range(C):
+            _, g_j, _ = self._class_fgh[c]
+            w_c = jnp.asarray(R_w[:, c])
+            grad_choice_vecs.append(
+                np.asarray(g_j(jnp.asarray(betas_w[c]), w_c))
+            )
+        if self._has_membership:
+            _, g_m, _ = self._mem_fgh
+            v_m = jnp.concatenate([jnp.asarray(inter_w),
+                                    jnp.asarray(gamma_w).ravel()])
+            grad_member_vec = np.asarray(g_m(v_m, jnp.asarray(R_w)))
+        else:
+            grad_member_vec = np.array([])
+
+        best = dict(
+            betas=betas_w, inter=inter_w, gamma=gamma_w, pi=pi_w,
+            loglik=float(ll_f[winner]),
+            converged=bool(done_f[winner]
+                           and int(stag_f[winner]) < max_stag),
+            n_iter=int(it_f),
+            posterior=np.asarray(R_w),
+            final_delta_ll=0.0,
+            final_step=0.0,
+            grad_choice_vecs=grad_choice_vecs,
+            grad_member_vec=grad_member_vec,
+        )
+        self._finalise(best, time.time() - t_fit0)
+        self.multistart_loglik = [float(x) for x in np.asarray(ll_f)]
+        self.multistart_kind = ["batched"] * n_init
+        return self
+class LatentClassNormalizedFAST(LatentClassFAST):
+    """
+    LatentClassFAST con normalización por escala de columnas (sin centrado,
+    para no tener que ajustar v_s en el stage de compra de Conditional).
+
+    X_norm = X / sigma_k   (sigma_k = std(X[:,k]), ASC → sigma=1)
+
+    EM corre en espacio normalizado. Al terminar, _finalise:
+      1) back-transforma betas y gamma a escala original
+      2) swappea self.X → self.X_orig y recompila kernels
+      3) llama a super()._finalise(), que computa Hessiano, SEs, VDP,
+         ratio_min y Konis sobre el Hessiano RAW en escala ORIGINAL
+    Después de _finalise, todo el modelo queda en escala original de forma
+    consistente (X, class_betas, gamma, kernels).
+    """
+
+    def setup(self, X, y, varnames, ids, alts, avail=None, **kwargs):
+        varnames_list = list(varnames)
+        X_arr = np.asarray(X, dtype=float)
+
+        asc_mask = np.array([
+            str(v).startswith("intercept.") or str(v) == "intercept"
+            for v in varnames_list
+        ])
+
+        sigma = np.ones(X_arr.shape[1])
+        for k in range(X_arr.shape[1]):
+            if asc_mask[k]:
+                continue
+            s = float(np.std(X_arr[:, k]))
+            if s > 1e-12:
+                sigma[k] = s
+
+        self._norm_sigma    = sigma
+        self._norm_asc_mask = asc_mask
+
+        X_norm = X_arr / sigma[None, :]
+
+        super().setup(X=X_norm, y=y, varnames=varnames, ids=ids, alts=alts,
+                      avail=avail, **kwargs)
+
+        # self.X ya está (N, P, J, K) → reconstruir escala original
+        self._X_orig_3d = self.X * sigma[None, None, None, :]
+
+        self._class_sigma = [
+            sigma[self._class_specs[c]] for c in range(self.n_classes)
+        ]
+
+        if self._has_membership and self.K_membership > 0:
+            mem_idx = [varnames_list.index(v) for v in self.membership_vars]
+            self._mem_sigma = sigma[mem_idx]
+            self._X_membership_orig = self.X_membership * self._mem_sigma[None, :]
+        else:
+            self._mem_sigma = np.ones(0)
+            self._X_membership_orig = None
+
+        return self
+
+    def _finalise(self, best, elapsed):
+        is_cond = isinstance(self, LatentClassConditional)
+
+        betas_orig = []
+        for c in range(self.n_classes):
+            b = np.asarray(best['betas'][c])
+            sig_c = self._class_sigma[c]
+            if is_cond:
+                # último elemento es v_s (no columna de X) → sin escala
+                betas_orig.append(np.concatenate([b[:-1] / sig_c, b[-1:]]))
+            else:
+                betas_orig.append(b / sig_c)
+
+        if best.get('gamma') is not None and self.K_membership > 0:
+            gamma_orig = np.asarray(best['gamma']) / self._mem_sigma[None, :]
+        else:
+            gamma_orig = best.get('gamma')
+
+        # swap permanente a escala original (EM ya terminó)
+        self.X = self._X_orig_3d
+        self._Xd = jnp.asarray(self.X)
+        if self._has_membership and self._X_membership_orig is not None:
+            self.X_membership = self._X_membership_orig
+            self._Zmd = jnp.asarray(self.X_membership)
+        self._build_kernels()   # kernels capturan _Xd original
+
+        best_orig = dict(best)
+        best_orig['betas'] = betas_orig
+        best_orig['gamma'] = gamma_orig
+
+        super()._finalise(best_orig, elapsed)
         return self

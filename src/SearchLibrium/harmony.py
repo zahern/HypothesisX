@@ -152,6 +152,7 @@ class HarmonySearch(Search):
         self._hmcr_moves  = []              # HMCR-phase track (reset each build_solution call)
         self.memory       = []              # harmony memory
         self._plot_history = []             # (iter, obj(0), origen) — never trimmed, feeds the convergence plot
+        self._plot_flags = {}               # sol_num -> flag string ('' if clean)
         self._global_iter = 0               # cumulative iteration offset across class counts
         self._level_boundaries = []         # (sol_num, num_classes) per level, for vertical dividers
         self._level_markers = []            # (sol_num, obj, num_classes) best-of-memory per level
@@ -169,14 +170,7 @@ class HarmonySearch(Search):
         self.log_memory = True   # toggle: solver.log_memory = True
         self.hs_csv_file   = open(f"hs_track{suffix}.csv", "w", newline='')
         self.hs_csv_writer = csv.writer(self.hs_csv_file)
-        self.hs_csv_writer.writerow([
-            'sol_num', 'iter', 'num_classes', 'memory', 'harm_rate', 'origen', 'chosen_sol_num', 'hmcr_moves', 'pitch',  
-            'n_perturb', 'attempt_perturbations','attempted_moves', 'real_perturbations','moves_detail',
-            'result', 'converged', 'loglik', 'bic','class_shares','solution_flag', 'bic_penalized','aic',
-            'class_vars','member_vars','p_val_threshold','significant','not_significant','asvars','isvars','randvars','bcvars',
-            'corvars',
-            
-        ])
+
         run_header = (
             f"SearchLibrium — Harmony Search Run\n"
             f"Run ID       : {self.idnum}\n"
@@ -188,9 +182,31 @@ class HarmonySearch(Search):
             f"min_harm     : {self.min_harm}\n"
             f"max_pitch    : {self.max_pitch}\n"
             f"min_pitch    : {self.min_pitch}\n"
+            f"min_classes  : {self.min_classes}\n"
+            f"max_classes  : {self.max_classes}\n"
+            f"p_val        : {getattr(self.param, 'p_val', '')}\n"
+            f"n_init       : {getattr(self.param, 'n_init', '')}\n"
             + "-" * 60
         )
+        self.run_header = run_header
         print(run_header, file=self.results_file)
+        print(run_header, file=self.sol_log_file)
+
+        # Comments FIRST, then the column header, then data.
+        for line in run_header.splitlines():
+            self.hs_csv_file.write(f"# {line}\n")
+        self.hs_csv_writer.writerow([
+            'sol_num', 'iter', 'num_classes', 'memory', 'harm_rate', 'origen', 'chosen_sol_num', 'hmcr_moves', 'pitch',
+            'n_perturb', 'attempt_perturbations', 'attempted_moves', 'real_perturbations', 'moves_detail',
+            'result', 'converged', 'loglik', 'bic', 'class_shares', 'solution_flag', 'bic_penalized', 'aic',
+            'class_vars', 'member_vars', 'p_val_threshold', 'significant', 'not_significant', 'asvars', 'isvars', 'randvars', 'bcvars',
+            'corvars',
+            'flag_degen', 'flag_sep_choice', 'flag_sep_member',
+            'flag_near_unident', 'flag_opg_hess', 'flag_low_entropy',
+            'flag_low_occ', 'flag_firth',
+            'entropy', 'occ_min', 'bic_penalty_flags', 'winner_gap',
+        ])
+        self.hs_csv_file.flush()
     # }
 
     def _memory_ids(self):
@@ -198,9 +214,23 @@ class HarmonySearch(Search):
         return frozenset(sol['sol_num'] for sol in self.memory)
 
     def print_memory(self, label=""):
-        print(f"\n--- Harmony memory changed ({label}) ---")
-        for sol in self.memory:
-            print(f"  sol_num={sol['sol_num']:>4}  obj={sol['obj']}")
+        crit_names = [c[0].upper() for c in self.param.criterions[:self.nb_crit]]
+        width = max(len(n) for n in crit_names) if crit_names else 6
+        print()
+        print(f"  Harmony Memory updated — {label}")
+        print("=" * 30)
+        print(f"  {'Rank':<6}{'Sol #':>7}   " +
+              "   ".join(f"{n:>{max(width, 12)}}" for n in crit_names))
+        print(f"  {'-'*6}{'-'*7}   " +
+              "   ".join(f"{'-'*max(width, 12)}" for _ in crit_names))
+        for rank, sol in enumerate(self.memory, start=1):
+            vals = []
+            for i in range(self.nb_crit):
+                try:
+                    vals.append(f"{float(sol.obj(i)):>{max(width, 12)}.4f}")
+                except Exception:
+                    vals.append(f"{str(sol.obj(i)):>{max(width, 12)}}")
+            print(f"  {rank:<6}{sol['sol_num']:>7}   " + "   ".join(vals))
 
     ''' ---------------------------------------------------------------- '''
     ''' Function                                                         '''
@@ -304,6 +334,10 @@ class HarmonySearch(Search):
         moves_detail: (clase, variable, label, id_armonia_sobrescritura) — solo
                     cuando PAR cambió el valor; guarda el sol_num de la fuente
                     usada para sobrescribir ('best' en memoria, 'flip' en aleatorio)
+
+        NOTE: does NOT call evaluate_solution. The caller (improvise) sets
+        _csv_context with the right iteration metadata and then evaluates, so
+        the CSV row carries the correct iter / harm_rate / pitch / origen.
         """
         num_classes = getattr(self.param, 'num_classes', 2)
         base = getattr(self.param, 'base_class', None)
@@ -311,23 +345,31 @@ class HarmonySearch(Search):
             base = num_classes - 1
 
         memory_sorted = self.sort_memory(memory)
+        if not memory_sorted:
+            raise RuntimeError("build_solution_mc called with empty memory")
         global_best = memory_sorted[0]
         best_id = global_best.get('sol_num', 'best')
 
         new_sol = Solution(nb_crit=self.nb_crit)
-        new_sol['asc_ind'] = self.param.fit_intercept if self.param.fit_intercept is not None else self.select_asc_ind()
+        new_sol['asc_ind'] = self.select_asc_ind()
         hmcr_moves, moves_detail = [], []
+
+        def _safe_present(sol, key, c, v):
+            arr = sol.get(key)
+            if arr is None or c >= len(arr):
+                return False
+            return v in arr[c]
 
         def resolve(v, c, spec_key, label):
             if self.random_uniform() < HMCR:
                 idx = self.random_choice(range(len(memory_sorted)))
                 src = memory_sorted[idx]
                 src_id = src.get('sol_num', idx)
-                present = v in src[spec_key][c]
+                present = _safe_present(src, spec_key, c, v)
                 if present:
                     hmcr_moves.append((c, v, label, src_id))            # e.g. [C1,X1,3]
                 if self.random_uniform() < PAR:
-                    par_present = v in global_best[spec_key][c]
+                    par_present = _safe_present(global_best, spec_key, c, v)
                     if par_present != present:
                         moves_detail.append((c, v, label, best_id if par_present else f'remove_by_{best_id}'))
                     present = par_present
@@ -336,15 +378,15 @@ class HarmonySearch(Search):
                 if present:
                     hmcr_moves.append((c, v, label, 'random'))          # e.g. [C1,X4,random]
                 if self.random_uniform() < PAR:
-                    flipped = not present
-                    if flipped != present:
-                        moves_detail.append((c, v, label, 'flip'))
-                    present = flipped
+                    present = not present
+                    moves_detail.append((c, v, label, 'flip'))
             return present
 
         class_params_spec = np.empty(num_classes, dtype=object)
         for c in range(num_classes):
             chosen = [v for v in self.param.avail_asvars if resolve(v, c, 'class_params_spec', 'class_params')]
+            if self.param.ps_asvars:
+                chosen = sorted(set(chosen) | set(self.param.ps_asvars))
             class_params_spec[c] = np.sort(np.array(chosen, dtype=object)) if chosen else np.array([], dtype=object)
         new_sol['class_params_spec'] = class_params_spec
 
@@ -354,6 +396,8 @@ class HarmonySearch(Search):
                 member_params_spec[c] = np.array([], dtype=object)
                 continue
             chosen = [v for v in self.param.avail_isvars if resolve(v, c, 'member_params_spec', 'member_params')]
+            if self.param.ps_isvars:
+                chosen = sorted(set(chosen) | set(self.param.ps_isvars))
             member_params_spec[c] = np.sort(np.array(chosen, dtype=object)) if chosen else np.array([], dtype=object)
 
         member_params_spec = self._enforce_membership_identifiability(member_params_spec)
@@ -363,8 +407,8 @@ class HarmonySearch(Search):
         new_sol['hmcr_touched'] = {(mv[0], mv[1]) for mv in hmcr_moves}
 
         new_sol = self.repair_solution_lc(new_sol)
-        new_sol, converged = self.evaluate_solution(new_sol)
-        return new_sol, converged, moves_detail
+        self._warm_start_from_memory(new_sol, memory, num_classes, base)
+        return new_sol, moves_detail
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -516,6 +560,15 @@ class HarmonySearch(Search):
                     chosen_sol['member_params_spec'], new_sol['member_params_spec'], 'member_params')
             new_sol['hmcr_moves'] = hmcr_moves
             new_sol['hmcr_touched'] = {(mv[0], mv[1]) for mv in hmcr_moves}
+
+        if getattr(self.param, 'latent_class', False) and origin == 'memory':
+            cps = new_sol.get('class_params_spec', None)
+            if cps is not None:
+                num_c = len(cps)
+                base_c = getattr(self.param, 'base_class', None)
+                if base_c is None:
+                    base_c = num_c - 1
+                self._warm_start_from_memory(new_sol, memory, num_c, base_c)
 
         return new_sol, origin, chosen_sol_num
     # }
@@ -1281,75 +1334,102 @@ class HarmonySearch(Search):
     def improvise(self):
     # {
         best, current = [], []
-        
-        for iter in range(self.maxiter):
-        # {
-            self._improv_iter = iter  # track for phase-aware local search
-
-            # Compute consideration rate and pitch value
-            # This code introduces oscillations (a.k.a., variations) based on the iteration number.
-            # The result is scaled by the sine function only when its value is non-negative.
-            sine_iter = max(0, np.sign(math.sin(iter)))
-            self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * sine_iter
-            self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * sine_iter
-
-            #new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate) # Create a single new solution and perform an adjustment
-
-            if getattr(self.param, 'use_mc_style', False) and self.param.latent_class:
-                curr_sol, converged, mc_moves_detail = self.build_solution_mc(self.memory, HMCR=self.harm_rate, PAR=self.pitch)
-                new_sol = curr_sol
-                origin, chosen_sol_num = ('new' if self.harm_rate <= 0 else 'memory'), None
-                self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
-                    'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
-                self._csv_context['moves_detail'] = mc_moves_detail
-                self._csv_context['n_perturb'] = len(mc_moves_detail)
-            else:
-                new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate)
-                self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
-                    'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
-                if origin == 'memory':
-                    curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)
-                else:
-                    new_sol = self.repair_solution(new_sol)
-                    curr_sol, converged = self.evaluate_solution(new_sol)
-            
-            
-            """
-
-            self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
-                            'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
-            if origin == 'memory': # If the new solution is derived from the memory, perform pitch adjustment
-                curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)   # Perform additional perturbations
-            else: #If the new solution is generated randomly, evaluate it directly
-                new_sol = self.repair_solution(new_sol)
-                curr_sol, converged = self.evaluate_solution(new_sol)
-            """
-            if converged:
+        plot_saved = False
+        try:
+            for iter in range(self.maxiter):
             # {
-                self.insert_solution(curr_sol)
+                self._improv_iter = iter  # track for phase-aware local search
 
-                self._plot_history.append((curr_sol['sol_num'], curr_sol.obj(0), origin))
+                sine_iter = max(0, np.sign(math.sin(iter)))
+                self.harm_rate = (self.min_harm + ((self.max_harm - self.min_harm) / self.maxiter) * iter) * sine_iter
+                self.pitch = (self.min_pitch + ((self.max_pitch - self.min_pitch) / self.maxiter) * iter) * sine_iter
 
-                # Phase-aware local search: every 10 iterations, run
-                # developer-style moves on the top solutions
-                if iter > 0 and iter % 10 == 0 and len(self.memory) >= 2:
-                    self.local_search()
+                if getattr(self.param, 'use_mc_style', False) and self.param.latent_class:
+                    # build_solution_mc returns the raw candidate; the
+                    # context is set here — before evaluate_solution — so the
+                    # CSV row carries THIS iteration's metadata, mirroring
+                    # the non-MC branch that follows.
+                    new_sol, mc_moves_detail = self.build_solution_mc(
+                        self.memory, HMCR=self.harm_rate, PAR=self.pitch)
+                    origin = 'new' if self.harm_rate <= 0 else 'memory'
+                    self._csv_context = {
+                        'iter': iter, 'harm_rate': self.harm_rate,
+                        'pitch': self.pitch, 'origen': origin,
+                        'chosen_sol_num': None,
+                        'hmcr_moves': new_sol.get('hmcr_moves', []),
+                        'moves_detail': mc_moves_detail,
+                        'n_perturb': len(mc_moves_detail),
+                        'attempts': '', 'real_perturbations': '',
+                        'attempted_moves': [],
+                    }
+                    curr_sol, converged = self.evaluate_solution(new_sol)
+                else:
+                    new_sol, origin, chosen_sol_num = self.build_solution(self.memory, self.harm_rate)
+                    self._csv_context = {'iter': iter, 'harm_rate': self.harm_rate, 'pitch': self.pitch,
+                        'origen': origin, 'chosen_sol_num': chosen_sol_num, 'hmcr_moves': new_sol.get('hmcr_moves', [])}
+                    if origin == 'memory':
+                        curr_sol, converged = self.pitch_adjustment(new_sol, self.pitch)
+                    else:
+                        new_sol = self.repair_solution(new_sol)
+                        curr_sol, converged = self.evaluate_solution(new_sol)
+
+                if converged:
+                # {
+                    self.insert_solution(curr_sol)
+                    self._plot_history.append((curr_sol['sol_num'], curr_sol.obj(0), origin))
+                    self._plot_flags[curr_sol['sol_num']] = curr_sol.get('solution_flag', '') or ''
+
+                    if iter > 0 and iter % 10 == 0 and len(self.memory) >= 2:
+                        self.local_search()
+                # }
             # }
-        # }
 
-        if self.nb_crit == 1:
-            all_val, obj_val = self.log_convergence_single()
-        else:
-            all_val, obj_val = self.log_convergence(self.memory)
+            # Loop finished normally — produce the full convergence plot.
+            if self.nb_crit == 1:
+                all_val, obj_val = self.log_convergence_single()
+            else:
+                all_val, obj_val = self.log_convergence(self.memory)
 
-        if self.generate_plots:
-            if not getattr(self, '_suppress_level_plot', False):
+            if self.generate_plots:
+                if not getattr(self, '_suppress_level_plot', False):
+                    try:
+                        self.plot_results(self.memory, all_val, obj_val)
+                        plot_saved = True
+                    except Exception as exc:
+                        logger.warning(f"Convergence plot failed (non-fatal, search result unaffected): {exc}")
+        finally:
+            # Partial-save on interruption (SIGTERM/KeyboardInterrupt/exception).
+            if not plot_saved and self.generate_plots:
                 try:
-                    self.plot_results(self.memory, all_val, obj_val)
+                    self.plot_multiclass_search()
+                    logger.info("Partial plot saved on interruption.")
                 except Exception as exc:
-                    logger.warning(f"Convergence plot failed (non-fatal, search result unaffected): {exc}")
+                    logger.warning(f"Partial plot failed: {exc}")
+            for _f in (self.results_file, self.sol_log_file, self.hs_csv_file):
+                try:
+                    _f.flush()
+                except Exception:
+                    pass
     # }
 
+    def _sigterm_handler(self, signum, frame):
+        """Save partial results on SIGTERM (e.g. PBS/OGE walltime).
+        Best-effort: plots + flush, then exit."""
+        import sys as _sys
+        print(f"\n[SIGTERM received — saving partial results]")
+        try:
+            if self.generate_plots:
+                try:
+                    self.plot_multiclass_search()
+                except Exception:
+                    pass
+            for f in (self.results_file, self.sol_log_file, self.hs_csv_file):
+                try:
+                    f.flush()
+                except Exception:
+                    pass
+        finally:
+            _sys.exit(128 + signum)
     ''' ---------------------------------------------------------- '''
     ''' Function.  Discard non-convergent solutions                '''
     ''' ---------------------------------------------------------- '''
@@ -1603,6 +1683,18 @@ class HarmonySearch(Search):
 
     def run_search_latent(self, override=None):
     # {
+        import signal as _signal
+        import time as _time
+        self.start = _time.time()
+        _prev_sigterm = _signal.signal(_signal.SIGTERM, self._sigterm_handler)
+        try:
+            return self._run_search_latent_inner(override)
+        finally:
+            _signal.signal(_signal.SIGTERM, _prev_sigterm)
+    # }
+
+    def _run_search_latent_inner(self, override=None):
+    # {
         override = (not self.effective_search) if override is None else override
         self._suppress_level_plot = True
         prev, best_model_idx = infinity, 0
@@ -1681,16 +1773,47 @@ class HarmonySearch(Search):
                 from .BEHier import BEHier
             except ImportError:
                 from BEHier import BEHier
+            import io
+            import contextlib
 
             suffix = f'[{self.idnum}]' if self.idnum is not None else ''
-            clean_file = open(f"hs_results_clean{suffix}.txt", "w")
+            clean_file  = open(f"hs_results_clean{suffix}.txt", "w")
+            behier_file = open(f"hs_behier{suffix}.txt", "w")
+
+            print(getattr(self, 'run_header', ''), file=clean_file)
+            print(getattr(self, 'run_header', ''), file=behier_file)
+
             ranked = self.sort_memory(all_solutions)
             grouped = self._top_per_class_count(ranked, n=self.max_mem)
 
             for k in sorted(grouped):
                 for rank, sol in enumerate(grouped[k], start=1):
-                    clean_sol = BEHier(self, self.copy_solution(sol), max_passes=10)
-                    self.log_solution_block(clean_sol, f"Clean Top {rank} (K={k})", file=clean_file)
+                    # BEHier prints its batch-pruning trace straight to stdout.
+                    # Redirect that stdout to a buffer so the trace can be
+                    # persisted to behier_file (and re-emitted to console for
+                    # the live view) — otherwise it is lost to the terminal.
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        clean_sol = BEHier(self, self.copy_solution(sol), max_passes=10)
+                    behier_trace = buf.getvalue()
+
+                    if behier_trace:
+                        print(f"\n--- BEHier trace: Clean Top {rank} (K={k}) "
+                              f"[sol #{sol.get('sol_num', '?')}] ---",
+                              file=behier_file)
+                        behier_file.write(behier_trace)
+                        if not behier_trace.endswith('\n'):
+                            behier_file.write('\n')
+                        behier_file.flush()
+                        # Re-emit to stdout for the live view
+                        print(behier_trace,
+                              end='' if behier_trace.endswith('\n') else '\n')
+
+                    self.log_solution_block(clean_sol, f"Clean Top {rank}",
+                                            file=clean_file)
+
+            behier_file.close()
+            clean_file.close()
         '''
         best_val, all_val, all_val_classes = self.post_process(all_solutions)
 
@@ -1825,58 +1948,102 @@ class HarmonySearch(Search):
     ''' Function                                                   '''
     ''' ---------------------------------------------------------- '''
     def plot_multiclass_search(self):
-    # {
-        fig, ax1 = plt.subplots()
+        import time as _time
+
+        fig, ax1 = plt.subplots(figsize=(10, 6))
         ax1.xaxis.get_major_locator().set_params(integer=True)
+
+        # ── Título centrado ──────────────────────────────────────────────
+        run_name = getattr(self, 'idnum', None) or 'HS'
+        ax1.set_title(f"{run_name} — Multiclass Search",
+                    fontsize=13, loc='center', pad=14)
+
+        # ── Run Time fuera de los ejes (fig coords), sin solapar labels ──
+        if getattr(self, 'start', None) is not None:
+            elapsed = _time.time() - self.start
+            h = int(elapsed // 3600)
+            m = int((elapsed % 3600) // 60)
+            s = int(elapsed % 60)
+            ax1.text(
+                1.0, 1.02, f"Run Time: {h:02d}:{m:02d}:{s:02d}",
+                transform=ax1.transAxes,
+                ha='right', va='bottom',
+                fontsize=11, color='#333',
+                bbox=dict(boxstyle='round,pad=0.35',
+                        facecolor='#f5f5f5', edgecolor='#bbb'),
+            )
 
         iters   = [row[0] for row in self._plot_history]
         objs    = [row[1] for row in self._plot_history]
         origins = [row[2] for row in self._plot_history]
 
-        color_map = {'initial': 'indigo', 'memory': 'tab:green', 'new': 'tab:blue'}
-        label_map = {'initial': 'Memory seed (per class)', 'memory': 'From memory', 'new': 'New'}
+        flag_map = getattr(self, '_plot_flags', {})
+        flagged_xs = [it for it in iters if flag_map.get(it, '')]
+        flagged_ys = [ob for it, ob in zip(iters, objs) if flag_map.get(it, '')]
+
+        color_map = {'initial': '#E67E22', 'memory': '#27AE60', 'new': '#2980B9'}
+        label_map = {'initial': 'Memory seed', 'memory': 'From memory', 'new': 'New'}
 
         for origen in ('initial', 'memory', 'new'):
             xs = [it for it, o in zip(iters, origins) if o == origen]
             ys = [ob for ob, o in zip(objs, origins) if o == origen]
             if xs:
-                ax1.scatter(xs, ys, color=color_map[origen], s=20, label=label_map[origen])
+                ax1.scatter(xs, ys, color=color_map[origen],
+                            s=30, label=label_map[origen])
 
+        if flagged_xs:
+            ax1.scatter(flagged_xs, flagged_ys,
+                        color='#DC143C', edgecolor='black', linewidth=0.6,
+                        s=40, zorder=6, label='Flagged (degen/sep/plateau)')
+
+        # ── ylim con headroom extra para los labels de clase ─────────────
         max_y = max(objs) if objs else 0
         min_y = min(objs) if objs else 0
-        margin = 0.10 * (max_y - min_y) if max_y != min_y else 1.0
-        ax1.set_ylim(min_y - 0.03 * (max_y - min_y), max_y + margin)
+        span = (max_y - min_y) if max_y != min_y else 1.0
+        margin_bottom = 0.03 * span
+        margin_top    = 0.15 * span
+        ax1.set_ylim(min_y - margin_bottom, max_y + margin_top)
+
+        # ── Divisores verticales + label de K ────────────────────────────
         boundary_starts = [b[0] for b in self._level_boundaries]
         block_ends = boundary_starts[1:] + [max(iters) if iters else 0]
         for (start_iter, q), end_iter in zip(self._level_boundaries, block_ends):
-            ax1.axvline(x=start_iter, color='r', linestyle='--', linewidth=0.8)
+            ax1.axvline(x=start_iter, color='r', linestyle='--', linewidth=0.9)
             mid = (start_iter + end_iter) / 2
-            ax1.text(mid, max_y + margin * 0.3, f"{q} class" + ("es" if q > 1 else ""),
-                      ha='center')
+            ax1.text(mid, max_y + margin_top * 0.55,
+                    f"{q} class" + ("es" if q > 1 else ""),
+                    ha='center', fontsize=11)
 
         if self._level_markers:
             lvl_x = [m[0] for m in self._level_markers]
             lvl_y = [m[1] for m in self._level_markers]
-            ax1.scatter(lvl_x, lvl_y, color='red', s=25, marker='D', zorder=4,
-                        label='Best of memory (per class)')
+            ax1.scatter(lvl_x, lvl_y, color='red', s=35, marker='D',
+                        zorder=4, label='Best of memory (per class)')
 
         if objs:
             best_idx = int(np.argmin(objs))
-            ax1.scatter([iters[best_idx]], [objs[best_idx]], color='gold', edgecolor='black',
-                        s=70, marker='*', zorder=5, label='Best overall')
+            ax1.scatter([iters[best_idx]], [objs[best_idx]],
+                        color='gold', edgecolor='black',
+                        s=90, marker='*', zorder=5, label='Best overall')
 
         order = np.argsort(iters)
         running_best = np.minimum.accumulate(np.array(objs)[order])
-        ax1.plot(np.array(iters)[order], running_best, color="orange", linestyle="dotted",
-                 label="Best solution so far")
+        ax1.plot(np.array(iters)[order], running_best,
+                color="#555555", linestyle="dotted",
+                linewidth=1.6, label="Best solution so far")
 
-        ax1.set_xlabel("Solution #")
-        ax1.set_ylabel(self.param.criterions[0][0])
-        lgd = ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2)
+        # ── Ejes: criterion en MAYÚSCULA, fuentes más grandes ────────────
+        ax1.set_xlabel("Solution #", fontsize=12)
+        ax1.set_ylabel(self.param.criterions[0][0].upper(), fontsize=12)
+        ax1.grid(True, alpha=0.3, linestyle='--')
+
+        lgd = ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),
+                        ncol=2, fontsize=10)
+
         current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
         plot_filename = self.idnum + "_multiclass_" + current_time + "_SOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
-    # }
+        plt.close(fig)
 
     ''' ---------------------------------------------------------- '''
     ''' Function                                                   '''
@@ -1892,12 +2059,6 @@ class HarmonySearch(Search):
 
         color_map = {'initial': 'gray', 'memory': 'tab:green', 'new': 'tab:blue'}
         label_map = {'initial': 'Initial memory', 'memory': 'From memory', 'new': 'New'}
-
-        for origen in ('initial', 'memory', 'new'):
-            xs = [it for it, o in zip(iters, origins) if o == origen]
-            ys = [ob for ob, o in zip(objs, origins) if o == origen]
-            if xs:
-                ax1.scatter(xs, ys, color=color_map[origen], s=20, label=label_map[origen])
 
         best_idx = int(np.argmin(objs))
         ax1.scatter([iters[best_idx]], [objs[best_idx]], color='red', s=30,
@@ -2038,7 +2199,8 @@ class HarmonySearch(Search):
     # {
         """Override the inherited no-op run_search with the real HS loop."""
         import time as _time
-        self.start = _time.time()
+        if getattr(self, 'start', None) is None:
+            self.start = _time.time()
         existing_memory   = self.screen_solutions(existing_sols)
         generated_memory  = self.initialize_memory(self.max_mem)
         init_memory       = generated_memory + existing_memory
@@ -2055,6 +2217,7 @@ class HarmonySearch(Search):
                                             getattr(self.param, 'num_classes', 1)))
         for sol in self.memory:
             self._plot_history.append((sol['sol_num'], sol.obj(0), 'initial'))
+            self._plot_flags[sol['sol_num']] = sol.get('solution_flag', '') or ''
 
         # Track best before improvisation
         if self.memory:

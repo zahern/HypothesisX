@@ -5,6 +5,7 @@ import math
 import logging
 import hashlib
 import json
+import io, contextlib
 
 #from akshay_test import member_params_spec
 
@@ -1305,6 +1306,12 @@ class Search():
 
         # Pre-compute pairwise correlations & VIF for collinearity-aware solution generation
         self._precompute_correlations()
+        self._var_sigma = {}
+        for v in param.varnames:
+            if v in param.df.columns:
+                s = float(param.df[v].std())
+                self._var_sigma[v] = s if s > 1e-12 else 1.0
+        self._split_tau = 0.3
 
         # This block is initialised unconditionally, regardless of pbil_enabled.
         # A search running with the flag off still reads this matrix during
@@ -3260,8 +3267,34 @@ class Search():
         row("Model type", str(solution.get('model_n', 'unknown')))
 
         # ── Objectives ──────────────────────────────────────────────────────
-        crit_names = [c[0] for c in self.param.criterions]
-        for name in crit_names:
+        n_params = getattr(model, 'num_params', None) if model else None
+
+        # Fixed order: Loglik -> AIC -> num_params -> BIC (then any other criterion).
+        ordered = [('Loglik', 'loglik'), ('AIC', 'aic'), ('BIC', 'bic')]
+        printed = set()
+        for label, key in ordered:
+            val = solution.get(key)
+            if key == 'BIC':
+                if n_params is not None:
+                    row("Num Parameters", str(n_params))
+                if val is not None:
+                    try:
+                        row("BIC", f"{float(val):.4f}")
+                    except Exception:
+                        row("BIC", str(val))
+                printed.add('bic')
+                continue
+            if val is not None:
+                try:
+                    row(label, f"{float(val):.4f}")
+                except Exception:
+                    row(label, str(val))
+            printed.add(key)
+
+        # Any remaining criterion not already printed.
+        for name in [c[0] for c in self.param.criterions]:
+            if name in printed or name in ('loglik', 'aic', 'bic'):
+                continue
             val = solution.get(name)
             if val is not None:
                 try:
@@ -3317,6 +3350,7 @@ class Search():
         """
         LINE = "=" * 60
         _lf = file if file is not None else getattr(self, 'sol_log_file', None)
+        model = solution.get('model', None) or solution.get('fitted_model', None)
 
         show_console = getattr(self.param, 'verbose', False) or tag == 'NEW BEST'
 
@@ -3327,60 +3361,320 @@ class Search():
         def row(label, value):
             p(f"  {label:<22}: {value}")
 
+        # ── Iteration / class-count tag ──────────────────────────────
+        _ctx_iter = (getattr(self, '_csv_context', {}) or {}).get('iter', '')
+        _K        = getattr(self.param, 'num_classes', None)
+        _maxit    = getattr(self, 'maxiter', None)
+        _is_lc    = bool(getattr(self.param, 'latent_class', False))
+
+        _origen = (getattr(self, '_csv_context', {}) or {}).get('origen', '')
+
+        extra = ""
+        _is_top = tag.startswith('Top ') or tag.startswith('Clean Top ')
+        if _is_top:
+            # Top-N logs are emitted AFTER the improvisation loop closes.
+            # _csv_context still holds the last iteration's counters, which
+            # describe a different solution — showing them would be misleading.
+            # The only meaningful field here is K.
+            extra = f" [K={_K}]" if (_is_lc and _K is not None) else ""
+        elif _ctx_iter != '' and _ctx_iter is not None and _maxit:
+            # Normal flow: harmony iteration within a K-level.
+            # iter is 0-indexed internally; display 1-indexed so "Iter:2/2" is
+            # the last iteration and matches the reader's expectation.
+            display_iter = int(_ctx_iter) + 1
+            if _is_lc and _K is not None:
+                extra = f" [Iter:{display_iter}/{_maxit} (K={_K})]"
+            else:
+                extra = f" [Iter:{display_iter}/{_maxit}]"
+        elif _origen == 'initial':
+            extra = f" [Seed (K={_K})]" if (_is_lc and _K is not None) else " [Seed]"
+        elif _origen == 'new_memory':
+            extra = f" [Expanded (K={_K})]" if (_is_lc and _K is not None) else " [Expanded]"
+        elif _is_lc and _K is not None:
+            extra = f" [K={_K}]"
+
         p(LINE)
-        p(f"Solution #{solution.get('sol_num', '?')} — [{tag}]")
+        p(f"Solution #{solution.get('sol_num', '?')} — [{tag}]{extra}")
         p(LINE)
 
-        row("model", str(solution.get('model_n', 'unknown')))
-        row("converged", str(solution.get('converged', False)))
+        # ── Model & convergence ──────────────────────────────────────
+        row("Model", str(solution.get('model_n', 'unknown')))
+        row("Converged", str(solution.get('converged', False)))
         if tag == 'FAILED':
             row("fail_reason", str(solution.get('fail_reason', '?')))
 
-        crit_names = [c[0] for c in self.param.criterions]
-        for name in crit_names:
+        row("N_init",          str(getattr(self.param, 'n_init', '')))
+        row("Origin",          str(getattr(self, '_csv_context', {}).get('origen', '')))
+        row("Chosen_sol_num",  str(getattr(self, '_csv_context', {}).get('chosen_sol_num', '')))
+
+        # ── Criterions (bic, aic, loglik, ...) ───────────────────────
+        n_params = getattr(model, 'num_params', None) if model else None
+
+        # Fixed order: Loglik -> AIC -> num_params -> BIC (then any other criterion).
+        ordered = [('Loglik', 'loglik'), ('AIC', 'aic'), ('BIC', 'bic')]
+        printed = set()
+        for label, key in ordered:
+            val = solution.get(key)
+            if key == 'BIC':
+                if n_params is not None:
+                    row("Num Parameters", str(n_params))
+                if val is not None:
+                    try:
+                        row("BIC", f"{float(val):.4f}")
+                    except Exception:
+                        row("BIC", str(val))
+                printed.add('bic')
+                continue
+            if val is not None:
+                try:
+                    row(label, f"{float(val):.4f}")
+                except Exception:
+                    row(label, str(val))
+            printed.add(key)
+
+        # Any remaining criterion not already printed.
+        for name in [c[0] for c in self.param.criterions]:
+            if name in printed or name in ('loglik', 'aic', 'bic'):
+                continue
             val = solution.get(name)
             if val is not None:
                 try:
-                    row(name, f"{float(val):.4f}")
+                    row(name.upper(), f"{float(val):.4f}")
                 except Exception:
-                    row(name, str(val))
+                    row(name.upper(), str(val))
 
+        # ── Extras: aic, loglik, R², entropy, min OCC ────────────────
+        model = solution.get('model')
+        loglik      = getattr(model, 'loglik', solution.get('loglik', None))
+        loglik_null = getattr(model, 'loglik_null', None)
+        if loglik is not None and loglik_null not in (None, 0):
+            r2 = 1.0 - (loglik / loglik_null)
+        else:
+            r2 = None
+        aic     = getattr(model, 'aic',    solution.get('aic', None))
+        entropy = getattr(model, 'entropy', None)
+        occ     = getattr(model, 'occ', None)
+        occ_min = float(np.nanmin(occ)) if occ is not None and np.isfinite(occ).any() else None
+
+        flags = solution.get('flags', {}) or {}
+        crit_names = [c[0] for c in self.param.criterions]
+
+        FLAG_LABELS = {
+            'flag_degen':         'DEGENERATED',
+            'flag_sep_choice':    'SEPARATED:CHOICE',
+            'flag_sep_member':    'SEPARATED:MEMBER',
+            'flag_near_unident':  'NEAR-UNIDENTIFIED',
+            'flag_opg_hess':      'OPG-HESS DIVERGENT',
+            'flag_low_entropy':   'LOW ENTROPY',
+            'flag_low_occ':       'LOW OCC',
+            'flag_firth':         'FIRTH NEEDED',
+        }
+        active_flags = [FLAG_LABELS.get(k, k.replace('flag_', '').upper())
+                        for k, v in flags.items()
+                        if k.startswith('flag_') and v == 1]
+        row("Flags", ' | '.join(active_flags) if active_flags else 'CLEAN')
+
+        # Loglik: only carries NOT CONVERGED, no duplicate flag list.
+        ll_tag = " [NOT CONVERGED]" if (loglik is None or loglik <= -1e10) else ""
+
+        # Entropy: MODERATE below 0.8, POOR below 0.6.
+        if entropy is None:
+            ent_tag = ""
+        elif entropy < 0.6:
+            ent_tag = " [POOR]"
+        elif entropy < 0.8:
+            ent_tag = " [MODERATE]"
+        else:
+            ent_tag = " [GOOD]"
+
+        # OCC: ADEQUATE between 5 and 10, POOR below 5.
+        if occ_min is None or not np.isfinite(occ_min):
+            occ_tag = ""
+        elif occ_min < 5:
+            occ_tag = " [POOR]"
+        elif occ_min < 10:
+            occ_tag = " [ADEQUATE]"
+        else:
+            occ_tag = " [GOOD]"
+
+        n_params = getattr(model, 'num_params', None) if model else None
+
+        # Fixed order: Loglik -> AIC -> num_params -> BIC -> extras.
+        for label, val, tag, already in (
+            ("Loglik",          loglik,  ll_tag,   'loglik'  in crit_names),
+            ("AIC",             aic,     "",       'aic'     in crit_names),
+        ):
+            if already or val is None:
+                continue
+            try:
+                row(label, f"{float(val):.4f}{tag}")
+            except Exception:
+                row(label, f"{val}{tag}")
+
+        if n_params is not None:
+            row("Num Parameters", str(n_params))
+
+        bic_val = solution.get('bic')
+        if bic_val is not None:
+            try:
+                row("BIC", f"{float(bic_val):.4f}")
+            except Exception:
+                row("BIC", str(bic_val))
+
+        for label, val, tag in (
+            ("McFadden Adj.R²", r2,      ""),
+            ("Entropy",         entropy, ent_tag),
+            ("Min_OCC",         occ_min, occ_tag),
+        ):
+            if val is None:
+                continue
+            try:
+                row(label, f"{float(val):.4f}{tag}")
+            except Exception:
+                row(label, f"{val}{tag}")
+
+        # Any remaining criterion not yet printed.
+        for name in [c[0] for c in self.param.criterions]:
+            if name in ('loglik', 'aic', 'bic'):
+                continue
+            val = solution.get(name)
+            if val is not None:
+                try:
+                    row(name.upper(), f"{float(val):.4f}")
+                except Exception:
+                    row(name.upper(), str(val))
+
+        # ── Variable pools ───────────────────────────────────────────
         row("asvars",   sorted(str(v) for v in solution.get('asvars', [])))
         row("isvars",   sorted(str(v) for v in solution.get('isvars', [])))
         row("randvars", dict(sorted((str(k), str(v)) for k, v in solution.get('randvars', {}).items())))
         row("bcvars",   sorted(str(v) for v in solution.get('bcvars', [])))
         row("corvars",  sorted(str(v) for v in solution.get('corvars', [])))
 
+        # ── Spec blocks (paste-ready; last class closes the dict) ────
         class_params_spec  = solution.get('class_params_spec', None)
         member_params_spec = solution.get('member_params_spec', None)
-        if class_params_spec is not None:
-            p("  class_params_spec:")
-            for c, arr in enumerate(class_params_spec):
-                p(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
-        if member_params_spec is not None:
-            p("  member_params_spec:")
-            for c, arr in enumerate(member_params_spec):
-                p(f"    Class_{c + 1}: {sorted(str(v) for v in arr)}")
 
+        def _as_py_dict(spec, drop_asc=False):
+            n = len(spec)
+            lines = ["{"]
+            for c, arr in enumerate(spec):
+                items = sorted(str(v) for v in arr
+                               if not (drop_asc and str(v).startswith('intercept.')))
+                body = ", ".join(f"'{v}'" for v in items)
+                tail = "}" if c == n - 1 else ","
+                lines.append(f"    'Class_{c + 1}': [{body}]{tail}")
+            return "\n".join(lines)
+
+        if class_params_spec is not None:
+            p("  fit_intercept=True ")
+            p("  class_params_spec = " + _as_py_dict(class_params_spec, drop_asc=True))
+        if member_params_spec is not None:
+            p("  member_params_spec = " + _as_py_dict(member_params_spec))
+
+        # ── Fit trace (multistart, separation, warm start, etc.) ─────
+        model = solution.get('model')
+        fit_log = getattr(model, '_fit_log', '') if model else ''
+        if fit_log.strip():
+            p(LINE)
+            p("  Fit trace:")
+            for line in fit_log.rstrip().splitlines():
+                p(line)
+
+        # ── Full model statistics ────────────────────────────────────
         if tag != 'FAILED' and solution.get('model'):
             p(LINE)
             p("  Model Statistics:")
-            model = solution['model']
             try:
-                if model.converged or getattr(self.param, 'verbose_convergence', False):
-                    model.summarise()
-                    model.summarise(file=_lf)
-                else:
-                    loglik = solution.get('loglik', float('nan'))
-                    gnorm  = getattr(model, 'gtol_res', '?')
-                    p(f"  [accepted, not fully converged]  loglik={loglik:.3f}  grad_norm={gnorm}")
+                # Always call summarise(). It handles non-converged models
+                # internally (prints "WARNING: Convergence was not reached"
+                # plus the per-variable gtol diagnostic block), so nearly-
+                # converged candidates still surface their diagnostics
+                # instead of being reduced to a one-line summary.
+                model.summarise()
+                model.summarise(file=_lf)
             except Exception as exc:
                 p(f"  (statistics unavailable: {exc})")
+
         p(LINE)
         p()
         if _lf is not None:
             _lf.flush()
 
+    def _warm_start_from_memory(self, new_sol, memory, num_classes, base):
+        """Populate new_sol['init_class_betas'/'init_class_gammas'] by copying
+        values from the best-matching class in memory for each new class."""
+        if not memory:
+            return
+        cps = new_sol.get('class_params_spec', None)
+        mps = new_sol.get('member_params_spec', None)
+        if cps is None:
+            return
+
+        init_betas, any_beta = [], False
+        for c in range(num_classes):
+            names_new = set(str(v) for v in cps[c])
+            best_score, best_map = -1.0, {}
+            for m in memory:
+                m_model = m.get('model')
+                if m_model is None or not hasattr(m_model, '_class_specs'):
+                    continue
+                for c2, spec2 in enumerate(m_model._class_specs):
+                    names_m = set(str(m_model.varnames[i]) for i in spec2)
+                    inter = names_new & names_m
+                    if not inter:
+                        continue
+                    score = len(inter) / max(len(names_new | names_m), 1)
+                    if score > best_score:
+                        best_score = score
+                        best_map = {m_model.varnames[i]: float(m_model.class_betas[c2][k])
+                                    for k, i in enumerate(spec2)
+                                    if m_model.varnames[i] in inter}
+            # Only accept the match if it is informative: Jaccard overlap of
+            # the variable sets. score >= 0.3 means at least ~30% of the
+            # union overlaps — a usable anchor. Below that, discard the map
+            # so _resolve_inits falls back to a randomized init for this class.
+            if best_map and best_score >= 0.3:
+                any_beta = True
+            else:
+                best_map = {}
+            init_betas.append(best_map)
+
+        init_gammas, any_gamma = [], False
+        if mps is not None:
+            for c in range(num_classes):
+                if c == base:
+                    init_gammas.append({})
+                    continue
+                names_new = set(str(v) for v in mps[c])
+                best_score, best_map = -1.0, {}
+                for m in memory:
+                    m_model = m.get('model')
+                    gmaps = getattr(m_model, 'gamma_maps', None) if m_model else None
+                    if not gmaps:
+                        continue
+                    for gm2 in gmaps:
+                        if not gm2:
+                            continue
+                        names_m = set(k for k in gm2.keys() if k != '_inter')
+                        inter = names_new & names_m
+                        if not inter and '_inter' not in gm2:
+                            continue
+                        score = len(inter) / max(len(names_new | names_m), 1)
+                        if score > best_score:
+                            best_score = score
+                            best_map = {k: float(v) for k, v in gm2.items()
+                                        if k == '_inter' or k in inter}
+                if best_map and best_score >= 0.3:
+                    any_gamma = True
+                else:
+                    best_map = {}
+                init_gammas.append(best_map)
+
+        if any_beta:
+            new_sol['init_class_betas'] = init_betas
+        if any_gamma:
+            new_sol['init_class_gammas'] = init_gammas
 
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
@@ -3772,33 +4066,79 @@ class Search():
         value from the name it belongs to."""
         return {v: dom_map[v] for v in new_vars if v in dom_map}
 
+    def _jitter_map(self, dom_map, tau):
+        """Return {name: value + N(0, tau*sigma_v)} — ASCs use tau*1.0."""
+        if not dom_map:
+            return {}
+        out = {}
+        for name, val in dom_map.items():
+            if str(name).startswith('intercept.') or name == '_inter':
+                s = 1.0
+            else:
+                s = self._var_sigma.get(name, 1.0)
+            out[name] = float(val) + float(self.param.generator.normal(0.0, tau * s))
+        return out
+
     def increase_sol_by_one_class(self, sol, dominant_ref):
         """Builds a (K+1)-class candidate from a K-class (or MNL) solution.
-        The new class is a copy of the dominant class (largest share),
-        perturbed with HMCR=0.5 at choice and member level, and is
-        inserted immediately before the base class (last position), so
-        the base class never changes identity across class counts.
+        The new class COPIES the dominant class's variables 100% (no
+        subsample), and its betas/gammas start as the dominant class's
+        values plus N(0, tau*sigma_v) jitter — jitter breaks the symmetry,
+        the 100% copy keeps the new class in the same behavioural region.
+        Inserted immediately before the base class (last position), so the
+        base class never changes identity across class counts.
         """
         class_params_spec = sol.get('class_params_spec', None)
-        dom_vars = dominant_ref['vars']
-        dom_member = dominant_ref['member']
+        dom_vars = np.asarray(dominant_ref['vars'], dtype=object)
+        dom_member = np.asarray(dominant_ref['member'], dtype=object)
         dom_map = dominant_ref['betas_map']
+        dom_gamma_map = dominant_ref.get('gamma_map', {})
+        tau = getattr(self, '_split_tau', 0.3)
 
-        asc_in_dom = [v for v in dom_vars if str(v).startswith('intercept.')]
-        regular_dom = [v for v in dom_vars if not str(v).startswith('intercept.')]
-        new_vars = self._hmcr_subsample(regular_dom, rate=0.5)
-        if sol.get('asc_ind', False) and asc_in_dom:
-            new_vars = np.array(sorted(list(new_vars) + list(asc_in_dom)), dtype=object)
-        new_member = self._hmcr_subsample(dom_member, rate=0.5)
-
+        # ── MNL → 2-class ────────────────────────────────────────────
         if class_params_spec is None:
+            new_vars = dom_vars.copy()
+            new_member = dom_member.copy()
             sol['class_params_spec'] = np.array([new_vars, dom_vars], dtype=object)
             sol['member_params_spec'] = np.array([new_member, np.array([], dtype=object)], dtype=object)
             if dom_map:
-                sol['init_class_betas'] = [self._match_betas(dom_map, new_vars), dom_map]
+                sol['init_class_betas'] = [self._jitter_map(dom_map, tau), dom_map]
             else:
                 sol.pop('init_class_betas', None)
             return sol
+
+        member_params_spec = sol.get('member_params_spec', None)
+
+        # ── K → K+1: 100% copy of the dominant class's variables ─────
+        new_vars = dom_vars.copy()
+        new_member = dom_member.copy()
+
+        new_class_params_spec = list(class_params_spec[:-1]) + [new_vars] + [class_params_spec[-1]]
+        sol['class_params_spec'] = np.array(new_class_params_spec, dtype=object)
+
+        new_member_params_spec = list(member_params_spec[:-1]) + [new_member] + [member_params_spec[-1]]
+        new_member_params_spec = self._enforce_membership_identifiability(
+            np.array(new_member_params_spec, dtype=object)
+        )
+        sol['member_params_spec'] = new_member_params_spec
+
+        current_maps = sol.get('init_class_betas') or dominant_ref['full_betas_map']
+        if dom_map and current_maps:
+            new_map = self._jitter_map(dom_map, tau)
+            extended = list(current_maps[:-1]) + [new_map] + [current_maps[-1]]
+            sol['init_class_betas'] = extended
+        else:
+            sol.pop('init_class_betas', None)
+
+        current_gamma_maps = sol.get('init_class_gammas') or dominant_ref.get('full_gamma_map')
+        if current_gamma_maps:
+            new_gamma_map = self._jitter_map(dom_gamma_map, tau)
+            extended_gamma = list(current_gamma_maps[:-1]) + [new_gamma_map] + [current_gamma_maps[-1]]
+            sol['init_class_gammas'] = extended_gamma
+        else:
+            sol.pop('init_class_gammas', None)
+
+        return sol
 
         member_params_spec = sol.get('member_params_spec', None)
 
@@ -4615,10 +4955,18 @@ class Search():
         nearly_converged = _gtol < (1e-2 if sol.get('model_n') == 'latent_class' else 1e-4) #Some models may converge with a higher gtol, especially latent class models
         loglik_ok = isinstance(sol.get('loglik'), float) and math.isfinite(sol.get('loglik', float('nan')))
 
-        if (converged or nearly_converged) and loglik_ok:
+        accepted = (converged or nearly_converged) and loglik_ok
+
+        if accepted:
         # {
             self.converged += 1
-            sol['converged'] = True
+            # sol['converged'] reflects the model's OWN convergence (conv_f),
+            # not the search's accept-into-memory gate. A nearly-converged
+            # candidate is still admitted, but recorded as not-converged so
+            # downstream summarise() picks the right branch and prints the
+            # per-variable gtol diagnostic block.
+            sol['converged'] = bool(converged)
+            sol['nearly_converged'] = bool(nearly_converged and not converged)
             self.update_objectives(self.param.criterions, sol)
 
             if self.best_solution is None:
@@ -4636,6 +4984,7 @@ class Search():
         # {
             self.not_converged += 1
             sol['converged'] = False
+            sol['nearly_converged'] = False
             is_new_best = False
             # ── Banlist: never visit this exact specification again
             self._banlist.add(sig)
@@ -4652,14 +5001,22 @@ class Search():
                     self._cull_attrited_vars()
             # ── Convergence diagnostic: explain why the model did not converge
             self._diagnose_nonconvergence(sol, model_n=sol.get('model_n', ''))
-        # }        
-        if sol.get('converged') and sol.get('from_memory_expansion'):
+        # }
+
+        # Tag based on ACCEPTANCE, not raw convergence — a nearly-converged
+        # solution still deserves EVALUATED / NEW BEST / NEW MEMORY, even
+        # though sol['converged'] is False.
+        if accepted and sol.get('from_memory_expansion'):
             tag = 'NEW MEMORY'
+        elif accepted and is_new_best:
+            tag = 'NEW BEST'
+        elif accepted:
+            tag = 'EVALUATED'
         else:
-            tag = 'NEW BEST' if sol.get('converged') and is_new_best else ('EVALUATED' if sol.get('converged') else 'FAILED')
+            tag = 'FAILED'
         self.log_solution_block(sol, tag)
 
-        return (sol, sol['converged'])
+        return (sol, accepted)
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -5087,7 +5444,14 @@ class Search():
             ctx.get('real_perturbations', ''), moves_str, resultado, sol.get('converged', False),  sol.get('loglik', ''), sol.get('bic_raw', sol.get('bic', '')), 
             self._format_shares(sol.get('class_shares', [])), flag, bic_penalized_display, sol.get('aic', ''),
             class_vars_str, member_vars_str, self.param.p_val, sig, not_sig, sol.get('asvars', []), sol.get('isvars', []),
-            sol.get('randvars', {}), sol.get('bcvars', []), sol.get('corvars', []),  
+            sol.get('randvars', {}), sol.get('bcvars', []), sol.get('corvars', []),
+            *(sol.get('flags', {}).get(k, '') for k in (
+                'flag_degen', 'flag_sep_choice', 'flag_sep_member',
+                'flag_near_unident', 'flag_opg_hess', 'flag_low_entropy',
+                'flag_low_occ', 'flag_firth', 'entropy', 'occ_min',
+            )),
+            sol.get('bic_penalty_flags', ''),
+            sol.get('flags', {}).get('winner_gap', ''),
         ])
         self.hs_csv_file.flush()
         
@@ -5222,119 +5586,93 @@ class Search():
                 num_classes=2, ids=None, transvars=None, maxiter=50, gtol=1e-20,
                 gtol_membership_func=1e-5, avail=None, avail_latent=None,
                 fit_intercept=True, weights=None, seed=None,
-                alts=None, ftol_lccm=1e-20, base_alt=None, ind_id=None, panels=None, betas0=None, n_init=10,
-                gamma0=None):
-        """Fit a latent class multinomial logit model with optional membership equation.
-
-        Uses the modern ``LatentClassMixedLogit`` from ``latent_class.py``.
+                alts=None, ftol_lccm=1e-20, base_alt=None, ind_id=None, panels=None,
+                betas0=None, n_init=10, gamma0=None):
+        """Fit a latent class multinomial logit model via LatentClassFinal
+        (JAX + batched multistart + internal normalization + full diagnostics:
+        Konis separation, VDP ratio_min, OPG/Hess, entropy, OCC, Firth summary).
         """
         try:
-            from .latent_class import LatentClassMixedLogit,LatentClass
+            from .latent_class_final import LatentClassFinal
         except ImportError:
-            from SearchLibrium.latent_class import LatentClassMixedLogit,LatentClass
+            from SearchLibrium.latent_class_final import LatentClassFinal
 
-        optimise_membership = getattr(self, 'optimise_membership', False)
-        if optimise_membership and member_params_spec is None:
-            optimise_membership = False
+        model = LatentClassFinal()
 
-        model = LatentClass(
-            n_classes=num_classes,
-            maxiter=maxiter,
-            #class_maxiter=100,
-            ftol=getattr(self.param, 'ftol', 1e-8),
-            gtol=getattr(self.param, 'gtol', 1e-5),
-            random_state=seed if seed is not None else 0,
-            optimise_membership=optimise_membership,
-            #membership_maxiter=100,
-            l1_penalty=getattr(self.param, 'l1_penalty', 0.1),
-            l2_penalty=getattr(self.param, 'l2_penalty', 0.5), n_init=n_init, membership_correction=True, choice_correction=True
-        )
-
-        membership_vars = None
-        if member_params_spec is not None:
-            flat_members = []
-            for arr in member_params_spec:
-                flat_members.extend(list(arr))
-            membership_vars = list(np.unique(flat_members)) if flat_members else []
-
-        X_df = X
-        if hasattr(X, 'values'):
-            X_arr = X.values
-        else:
-            X_arr = np.asarray(X, dtype=float)
+        X_arr = X.values if hasattr(X, 'values') else np.asarray(X, dtype=float)
         y_arr = np.asarray(y, dtype=float)
+
+        # param.base_class is 0-indexed (LatentClassMixedLogit convention).
+        # LatentClassFinal wants 1-indexed at the API level.
+        bc = getattr(self.param, 'base_class', None)
+        if bc is not None:
+            bc = int(bc) + 1
+
+        # Membership intercepts live inside gamma0 dicts under '_inter'.
+        # LatentClassFinal expects them as a separate inter0 (dict keyed by
+        # 0-indexed class id, restricted to non-base classes).
+        inter0 = None
+        if gamma0 is not None and isinstance(gamma0, list) and gamma0 \
+                and isinstance(gamma0[0], dict):
+            inter0 = {}
+            for c_idx, dom in enumerate(gamma0):
+                if isinstance(dom, dict) and '_inter' in dom:
+                    inter0[c_idx] = float(dom['_inter'])
+
+        # Warm-start preview (LatentClassFinal resolves dicts internally).
+        if betas0 is not None and isinstance(betas0, list) and betas0 \
+                and isinstance(betas0[0], dict):
+            for c_idx, dom in enumerate(betas0):
+                preview = ', '.join(f"{k}={v:.4f}" for k, v in dom.items()) if dom else 'empty'
+                print(f"[WARM START] Class {c_idx + 1}: {preview}")
+        if gamma0 is not None and isinstance(gamma0, list) and gamma0 \
+                and isinstance(gamma0[0], dict):
+            for c_idx, dom in enumerate(gamma0):
+                preview = ', '.join(f"{k}={v:.4f}" for k, v in dom.items()) if dom else 'empty'
+                print(f"[WARM START MEMBERSHIP] Class {c_idx + 1}: {preview}")
 
         model.setup(
             X=X_arr, y=y_arr,
             varnames=list(varnames),
             ids=ids,
-            ind_id=ind_id,            
             alts=alts if alts is not None else np.ones(len(y_arr), dtype=int),
-            avail=avail,
-            #membership_vars=membership_vars,
+            class_params_spec=class_params_spec,
             member_params_spec=member_params_spec,
-            base_class=getattr(self.param, 'base_class', None),
-            class_params_spec=class_params_spec, panels=panels, fit_intercept=fit_intercept, base_alt=base_alt
+            base_class=bc,
+            betas0=betas0,
+            gamma0=gamma0,
+            inter0=inter0 if inter0 else None,
+            n_init=n_init,
+            maxiter=maxiter,
+            ftol=getattr(self.param, 'ftol', 1e-10),
+            gtol=getattr(self.param, 'gtol', 1e-6),
+            random_state=seed if seed is not None else 0,
+            choice_correction=False,
+            membership_correction=False,
+            panels=panels,
+            ind_id=ind_id,
+            avail=avail,
+            fit_intercept=fit_intercept,
+            base_alt=base_alt,
+            compute_opg=True,
+            verbose=1 if getattr(self.param, 'verbose', False) else 0
         )
-        # Convert {name: value} warm-start maps into positional arrays,
-        # resolved against setup()'s FINAL per-class column order — the
-        # single point where name-based lookup becomes position. Names
-        # missing from the map (new or reintroduced vars) get a random
-        # draw, same as a cold start.
-        if betas0 is not None:
-            resolved_betas0 = []
-            for c in range(model.n_classes):
-                names_c = [model.varnames[i] for i in model._class_specs[c]]
-                dom_map = betas0[c] if c < len(betas0) else {}
-                vals, tags = [], []
-                for v in names_c:
-                    if v in dom_map:
-                        vals.append(dom_map[v]); tags.append(f"{v}={dom_map[v]:.4f}")
-                    else:
-                        val = float(self.param.generator.normal(0, 0.05))
-                        vals.append(val); tags.append(f"{v}=RANDOM({val:.4f})")
-                print(f"[WARM START] Class {c + 1}:")
-                print(f"  Parent_Memory:[{', '.join(f'{k}={v:.4f}' for k, v in dom_map.items())}]")
-                print(f"  Warm_Start:[{', '.join(tags)}]")
-                resolved_betas0.append(np.array(vals, dtype=float))
-            betas0 = resolved_betas0
-        #model.fit(em_method="squarem")
-        if gamma0 is not None:
-            n_inter, Km = model._n_inter, model.K_membership
-            v2c = {v: i for i, v in enumerate(model.membership_vars)} if model._has_membership else {}
-            inter_arr = np.zeros(n_inter)
-            gamma_arr = np.zeros((model.n_classes, Km))
-            for c in range(model.n_classes):
-                dom_map = gamma0[c] if c < len(gamma0) else {}
-                names_c = list(member_params_spec[c]) if member_params_spec is not None and c < len(member_params_spec) else []
-                if c in model._intercept_free_classes:
-                    names_c = ['_inter'] + names_c
-                tags = []
-                for v in names_c:
-                    if v in dom_map:
-                        val = dom_map[v]
-                        tags.append(f"{v}={val:.4f}")
-                    else:
-                        val = float(self.param.generator.normal(0, 0.05))
-                        tags.append(f"{v}=RANDOM({val:.4f})")
-                    if v == '_inter' and c in model._intercept_free_classes:
-                        inter_arr[model._intercept_free_classes.index(c)] = val
-                    elif v != '_inter' and v in v2c:
-                        gamma_arr[c, v2c[v]] = val
-                print(f"[WARM START MEMBERSHIP] Class {c + 1}:")
-                print(f"  Parent_Memory:[{', '.join(f'{k}={v:.4f}' for k, v in dom_map.items())}]")
-                print(f"  Warm_Start:[{', '.join(tags)}]")
-            model.fit(betas0=betas0, inter0=inter_arr, gamma0=gamma_arr)
-        else:
-            model.fit(betas0=betas0)
-        if betas0 is not None:
-            for c in range(model.n_classes):
-                names_c = [model.varnames[i] for i in model._class_specs[c]]
-                est = ', '.join(f"{v}={b:.4f}" for v, b in zip(names_c, model.class_betas[c]))
-                print(f"[FIT RESULT] Class {c + 1}:")
-                print(f"  Estimated:[{est}]")
+        
+        _fit_buf = io.StringIO()
+        with contextlib.redirect_stdout(_fit_buf):
+            model.fit()
+            model.get_loglik_null()
 
-        model.get_loglik_null()
+        model._fit_log = _fit_buf.getvalue()
+
+        # Free JAX compilation cache between candidates — fit() is fully
+        # closed here (kernel build, _finalise, Hessian, gradients), so
+        # clearing is safe and prevents OOM across many refits.
+        try:
+            import jax as _jax
+            _jax.clear_caches()
+        except Exception:
+            pass
 
         return model
 
@@ -5833,10 +6171,59 @@ class Search():
             smallest, second_smallest = shares[-1], shares[-2]
             degenerate = smallest < 0.05 and (second_smallest > 0 and smallest / second_smallest < 0.2)
 
-        sol['class_shares']  = shares
-        sol['solution_flag'] = 'Degenerate (boundary solution)' if degenerate else ''
-        sol['bic_raw']       = bic_raw
-        bic = bic_raw * 1.5 if degenerate else bic_raw
+        # ── New flags from LatentClassFinal diagnostics ─────────────
+        flag_degen = bool(degenerate)
+        flag_sep_choice = any(getattr(model, 'multistart_separation_choice', []) or [])
+        flag_sep_member = any(getattr(model, 'multistart_separation_member', []) or [])
+        cr_abs = getattr(model, 'class_ratio_min_abs_flag', None)
+        cr_rel = getattr(model, 'class_ratio_min_rel_flag', None)
+        flag_near_unident = bool(
+            (cr_abs is not None and np.any(cr_abs)) or
+            (cr_rel is not None and np.any(cr_rel))
+        )
+        opg_flag = getattr(model, 'opg_hess_flag', None)
+        flag_opg_hess = bool(opg_flag is not None and np.any(opg_flag))
+        entropy = getattr(model, 'entropy', None)
+        flag_low_entropy = bool(entropy is not None and entropy < 0.6)
+        occ = getattr(model, 'occ', None)
+        occ_min = float(np.nanmin(occ)) if occ is not None and np.isfinite(occ).any() else float('nan')
+        flag_low_occ = bool(np.isfinite(occ_min) and occ_min < 5.0)
+        fs = getattr(model, 'firth_summary', None)
+        flag_firth = bool(fs is not None and fs.get('needed_correction', False))
+
+        sol['flags'] = {
+            'flag_degen':         int(flag_degen),
+            'flag_sep_choice':    int(flag_sep_choice),
+            'flag_sep_member':    int(flag_sep_member),
+            'flag_near_unident':  int(flag_near_unident),
+            'flag_opg_hess':      int(flag_opg_hess),
+            'flag_low_entropy':   int(flag_low_entropy),
+            'flag_low_occ':       int(flag_low_occ),
+            'flag_firth':         int(flag_firth),
+            'entropy':            float(entropy) if entropy is not None else float('nan'),
+            'occ_min':            occ_min,
+            'winner_gap':         float(getattr(model, 'winner_gap', 0.0)),
+        }
+
+        active = [k.replace('flag_', '') for k, v in sol['flags'].items()
+                  if k.startswith('flag_') and v == 1]
+        sol['solution_flag'] = '|'.join(active) if active else ''
+
+        # ── BIC penalty: reserved for the two interpretability-breaking
+        #    conditions only — degeneracy and separation (choice/member).
+        #    All other flags (near-identifiability, OPG/Hess divergence,
+        #    low entropy, low OCC, Firth) are DIAGNOSTIC: they still appear
+        #    in `solution_flag` / the CSV, but they must NOT distort the
+        #    objective used for ranking and memory selection.
+        PENALIZED_FLAGS = ('flag_degen', 'flag_sep_choice', 'flag_sep_member')
+        n_penalized = sum(1 for k in PENALIZED_FLAGS
+                          if sol['flags'].get(k, 0) == 1)
+        bic_penalty = (1.5 ** n_penalized) if n_penalized > 0 else 1.0
+        sol['bic_raw'] = bic_raw
+        sol['bic_penalty_flags'] = bic_penalty
+        bic = bic_raw * bic_penalty
+
+        sol['class_shares'] = shares
 
         mae = float('inf')
 
