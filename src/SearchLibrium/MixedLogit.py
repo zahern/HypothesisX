@@ -39,6 +39,63 @@ max_exp_val = 700
 max_comp_val, min_comp_val = 1e+20, 1e-200 # or use float('inf')
 infinity = float('inf')
 
+
+def _mxl_random_start(target_mean, distribution_name, relative_sd=0.1,
+                      sd_floor=0.05, mean_floor=1e-3,
+                      align_sign=True):
+    """Return a mean/spread start in the model's parameterization."""
+    target = float(target_mean) if np.isfinite(target_mean) else 0.0
+    relative_sd = max(float(relative_sd), 0.0)
+    sd_floor = max(float(sd_floor), 1e-8)
+    mean_floor = max(float(mean_floor), 1e-12)
+    magnitude = max(abs(target), mean_floor)
+    target_sd = max(magnitude * relative_sd, sd_floor)
+    effective = str(distribution_name)
+
+    if align_sign:
+        if effective == "ln" and target < 0.0:
+            effective = "nln"
+        elif effective == "nln" and target > 0.0:
+            effective = "ln"
+
+    if effective in {"ln", "nln"}:
+        latent_sd = float(np.sqrt(np.log1p((target_sd / magnitude) ** 2)))
+        latent_mean = float(np.log(magnitude) - 0.5 * latent_sd ** 2)
+        return latent_mean, latent_sd, effective
+    if effective == "u":
+        return target, float(target_sd * np.sqrt(3.0)), effective
+    if effective == "t":
+        return target, float(target_sd * np.sqrt(6.0)), effective
+    return target, target_sd, effective
+
+
+def _mxl_variance_start(target_means, distributions, correlation_length,
+                        relative_sd=0.1, sd_floor=0.05, mean_floor=1e-3,
+                        align_sign=True):
+    """Build diagonal Cholesky/independent spread starts for random means."""
+    means = []
+    spreads = []
+    effective = []
+    for target, distribution_name in zip(target_means, distributions):
+        mean, spread, dist = _mxl_random_start(
+            target, distribution_name, relative_sd=relative_sd,
+            sd_floor=sd_floor, mean_floor=mean_floor,
+            align_sign=align_sign)
+        means.append(mean)
+        spreads.append(spread)
+        effective.append(dist)
+
+    corr_len = max(0, min(int(correlation_length), len(spreads)))
+    cholesky_size = corr_len * (corr_len + 1) // 2
+    variance_start = np.zeros(cholesky_size + len(spreads) - corr_len,
+                              dtype=float)
+    for index in range(corr_len):
+        variance_start[index * (index + 1) // 2 + index] = spreads[index]
+    if corr_len < len(spreads):
+        variance_start[cholesky_size:] = spreads[corr_len:]
+    return np.asarray(means, dtype=float), variance_start, effective
+
+
 def _panel_weighted_shares(prob_np, panel_info):
     """Aggregate (N, P, J) per-situation shares, ignoring zero-padded panel slots.
 
@@ -171,7 +228,8 @@ class MixedLogit(DiscreteChoiceModel):
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
               de_polish=False, l1_penalty=0.0, reg_penalty=0.001, sd_penalty=0.0,
-              engine=None, asc_share_init=True):
+              engine=None, asc_share_init=True, random_sd_start=0.1,
+              random_sd_floor=0.05, align_random_distributions=True):
         # {
         self.fit_intercept = fit_intercept
         # L2 ridge regularisation strength (default ON). Keeps the Hessian
@@ -182,6 +240,9 @@ class MixedLogit(DiscreteChoiceModel):
         # Extra L2 penalty applied specifically to the random-coefficient standard
         # deviations (Br_w). Shrinks weakly-identified / runaway SDs toward zero.
         self.sd_penalty = float(sd_penalty)
+        self.random_sd_start = float(random_sd_start)
+        self.random_sd_floor = float(random_sd_floor)
+        self.align_random_distributions = bool(align_random_distributions)
         # Seed alternative-specific constants from observed shares
         # (alpha_j = log(s_j / s_base); detected as exact alternative
         # dummies, no naming convention needed). Disable with
@@ -765,7 +826,20 @@ class MixedLogit(DiscreteChoiceModel):
             fixed_names = [str(n) for n in self.Xnames[:self.Kf]]
             rand_mean_names = [str(n) for n in self.Xnames[self.Kf:self.Kf + self.Kr]]
             bf_init = np.array([mnl_map.get(nm, 0.1) for nm in fixed_names], dtype=float)
-            br_b_init = np.array([mnl_map.get(nm, 0.1) for nm in rand_mean_names], dtype=float)
+            mnl_random_means = np.array(
+                [mnl_map.get(nm, 0.1) for nm in rand_mean_names], dtype=float)
+            random_distributions = [d for d in self.rvdist if d is not False]
+            if len(random_distributions) != self.Kr:
+                random_distributions = (random_distributions + ['n'] * self.Kr)[:self.Kr]
+            br_b_init, variance_init, effective_dists = _mxl_variance_start(
+                mnl_random_means, random_distributions, self.correlationLength,
+                relative_sd=self.random_sd_start,
+                sd_floor=self.random_sd_floor,
+                align_sign=self.align_random_distributions)
+            self.effective_rvdist = list(effective_dists)
+            if self.align_random_distributions and effective_dists != random_distributions:
+                self.rvdist = list(effective_dists)
+                self.draws_generator.rvdist = list(effective_dists)
             if self.Kf == 0:
                 bf_init = np.zeros(0)
             if self.Kr == 0:
@@ -777,8 +851,7 @@ class MixedLogit(DiscreteChoiceModel):
             bftrans_l = mnl.coeff_est[mnl_Kf + mnl_Kftrans:mnl_Kf + 2 * mnl_Kftrans] if mnl_Kftrans > 0 else np.array([])
 
             arr = np.concatenate([bf_init, br_b_init] + list(self._init_pad_arrays()) + [bftrans_b, bftrans_l])
-            rep = np.repeat(0.1, self.Kchol + self.Kbw)
-            self.init_coeff = np.concatenate([arr, rep])
+            self.init_coeff = np.concatenate([arr, variance_init])
 
             if self.Krtrans:
                 self.init_coeff = np.concatenate([

@@ -602,7 +602,7 @@ def _sgd_estimate(frame: ChoiceSetFrame, seed: int, iterations: int, batch_size:
 # ---------------------------------------------------------------------------
 
 
-def estimate_dest_choice(data: pd.DataFrame, method: str | None = None,
+def estimate_dest_choice(data: pd.DataFrame | ChoiceSetFrame, method: str | None = None,
                           feature_cols: Sequence[str] | None = None,
                           prior: HHTSCompetingPrior | None = None,
                           seed: int = 42, **kwargs) -> ChoiceEstimate:
@@ -615,25 +615,30 @@ def estimate_dest_choice(data: pd.DataFrame, method: str | None = None,
     selected = str(method or os.environ.get("STAGE5_DEST_ESTIMATOR", "mh")).strip().lower()
     if selected not in {"mh", "gibbs", "sgd"}:
         raise ValueError("method must be one of {'mh', 'gibbs', 'sgd'}")
-    if feature_cols is None:
-        preferred = [column for column in
-                     ("log_DIST_1", "DIST", "size_term", "logsum", "log_CRASH_1")
-                     if column in data.columns]
-        excluded = {kwargs.get("case_col", "case_id"), kwargs.get("alt_col", "alt_id"),
-                    kwargs.get("chosen_col", "chosen"), kwargs.get("offset_col", "log_correction"),
-                    kwargs.get("q_col"), kwargs.get("weight_col"), "DTAZ", "segment"}
-        inferred = [column for column in data.columns
-                    if column not in excluded and pd.api.types.is_numeric_dtype(data[column])]
-        feature_cols = preferred or inferred
-    feature_cols = list(feature_cols)
-    if not feature_cols:
-        raise ValueError("at least one utility feature column is required")
-    frame = ChoiceSetFrame.from_long(data, feature_cols=feature_cols,
-                                     case_col=kwargs.get("case_col", "case_id"),
-                                     alt_col=kwargs.get("alt_col", "alt_id"),
-                                     chosen_col=kwargs.get("chosen_col", "chosen"),
-                                     offset_col=kwargs.get("offset_col", "log_correction"),
-                                     q_col=kwargs.get("q_col"), weight_col=kwargs.get("weight_col"))
+    if isinstance(data, ChoiceSetFrame):
+        frame = data
+        if feature_cols is not None and tuple(map(str, feature_cols)) != frame.feature_names:
+            raise ValueError("feature_cols do not match the supplied ChoiceSetFrame")
+    else:
+        if feature_cols is None:
+            preferred = [column for column in
+                         ("log_DIST_1", "DIST", "size_term", "logsum", "log_CRASH_1")
+                         if column in data.columns]
+            excluded = {kwargs.get("case_col", "case_id"), kwargs.get("alt_col", "alt_id"),
+                        kwargs.get("chosen_col", "chosen"), kwargs.get("offset_col", "log_correction"),
+                        kwargs.get("q_col"), kwargs.get("weight_col"), "DTAZ", "segment"}
+            inferred = [column for column in data.columns
+                        if column not in excluded and pd.api.types.is_numeric_dtype(data[column])]
+            feature_cols = preferred or inferred
+        feature_cols = list(feature_cols)
+        if not feature_cols:
+            raise ValueError("at least one utility feature column is required")
+        frame = ChoiceSetFrame.from_long(data, feature_cols=feature_cols,
+                                         case_col=kwargs.get("case_col", "case_id"),
+                                         alt_col=kwargs.get("alt_col", "alt_id"),
+                                         chosen_col=kwargs.get("chosen_col", "chosen"),
+                                         offset_col=kwargs.get("offset_col", "log_correction"),
+                                         q_col=kwargs.get("q_col"), weight_col=kwargs.get("weight_col"))
     common = {"seed": seed, "initial": kwargs.get("initial"),
               "prior_scale": kwargs.get("prior_scale", 5.0)}
     if selected == "mh":

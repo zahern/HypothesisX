@@ -734,7 +734,8 @@ class Parameters:
         sd_penalty=0.001,
         var_attrition_limit=40, min_candidates_after_attrition=6,
         intercept_opts=None, base_alt=None, val_share=0.25,  grad = True, hess = False,
-        orthogonal_groups=None, *args, **kwargs):
+        orthogonal_groups=None, random_sd_start=0.1, random_sd_floor=0.05,
+        align_random_distributions=True, *args, **kwargs):
 
         
         if models is None:
@@ -902,6 +903,9 @@ class Parameters:
         self.de_tol = de_tol
         self.de_polish = de_polish
         self.sd_penalty = sd_penalty
+        self.random_sd_start = random_sd_start
+        self.random_sd_floor = random_sd_floor
+        self.align_random_distributions = align_random_distributions
 
         # ── Regularisation (primarily for latent class) ──────────────
         self.l1_penalty = kwargs.get('l1_penalty', 0.1)
@@ -5170,8 +5174,15 @@ class Search():
 
     def fit_mxl(self, X, y, varnames, alts, isvars, transvars, ids, panels, randvars, corvars,
             fit_intercept, init_coeff, n_draws, weights, avail, base_alt,  maxiter, ftol, gtol, save_fitted_params,
-            halton_opts=None):
+            halton_opts=None, random_sd_start=None, random_sd_floor=None,
+            align_random_distributions=None):
         # {
+        if random_sd_start is None:
+            random_sd_start = getattr(self.param, 'random_sd_start', 0.1)
+        if random_sd_floor is None:
+            random_sd_floor = getattr(self.param, 'random_sd_floor', 0.05)
+        if align_random_distributions is None:
+            align_random_distributions = getattr(self.param, 'align_random_distributions', True)
         model = MixedLogit(_jax=getattr(self.param, '_jax', None))
         # Optional execution engine (e.g. params.engine='numba'); honoured
         # by installs carrying the engine kwarg, harmlessly ignored by old
@@ -5197,6 +5208,9 @@ class Search():
             de_tol=getattr(self.param, 'de_tol', 0.5),
             de_polish=getattr(self.param, 'de_polish', False),
             sd_penalty=getattr(self.param, 'sd_penalty', 0.001),
+            random_sd_start=random_sd_start,
+            random_sd_floor=random_sd_floor,
+            align_random_distributions=align_random_distributions,
             reg_penalty=getattr(self.param, 'l2_penalty', 0.5),
             l1_penalty=getattr(self.param, 'l1_penalty', 0.1))
         model.fit()
@@ -5563,6 +5577,10 @@ class Search():
                     avail=self.param.avail, base_alt=self.param.base_alt,  maxiter=self.param.maxiter,
                     ftol=self.param.ftol, gtol=self.param.gtol,
                     halton_opts=getattr(self.param, 'halton_opts', None),
+                    random_sd_start=getattr(self.param, 'random_sd_start', 0.1),
+                    random_sd_floor=getattr(self.param, 'random_sd_floor', 0.05),
+                    align_random_distributions=getattr(
+                        self.param, 'align_random_distributions', True),
                     save_fitted_params=False)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         sol['model'] = model  # Store the model object
@@ -5587,7 +5605,11 @@ class Search():
                         n_draws=self.param.n_draws, fit_intercept=asc_ind, corvars=cor_vars,
                         init_coeff=model.coeff_est, transvars=bc_vars, avail=self.param.test_avail, maxiter=0,
                         gtol=self.param.gtol, ftol=self.param.ftol, weights=self.param.test_weight_var,
-                        base_alt=self.param.base_alt, save_fitted_params=False)
+                        base_alt=self.param.base_alt, save_fitted_params=False,
+                        random_sd_start=getattr(self.param, 'random_sd_start', 0.1),
+                        random_sd_floor=getattr(self.param, 'random_sd_floor', 0.05),
+                        align_random_distributions=getattr(
+                            self.param, 'align_random_distributions', True))
             model.mae = self.compute_mae(test_model)
             self._stash_test_shares(model, test_model)
         # }
