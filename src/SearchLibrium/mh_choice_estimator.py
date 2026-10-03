@@ -189,6 +189,99 @@ def chain_diagnostics(samples: np.ndarray, chains: np.ndarray | None = None) -> 
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Identification / information-matrix diagnostics
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IdentificationReport:
+    """Weak-identification report for a sampled choice-set design.
+
+    Eigen-decomposition of the *scaled* information matrix (unit diagonal, a
+    correlation-like matrix) so feature-scale differences do not masquerade as
+    structural collinearity.  ``weak_directions`` lists every direction whose
+    scaled eigenvalue is below ``tol`` together with the feature loadings on
+    it; a direction with no information means the likelihood is flat along it
+    and the coefficients are not identified.
+    """
+
+    condition_number: float
+    eigenvalues: np.ndarray
+    suggested_drop: tuple[str, ...] = ()
+    weak_directions: tuple[dict, ...] = ()
+
+    def as_dict(self) -> dict:
+        return {
+            "condition_number": float(self.condition_number),
+            "eigenvalues": [float(v) for v in np.asarray(self.eigenvalues).ravel()],
+            "suggested_drop": list(self.suggested_drop),
+            "weak_directions": [
+                {
+                    "eigenvalue": float(d["eigenvalue"]),
+                    "loadings": {k: float(v) for k, v in d["loadings"].items()},
+                }
+                for d in self.weak_directions
+            ],
+        }
+
+
+def identify_weak_features(
+    data,
+    feature_cols: Sequence[str] | None = None,
+    *,
+    beta: np.ndarray | Mapping | None = None,
+    tol: float = 1e-8,
+    loading_threshold: float = 0.5,
+    case_col: str = "case_id",
+    alt_col: str = "alt_id",
+    chosen_col: str = "chosen",
+    offset_col: str = "log_correction",
+    max_drop: int | None = None,
+) -> IdentificationReport:
+    """Find structurally weak directions in a long choice-set frame.
+
+    Mirrors larch's overspecification check (``larch/model/troubleshooting.py``,
+    ``possible_overspec.py``) for the sampled MNL used here: eigendecompose the
+    scaled exact information matrix at ``beta`` (zeros when omitted) and return
+    one feature per near-null direction as ``suggested_drop``.
+    """
+    frame = data if isinstance(data, ChoiceSetFrame) else ChoiceSetFrame.from_long(
+        data, feature_cols, case_col=case_col, alt_col=alt_col,
+        chosen_col=chosen_col, offset_col=offset_col)
+    names = list(frame.feature_names)
+    if beta is None:
+        beta_vec = np.zeros(frame.dimension)
+    elif isinstance(beta, Mapping):
+        beta_vec = np.array([float(beta.get(n, 0.0)) for n in names])
+    else:
+        beta_vec = np.asarray(beta, dtype=float).reshape(-1)
+    info, _, _ = frame.information(beta_vec)
+    diag = np.clip(np.diag(info), 1e-300, None)
+    scale = np.sqrt(diag)
+    scaled = info / np.outer(scale, scale)
+    evals, evecs = np.linalg.eigh(0.5 * (scaled + scaled.T))
+    condition = float(evals[-1] / max(evals[0], 1e-300))
+    weak = np.flatnonzero(evals < float(tol))
+    drops: list[str] = []
+    directions: list[dict] = []
+    for idx in weak:
+        # Unscale the direction: v_j = evec_j / sqrt(info_jj).
+        v = evecs[:, idx] / scale
+        v = v / (np.linalg.norm(v) + 1e-300)
+        order = np.argsort(-np.abs(v))
+        top = {names[j]: float(v[j]) for j in order[: min(8, len(order))]}
+        directions.append({"eigenvalue": float(evals[idx]), "loadings": top})
+        j = int(order[0])
+        if abs(v[j]) >= float(loading_threshold) and names[j] not in drops:
+            drops.append(names[j])
+    if max_drop is not None and len(drops) > int(max_drop):
+        drops = drops[: int(max_drop)]
+    return IdentificationReport(
+        condition_number=condition, eigenvalues=evals,
+        suggested_drop=tuple(drops), weak_directions=tuple(directions))
+
+
 class GaussianRandomWalkProposal:
     """Haario adaptive Gaussian random walk with symmetric Hastings ratio."""
 
@@ -202,6 +295,7 @@ class GaussianRandomWalkProposal:
         burn_in: int = 100,
         initial_cov: np.ndarray | None = None,
         seed: int | None = None,
+        min_adapt_samples: int | None = None,
     ) -> None:
         self.dimension = int(dimension)
         if self.dimension < 1:
@@ -209,6 +303,13 @@ class GaussianRandomWalkProposal:
         self.scale = float(scale) if scale is not None else 2.38 ** 2 / self.dimension
         self.eps = float(eps)
         self.burn_in = max(0, int(burn_in))
+        # Do not switch to the empirical covariance until enough POST-burn-in
+        # draws exist.  Switching immediately after burn-in let a frozen chain
+        # (near-zero acceptance, m2~0) collapse its own proposal and never
+        # recover - the 0.0008-acceptance full-spec MH failures.
+        self.min_adapt_samples = (max(10, self.dimension)
+                                  if min_adapt_samples is None
+                                  else max(0, int(min_adapt_samples)))
         self.rng = np.random.default_rng(seed)
         self.n_observed = 0
         self.mean = np.zeros(self.dimension, dtype=float)
@@ -222,7 +323,7 @@ class GaussianRandomWalkProposal:
 
     @property
     def covariance(self) -> np.ndarray:
-        if self.n_observed < 2 or self.n_observed <= self.burn_in:
+        if self.n_observed < 2 or self.n_observed <= self.burn_in + self.min_adapt_samples:
             cov = self.initial_cov
         else:
             cov = self.m2 / max(self.n_observed - self.burn_in - 1, 1)
@@ -252,6 +353,84 @@ class GaussianRandomWalkProposal:
         delta = value - self.mean
         self.mean += delta / count
         self.m2 += np.outer(delta, value - self.mean)
+
+    observe = update
+
+
+class PreconditionedRandomWalkProposal:
+    """Fixed-covariance RWMH with Robbins-Monro step-size adaptation.
+
+    This is the SearchLibrium analogue of larch's optimizer design: larch
+    fixes curvature at the optimum (inverse Hessian / BHHH in
+    ``larch/optimize.py``, ``optimization.py::propose_direction``) and adapts
+    only a scalar step, rather than re-estimating a full covariance from a
+    short walk.  Supply ``covariance`` = inverse posterior curvature (e.g.
+    from :meth:`ChoiceSetFrame.information` plus the prior precision); the
+    proposal is ``N(x, exp(2*log_scale) * scale * covariance)`` and
+    ``log_scale`` is adapted toward ``target_accept`` (0.234 is optimal for
+    RWMH) during burn-in, then frozen.
+    """
+
+    symmetric = True
+
+    def __init__(
+        self,
+        dimension: int,
+        covariance: np.ndarray | None = None,
+        scale: float | None = None,
+        eps: float = 1e-8,
+        burn_in: int = 0,
+        seed: int | None = None,
+        target_accept: float = 0.234,
+        adapt_scale: bool = True,
+        adapt_rate: float = 0.6,
+    ) -> None:
+        self.dimension = int(dimension)
+        if self.dimension < 1:
+            raise ValueError("dimension must be positive")
+        cov = (np.eye(self.dimension, dtype=float) if covariance is None
+               else np.asarray(covariance, dtype=float).copy())
+        if cov.shape != (self.dimension, self.dimension):
+            raise ValueError("covariance has the wrong shape")
+        cov = 0.5 * (cov + cov.T) + float(eps) * np.eye(self.dimension)
+        self._chol = np.linalg.cholesky(cov)
+        self.scale = float(scale) if scale is not None else 2.38 ** 2 / self.dimension
+        self.burn_in = max(0, int(burn_in))
+        self.target_accept = float(target_accept)
+        self.adapt_scale = bool(adapt_scale)
+        self.adapt_rate = float(adapt_rate)
+        self.log_scale = 0.0
+        self.n_observed = 0
+        self.rng = np.random.default_rng(seed)
+        self.acceptance_history: list[int] = []
+
+    @property
+    def covariance(self) -> np.ndarray:
+        return (self.scale * np.exp(2.0 * self.log_scale)
+                * (self._chol @ self._chol.T))
+
+    def propose(self, current: np.ndarray,
+                rng: np.random.Generator | None = None) -> np.ndarray:
+        current = np.asarray(current, dtype=float)
+        if current.shape != (self.dimension,):
+            raise ValueError("current has the wrong shape")
+        generator = rng or self.rng
+        step = (self._chol
+                @ generator.standard_normal(self.dimension))
+        return current + np.exp(self.log_scale) * np.sqrt(self.scale) * step
+
+    def observe_acceptance(self, accepted) -> None:
+        """Robbins-Monro log-scale adaptation during burn-in, then freeze."""
+        flag = int(bool(accepted))
+        self.n_observed += 1
+        self.acceptance_history.append(flag)
+        if self.adapt_scale and self.n_observed <= max(self.burn_in, 1):
+            gamma = self.adapt_rate / np.sqrt(self.n_observed)
+            self.log_scale += gamma * (flag - self.target_accept)
+
+    def update(self, value: np.ndarray) -> None:
+        # Fixed curvature: nothing to update from the walk.
+        return None
 
     observe = update
 
@@ -687,6 +866,34 @@ class ChoiceSetFrame:
         ll, gradient = self._evaluate(beta, indices, want_gradient=True)
         return ll, gradient
 
+    def information(self, beta: np.ndarray):
+        """Exact observed information, gradient and BHHH/OPG at ``beta``.
+
+        The MNL score for case n is ``x_chosen - E_p[x]``; the observed
+        information is ``sum_n (E[xx'] - E[x]E[x]')`` and OPG is the outer
+        product of the per-case scores.  These are the same curvature
+        quantities larch exposes as ``jax_d2_loglike`` and uses in BHHH
+        (``propose_direction`` solves ``BHHH direction = gradient``).
+        """
+        x, mask, offs, chosen_x, weights = self._packed()
+        util = np.einsum("nap,p->na", x, beta) + offs
+        util = np.where(mask, util, -np.inf)
+        denominator = logsumexp(util, axis=1)
+        p = np.where(mask, np.exp(util - denominator[:, None]), 0.0)
+        ex = np.einsum("na,nap->np", p, x)
+        n, k, d = x.shape
+        info = np.zeros((d, d))
+        for i in range(n):
+            xi = x[i, mask[i]]
+            pi = p[i, mask[i]]
+            ei = pi @ xi
+            info += (xi * pi[:, None]).T @ xi - np.outer(ei, ei)
+        w = np.asarray(weights, dtype=float)
+        gradient = np.einsum("n,np->p", w, chosen_x - ex)
+        scores = (chosen_x - ex) * w[:, None]
+        opg = scores.T @ scores
+        return info, gradient, opg
+
     def loglike(self, beta: np.ndarray) -> float:
         # Value-only path: the MH accept/reject loop never uses the gradient,
         # so skip building it (it is the same cost as the log-likelihood).
@@ -744,25 +951,42 @@ def _mh_estimate(frame: ChoiceSetFrame, seed: int, draws: int, burn_in: int,
         raise ValueError("initial has the wrong shape")
     prop = proposal or GaussianRandomWalkProposal(frame.dimension, burn_in=burn_in, seed=seed + 1)
     current = frame.loglike(beta) + _normal_logprior(beta, prior_scale)
-    retained, accepted = [], 0
+    retained, accepted, accepted_retained = [], 0, 0
     total = max(0, int(burn_in)) + max(1, int(draws))
     for iteration in range(total):
         candidate = prop.propose(beta, rng=rng)
         candidate_score = frame.loglike(candidate) + _normal_logprior(candidate, prior_scale)
-        if np.log(rng.random()) < min(0.0, candidate_score - current):
+        accepted_flag = bool(np.log(rng.random()) < min(0.0, candidate_score - current))
+        if accepted_flag:
             beta, current = candidate, candidate_score
             accepted += 1
-        prop.update(beta)
+        # PreconditionedRandomWalkProposal adapts its scalar step from the
+        # accept/reject flag; moment-based proposals keep the value update.
+        if hasattr(prop, "observe_acceptance"):
+            prop.observe_acceptance(accepted_flag)
+        else:
+            prop.update(beta)
         if iteration >= burn_in:
             retained.append(beta.copy())
+            if accepted_flag:
+                accepted_retained += 1
     samples = np.asarray(retained, dtype=float)
+    # Report the POSTERIOR MEAN of the retained draws, not the last chain state.
+    # A single endpoint draw carries Monte-Carlo noise (e.g. c_logsum read 8.77
+    # for work vs -3.17 for edu/nonmand on the same spec) and made the reported
+    # LL the LL of one arbitrary draw.  The final draw is kept in metadata for
+    # traceability.  std_err stays the posterior standard deviation.
+    posterior_mean = samples.mean(axis=0) if len(samples) else beta
     std_err = samples.std(axis=0, ddof=1) if len(samples) > 1 else _opg_se(frame, beta)
     diagnostics = chain_diagnostics(samples)
     diagnostics["proposal_symmetric"] = bool(getattr(prop, "symmetric", False))
     diagnostics["burn_in"] = int(burn_in)
-    return ChoiceEstimate("mh", frame.feature_names, beta, std_err, frame.loglike(beta),
+    diagnostics["acceptance_retained"] = accepted_retained / max(len(retained), 1)
+    return ChoiceEstimate("mh", frame.feature_names, posterior_mean, std_err,
+                          frame.loglike(posterior_mean),
                           accepted / max(total, 1), diagnostics,
-                          {"n_cases": frame.n_cases, "max_alternatives": frame.max_alternatives})
+                          {"n_cases": frame.n_cases, "max_alternatives": frame.max_alternatives,
+                           "final_draw": beta.tolist()})
 
 
 def _refresh_frame(frame: ChoiceSetFrame, beta: np.ndarray, prior: HHTSCompetingPrior,
@@ -812,14 +1036,18 @@ def _gibbs_estimate(frame: ChoiceSetFrame, seed: int, draws: int, burn_in: int,
         if iteration >= burn_in:
             retained.append(beta.copy())
     samples = np.asarray(retained, dtype=float)
+    # Same posterior-mean rule as _mh_estimate: the endpoint draw is noise.
+    posterior_mean = samples.mean(axis=0) if len(samples) else beta
     std_err = samples.std(axis=0, ddof=1) if len(samples) > 1 else _opg_se(current_frame, beta)
     diagnostics = chain_diagnostics(samples)
     diagnostics.update({"set_ess": ess_history, "prior_alpha": prior.alpha,
                         "prior_temperature": prior.temperature})
-    return ChoiceEstimate("gibbs", frame.feature_names, beta, std_err, current_frame.loglike(beta),
+    return ChoiceEstimate("gibbs", frame.feature_names, posterior_mean, std_err,
+                          current_frame.loglike(posterior_mean),
                           accepted / max(total * max(1, int(inner_steps)), 1), diagnostics,
                           {"n_cases": frame.n_cases, "max_alternatives": frame.max_alternatives,
-                           "inner_steps": int(inner_steps), "mc_correction": "actual q inclusion probability"})
+                           "inner_steps": int(inner_steps), "mc_correction": "actual q inclusion probability",
+                           "final_draw": beta.tolist()})
 
 
 def _case_subsample(frame: ChoiceSetFrame, indices: np.ndarray, k: int,
@@ -897,17 +1125,25 @@ def estimate_dest_choice(data: pd.DataFrame | ChoiceSetFrame, method: str | None
     selected = str(method or os.environ.get("STAGE5_DEST_ESTIMATOR", "mh")).strip().lower()
     if selected not in {"mh", "gibbs", "sgd"}:
         raise ValueError("method must be one of {'mh', 'gibbs', 'sgd'}")
+    initial_raw = kwargs.get("initial")
+    prior_scale = float(kwargs.get("prior_scale", 5.0))
+    case_col = kwargs.get("case_col", "case_id")
+    alt_col = kwargs.get("alt_col", "alt_id")
+    chosen_col = kwargs.get("chosen_col", "chosen")
+    offset_col = kwargs.get("offset_col", "log_correction")
+
+    identification = None
     if isinstance(data, ChoiceSetFrame):
         frame = data
         if feature_cols is not None and tuple(map(str, feature_cols)) != frame.feature_names:
             raise ValueError("feature_cols do not match the supplied ChoiceSetFrame")
+        feature_cols = list(frame.feature_names)
     else:
         if feature_cols is None:
             preferred = [column for column in
                          ("log_DIST_1", "DIST", "size_term", "logsum", "log_CRASH_1")
                          if column in data.columns]
-            excluded = {kwargs.get("case_col", "case_id"), kwargs.get("alt_col", "alt_id"),
-                        kwargs.get("chosen_col", "chosen"), kwargs.get("offset_col", "log_correction"),
+            excluded = {case_col, alt_col, chosen_col, offset_col,
                         kwargs.get("q_col"), kwargs.get("weight_col"), "DTAZ", "segment"}
             inferred = [column for column in data.columns
                         if column not in excluded and pd.api.types.is_numeric_dtype(data[column])]
@@ -915,28 +1151,79 @@ def estimate_dest_choice(data: pd.DataFrame | ChoiceSetFrame, method: str | None
         feature_cols = list(feature_cols)
         if not feature_cols:
             raise ValueError("at least one utility feature column is required")
+        if kwargs.get("identify", False):
+            try:
+                identification = identify_weak_features(
+                    data, feature_cols,
+                    beta=(initial_raw if isinstance(initial_raw, dict) else None),
+                    tol=float(kwargs.get("identify_tol", 1e-8)),
+                    loading_threshold=float(kwargs.get("identify_loading", 0.5)),
+                    case_col=case_col, alt_col=alt_col,
+                    chosen_col=chosen_col, offset_col=offset_col,
+                    max_drop=kwargs.get("max_drop"))
+                if identification.suggested_drop:
+                    _drop = set(identification.suggested_drop)
+                    feature_cols = [c for c in feature_cols if c not in _drop]
+                    logger.info(
+                        "estimate_dest_choice: identification dropped %d weak "
+                        "feature(s): %s", len(_drop), sorted(_drop))
+            except Exception as exc:  # noqa: BLE001 - never block estimation
+                logger.warning("identify_weak_features failed: %r", exc)
         frame = ChoiceSetFrame.from_long(data, feature_cols=feature_cols,
-                                         case_col=kwargs.get("case_col", "case_id"),
-                                         alt_col=kwargs.get("alt_col", "alt_id"),
-                                         chosen_col=kwargs.get("chosen_col", "chosen"),
-                                         offset_col=kwargs.get("offset_col", "log_correction"),
-                                         q_col=kwargs.get("q_col"), weight_col=kwargs.get("weight_col"))
-    common = {"seed": seed, "initial": kwargs.get("initial"),
-              "prior_scale": kwargs.get("prior_scale", 5.0)}
+                                         case_col=case_col, alt_col=alt_col,
+                                         chosen_col=chosen_col,
+                                         offset_col=offset_col,
+                                         q_col=kwargs.get("q_col"),
+                                         weight_col=kwargs.get("weight_col"))
+    # initial may be a {feature_name: value} dict so identification-driven
+    # feature drops (above) cannot misalign the starting vector.
+    initial = initial_raw
+    if isinstance(initial_raw, dict):
+        initial = np.array([float(initial_raw.get(n, 0.0))
+                            for n in frame.feature_names])
+
+    def _finish(estimate: ChoiceEstimate) -> ChoiceEstimate:
+        if identification is not None:
+            estimate.metadata.setdefault("identification", identification.as_dict())
+            estimate.metadata.setdefault("dropped_features",
+                                         list(identification.suggested_drop))
+        estimate.metadata.setdefault("feature_names", list(frame.feature_names))
+        return estimate
+
+    common = {"seed": seed, "initial": initial, "prior_scale": prior_scale}
     if selected == "mh":
-        return _mh_estimate(frame, draws=kwargs.get("draws", 1000), burn_in=kwargs.get("burn_in", 500),
-                            proposal=kwargs.get("proposal"), **common)
+        proposal = kwargs.get("proposal")
+        if proposal is None and (kwargs.get("precondition") or kwargs.get("initial_cov") is not None):
+            covariance = kwargs.get("initial_cov")
+            if covariance is None:
+                beta_vec = (np.zeros(frame.dimension) if initial is None
+                            else np.asarray(initial, dtype=float))
+                info, _, _ = frame.information(beta_vec)
+                covariance = np.linalg.inv(
+                    info + np.eye(frame.dimension) / (prior_scale ** 2))
+            proposal = PreconditionedRandomWalkProposal(
+                frame.dimension, covariance=covariance,
+                burn_in=kwargs.get("burn_in", 500), seed=seed + 1,
+                target_accept=float(kwargs.get("target_accept", 0.234)),
+                adapt_scale=bool(kwargs.get("adapt_scale", True)))
+        return _finish(_mh_estimate(
+            frame, draws=kwargs.get("draws", 1000),
+            burn_in=kwargs.get("burn_in", 500),
+            proposal=proposal, **common))
     if selected == "gibbs":
-        return _gibbs_estimate(frame, prior=prior or HHTSCompetingPrior(),
-                               set_size=kwargs.get("set_size", frame.max_alternatives),
-                               inner_steps=kwargs.get("inner_steps", 2),
-                               draws=kwargs.get("draws", 500), burn_in=kwargs.get("burn_in", 250), **common)
-    return _sgd_estimate(frame, iterations=kwargs.get("iterations", 500),
-                         batch_size=kwargs.get("batch_size", 64),
-                         learning_rate=kwargs.get("learning_rate", 0.01),
-                         k_min=kwargs.get("k_min", 8), k_max=kwargs.get("k_max", 64),
-                         target_noise=kwargs.get("target_noise", 0.35),
-                         **{key: value for key, value in common.items() if key != "prior_scale"})
+        return _finish(_gibbs_estimate(
+            frame, prior=prior or HHTSCompetingPrior(),
+            set_size=kwargs.get("set_size", frame.max_alternatives),
+            inner_steps=kwargs.get("inner_steps", 2),
+            draws=kwargs.get("draws", 500), burn_in=kwargs.get("burn_in", 250),
+            **common))
+    return _finish(_sgd_estimate(
+        frame, iterations=kwargs.get("iterations", 500),
+        batch_size=kwargs.get("batch_size", 64),
+        learning_rate=kwargs.get("learning_rate", 0.01),
+        k_min=kwargs.get("k_min", 8), k_max=kwargs.get("k_max", 64),
+        target_noise=kwargs.get("target_noise", 0.35),
+        **{key: value for key, value in common.items() if key != "prior_scale"}))
 
 
 def estimate_stage_choice(*args, **kwargs) -> ChoiceEstimate:

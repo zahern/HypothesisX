@@ -743,8 +743,9 @@ class OrderedLogit():
     def unscale_beta(self):
     # {
         beta = (self.get_beta(self.params)).copy()
+        off = int(self.fit_intercept)
         for k in range(0, self.K):
-            beta[k+1] = beta[k+1] / self.range_of_data[k]
+            beta[k+off] = beta[k+off] / self.range_of_data[k]
         return beta
     # }
 
@@ -752,7 +753,8 @@ class OrderedLogit():
     # {
         beta = (self.get_beta(self.params)).copy()
         threshold = self.get_thresholds(self.params).copy()
-        offset = sum(beta[k+1] * self.min_data[k] / self.range_of_data[k] for k in range(self.K))
+        off = int(self.fit_intercept)
+        offset = sum(beta[k+off] * self.min_data[k] / self.range_of_data[k] for k in range(self.K))
         threshold += offset  # i.e., threshold[j] += sum for j in range(self.J):
         return threshold
     # }
