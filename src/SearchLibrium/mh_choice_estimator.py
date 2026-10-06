@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 import os
+import re
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
@@ -238,6 +239,7 @@ def identify_weak_features(
     chosen_col: str = "chosen",
     offset_col: str = "log_correction",
     max_drop: int | None = None,
+    protected: Sequence[str] = (),
 ) -> IdentificationReport:
     """Find structurally weak directions in a long choice-set frame.
 
@@ -263,6 +265,7 @@ def identify_weak_features(
     evals, evecs = np.linalg.eigh(0.5 * (scaled + scaled.T))
     condition = float(evals[-1] / max(evals[0], 1e-300))
     weak = np.flatnonzero(evals < float(tol))
+    protected_set = {str(p) for p in (protected or ())}
     drops: list[str] = []
     directions: list[dict] = []
     for idx in weak:
@@ -272,7 +275,12 @@ def identify_weak_features(
         order = np.argsort(-np.abs(v))
         top = {names[j]: float(v[j]) for j in order[: min(8, len(order))]}
         directions.append({"eigenvalue": float(evals[idx]), "loadings": top})
-        j = int(order[0])
+        # Never drop user-protected features (e.g. explicitly requested
+        # behavioural interactions); fall through to the next-largest loader.
+        j = next((int(k) for k in order
+                  if names[int(k)] not in protected_set), None)
+        if j is None:
+            continue
         if abs(v[j]) >= float(loading_threshold) and names[j] not in drops:
             drops.append(names[j])
     if max_drop is not None and len(drops) > int(max_drop):
@@ -894,6 +902,20 @@ class ChoiceSetFrame:
         opg = scores.T @ scores
         return info, gradient, opg
 
+    def casewise_loglike(self, beta: np.ndarray) -> np.ndarray:
+        """Per-case log-likelihood contributions (offsets included).
+
+        Used by the latent-class E-step: each class gets its own beta and the
+        per-case values enter the responsibility update.
+        """
+        x, mask, offs, chosen_x, weights = self._packed()
+        util = np.einsum("nap,p->na", x, beta) + offs
+        util = np.where(mask, util, -np.inf)
+        denominator = logsumexp(util, axis=1)
+        row = np.arange(x.shape[0])
+        chosen_col = np.asarray(self.chosen, dtype=int)
+        return util[row, chosen_col] - denominator
+
     def loglike(self, beta: np.ndarray) -> float:
         # Value-only path: the MH accept/reject loop never uses the gradient,
         # so skip building it (it is the same cost as the log-likelihood).
@@ -1160,7 +1182,8 @@ def estimate_dest_choice(data: pd.DataFrame | ChoiceSetFrame, method: str | None
                     loading_threshold=float(kwargs.get("identify_loading", 0.5)),
                     case_col=case_col, alt_col=alt_col,
                     chosen_col=chosen_col, offset_col=offset_col,
-                    max_drop=kwargs.get("max_drop"))
+                    max_drop=kwargs.get("max_drop"),
+                    protected=kwargs.get("protected_features", ()))
                 if identification.suggested_drop:
                     _drop = set(identification.suggested_drop)
                     feature_cols = [c for c in feature_cols if c not in _drop]
@@ -1226,6 +1249,528 @@ def estimate_dest_choice(data: pd.DataFrame | ChoiceSetFrame, method: str | None
         **{key: value for key, value in common.items() if key != "prior_scale"}))
 
 
+def _weighted_frame(frame: "ChoiceSetFrame",
+                    weights: np.ndarray) -> "ChoiceSetFrame":
+    """Copy of ``frame`` with per-case weights (for class M-steps)."""
+    return ChoiceSetFrame(
+        frame.x, frame.chosen, frame.offsets, frame.case_ids, frame.alt_ids,
+        frame.feature_names, tuple(float(w) for w in np.asarray(weights).ravel()))
+
+
+def _fit_membership_gammas(case_X, resp, l2: float = 1.0, maxiter: int = 200):
+    """Weighted multinomial-logit M-step for the class-membership equation.
+
+    ``gammas`` has shape (C-1, K+1) with class 0 as the reference and an
+    intercept column.  Rows are weighted by the EM responsibilities (soft
+    labels), so the step maximises the expected membership log-likelihood;
+    slopes carry an L2 penalty, intercepts do not.
+    """
+    from scipy.optimize import minimize
+    N = np.asarray(case_X).shape[0]
+    Xa = np.column_stack([np.ones(N), np.asarray(case_X, dtype=float)])
+    C = np.asarray(resp).shape[1]
+    Ka = Xa.shape[1]
+    if C < 2:
+        return np.zeros((0, Ka))
+    g0 = np.zeros((C - 1, Ka))
+    w = np.clip(np.asarray(resp, dtype=float), 1e-12, None)
+
+    def nll(gflat):
+        G = gflat.reshape(C - 1, Ka)
+        u = np.zeros((N, C))
+        u[:, 1:] = Xa @ G.T
+        m = u.max(axis=1, keepdims=True)
+        e = np.exp(u - m)
+        q = e / e.sum(axis=1, keepdims=True)
+        ll = float(np.sum(w * np.log(np.clip(q, 1e-300, None))))
+        reg = 0.5 * float(l2) * float(np.sum(G[:, 1:] ** 2))
+        return -(ll - reg)
+
+    res = minimize(nll, g0.ravel(), method="L-BFGS-B",
+                   options={"maxiter": int(maxiter)})
+    return res.x.reshape(C - 1, Ka)
+
+
+def _fit_frame_mnl(frame: "ChoiceSetFrame", x0, *, prior_scale: float = 5.0,
+                   bounds: float = 15.0, maxiter: int = 500, tol: float = 1e-9):
+    """Weighted MNL fit on a (copied) frame: L-BFGS-B on the analytic gradient.
+
+    Mirrors larch's ``minimize(logloss, jac=d_logloss, bounds=pbounds)`` with
+    a weak N(0, prior_scale^2) ridge so unidentified directions are bounded.
+    The Manski-Lerman offset travels inside the frame, so it is exact here.
+    """
+    from scipy.optimize import minimize
+    d = frame.dimension
+    prior_prec = 1.0 / (float(prior_scale) ** 2)
+
+    def nll(beta):
+        ll, grad = frame.loglike_and_gradient(beta)
+        total = ll - 0.5 * prior_prec * float(np.dot(beta, beta))
+        g = grad - prior_prec * np.asarray(beta, dtype=float)
+        return -total, -g
+
+    res = minimize(nll, np.asarray(x0, dtype=float), jac=True,
+                   method="L-BFGS-B",
+                   bounds=[(-float(bounds), float(bounds))] * d,
+                   options={"maxiter": int(maxiter), "ftol": float(tol)})
+    return np.asarray(res.x, dtype=float), float(-res.fun), res
+
+
+def estimate_dest_choice_lc(
+    data,
+    feature_cols: Sequence[str] | None = None,
+    n_classes: int = 2,
+    *,
+    group_col: str | None = None,
+    maxiter: int = 100,
+    tol: float = 1e-6,
+    prior_scale: float = 5.0,
+    bounds: float = 15.0,
+    initial=None,
+    seed: int = 42,
+    n_init: int = 1,
+    membership_vars: Sequence[str] | None = None,
+    require_crash: bool = True,
+    crash_tokens: Sequence[str] = ("crash",),
+    perturb_sigma: float = 0.5,
+    crash_init: Sequence[float] | None = None,
+    membership_l2: float = 1.0,
+    share_floor: float = 0.05,
+    case_col: str = "case_id",
+    alt_col: str = "alt_id",
+    chosen_col: str = "chosen",
+    offset_col: str = "log_correction",
+    weight_col: str | None = None,
+    q_col: str | None = None,
+    **kwargs,
+) -> dict:
+    """Destination choice with behavioural groups (larch LatentClass analogue).
+
+    Rows of the long sampled-choice frame belong to behavioural groups, and
+    each group gets its own coefficient vector over the DESTINATION components
+    (distance, size, agglomeration, accessibility, crash, visitability, ...).
+
+    Two modes
+    ---------
+    ``group_col`` given : observed groups (e.g. car ownership / income /
+        lifecycle segment).  One weighted MNL per observed group; class shares
+        are the observed group shares.  No EM.
+    ``group_col`` None  : latent classes fitted by EM - E-step responsibilities
+        from class-specific choice probabilities, M-step a weighted MNL per
+        class (analytic gradient, weak ridge), class shares updated as the mean
+        responsibility, iterate to ``tol`` on the total log-likelihood.
+
+    Returns a dict with per-class coefficient dicts, posterior std errors,
+    shares, log-likelihood, BIC, convergence info and the per-case posterior
+    class responsibilities.  The Manski-Lerman ``log_correction`` offset is
+    carried inside ChoiceSetFrame, so sampling correction is exact.
+    """
+    case_col = kwargs.get("case_col", case_col)
+    alt_col = kwargs.get("alt_col", alt_col)
+    chosen_col = kwargs.get("chosen_col", chosen_col)
+    offset_col = kwargs.get("offset_col", offset_col)
+    memb_cols: list[str] = []
+    case_X = None
+    if isinstance(data, ChoiceSetFrame):
+        frame = data
+        names = list(frame.feature_names)
+        case_groups = None
+    else:
+        if feature_cols is None:
+            preferred = [c for c in ("log_DIST_1", "DIST", "size_term",
+                                     "logsum", "log_CRASH_1") if c in data.columns]
+            excluded = {case_col, alt_col, chosen_col, offset_col, q_col,
+                        weight_col, group_col, "DTAZ", "segment"}
+            inferred = [c for c in data.columns if c not in excluded
+                        and pd.api.types.is_numeric_dtype(data[c])]
+            feature_cols = preferred or inferred
+        feature_cols = list(feature_cols)
+        case_groups = None
+        if group_col is not None:
+            per_case = (data.groupby(case_col, sort=False)[group_col]
+                        .first().astype(str))
+            case_groups = per_case
+        frame = ChoiceSetFrame.from_long(
+            data, feature_cols, case_col=case_col, alt_col=alt_col,
+            chosen_col=chosen_col, offset_col=offset_col, q_col=q_col,
+            weight_col=weight_col)
+        names = list(frame.feature_names)
+
+        # ── Person-type membership covariates (case-level, aligned) ───────
+        if membership_vars:
+            _miss = [c for c in membership_vars if c not in data.columns]
+            if _miss:
+                raise KeyError(f"membership_vars missing from frame: {_miss}")
+            _wanted = list(dict.fromkeys(membership_vars))
+            _first = data.groupby(case_col, sort=False)[_wanted].first()
+            _first.index = _first.index.astype(str)
+            _aligned = _first.reindex([str(c) for c in frame.case_ids])
+            _empty = [c for c in _wanted if _aligned[c].isna().all()]
+            if _empty:
+                raise ValueError(
+                    f"membership covariates with no case-level values: {_empty}")
+            case_X = np.nan_to_num(_aligned.to_numpy(dtype=float), nan=0.0)
+            memb_cols = list(_wanted)
+
+    if membership_vars and case_X is None:
+        logger.warning("estimate_dest_choice_lc: membership_vars ignored when "
+                       "data is a pre-built ChoiceSetFrame (needs the long frame)")
+
+    # ── Guarantee a class-specific CRASH component ─────────────────────────
+    # Every feature is class-specific in this estimator, so requiring a crash
+    # feature in the design is sufficient for "at least one class-specific
+    # component is crash-based"; the fit reports per-class crash coefficients
+    # and the class gap below.
+    crash_cols = [c for c in names
+                  if any(t.lower() in str(c).lower() for t in crash_tokens)]
+    if require_crash and not crash_cols:
+        raise ValueError(
+            "estimate_dest_choice_lc: no crash component in feature_cols "
+            f"({list(names)}); add e.g. 'log_CRASH_1' / 'safety_x_crash' so at "
+            "least one class-specific component is crash-based, or pass "
+            "require_crash=False.")
+
+    n_cases = frame.n_cases
+    d = frame.dimension
+    rng = np.random.default_rng(seed)
+
+    if case_groups is not None:
+        # Align groups to the frame's case order.
+        labels = np.array([case_groups.get(str(c), case_groups.get(c, "0"))
+                           for c in frame.case_ids], dtype=str)
+        groups = sorted(set(labels.tolist()))
+        betas, ses, shares = [], [], []
+        for g in groups:
+            w = (labels == g).astype(float)
+            fw = _weighted_frame(frame, w)
+            b0 = (np.zeros(d) if initial is None
+                  else np.asarray(initial, dtype=float))
+            beta, _, _ = _fit_frame_mnl(fw, b0, prior_scale=prior_scale,
+                                        bounds=bounds)
+            betas.append(beta)
+            shares.append(float(w.mean()))
+            info, _, _ = fw.information(beta)
+            cov = np.linalg.pinv(info + np.eye(d) / (prior_scale ** 2))
+            ses.append(np.sqrt(np.clip(np.diag(cov), 0.0, None)))
+        fit_ll = float(sum(_weighted_frame(frame, (labels == g).astype(float))
+                           .loglike(b) for g, b in zip(groups, betas)))
+        return _lc_result("grouped", names, betas, ses, shares, fit_ll,
+                          float("nan"), True, 0, frame, labels=groups)
+
+    # ── Latent classes: EM with weighted-MNL M-steps ──────────────────────
+    # Class priors are either fixed shares or a person-type membership
+    # equation; the metaheuristic perturbation is a multi-restart jitter of
+    # BOTH the class-specific betas AND the membership gammas, with the first
+    # crash coefficient anchored differently per class so one class can
+    # become crash-defined.
+    if initial is None:
+        beta0, _, _ = _fit_frame_mnl(frame, np.zeros(d),
+                                     prior_scale=prior_scale, bounds=bounds)
+    else:
+        beta0 = np.asarray(initial, dtype=float)
+
+    def _case_log_prior(g):
+        """Case-level class log-priors: fixed shares or membership equation."""
+        if case_X is None:
+            return np.log(np.clip(g, 1e-300, None))[None, :]
+        u = np.zeros((case_X.shape[0], n_classes))
+        Xa = np.column_stack([np.ones(case_X.shape[0]), case_X])
+        u[:, 1:] = Xa @ np.asarray(g).T
+        m = u.max(axis=1, keepdims=True)
+        return u - m - np.log(np.exp(u - m).sum(axis=1, keepdims=True))
+
+    crash_anchors = list(crash_init) if crash_init is not None else [0.0, -1.0]
+    restart_lls: list[float] = []
+    best = None
+    for _start in range(max(1, int(n_init))):
+        betas = []
+        for c in range(n_classes):
+            b = beta0.copy()
+            if _start or c:
+                b = b + rng.normal(0.0, float(perturb_sigma), d)
+            if crash_cols:
+                b[names.index(crash_cols[0])] += crash_anchors[c % len(crash_anchors)]
+            betas.append(b)
+        shares = np.full(n_classes, 1.0 / n_classes)
+        gammas = (np.zeros((n_classes - 1, case_X.shape[1] + 1))
+                  if case_X is not None else None)
+        prev_ll = -np.inf
+        converged = False
+        iterations = 0
+        for iterations in range(1, int(maxiter) + 1):
+            # E-step: class-specific choice ll + case-level class priors
+            ll_nc = np.column_stack([frame.casewise_loglike(b) for b in betas])
+            prior = _case_log_prior(gammas if case_X is not None else shares)
+            llw = ll_nc + prior
+            m = llw.max(axis=1, keepdims=True)
+            # Observed-data mixture LL: log-sum-exp over classes, computed
+            # BEFORE any responsibility clipping (clipping is an optimisation
+            # device for the M-step, not part of the model).
+            total_ll = float(m[:, 0].sum()
+                             + np.log(np.exp(llw - m).sum(axis=1)).sum())
+            p = np.exp(llw - m)
+            p /= p.sum(axis=1, keepdims=True)
+            if share_floor and float(share_floor) > 0:
+                # Anti-collapse: no class may vanish (a 99/1 split makes every
+                # membership slope unidentifiable and reports a degenerate
+                # one-class model).
+                p = np.clip(p, float(share_floor) / n_classes, None)
+                p /= p.sum(axis=1, keepdims=True)
+            new_shares = p.mean(axis=0)
+            # M-step: weighted MNL per class + membership gammas
+            betas = [_fit_frame_mnl(_weighted_frame(frame, p[:, c]), betas[c],
+                                    prior_scale=prior_scale, bounds=bounds)[0]
+                     for c in range(n_classes)]
+            if case_X is not None:
+                gammas = _fit_membership_gammas(case_X, p, l2=membership_l2)
+            shares = new_shares
+            if share_floor and float(share_floor) > 0:
+                _coll = int(np.argmin(shares))
+                if float(shares[_coll]) < 0.5 * float(share_floor):
+                    # Re-seed the collapsed class from the pooled fit with a
+                    # fresh jitter + crash anchor (a perturbation move, not a
+                    # failure) so the next E-step can differentiate it.
+                    _b = beta0 + rng.normal(0.0, float(perturb_sigma), d)
+                    if crash_cols:
+                        _b[names.index(crash_cols[0])] += crash_anchors[
+                            _coll % len(crash_anchors)]
+                    betas[_coll] = _b
+            if np.isfinite(prev_ll) and abs(total_ll - prev_ll) < tol * (1 + abs(prev_ll)):
+                converged = True
+                break
+            prev_ll = total_ll
+        ll_nc = np.column_stack([frame.casewise_loglike(b) for b in betas])
+        prior = _case_log_prior(gammas if case_X is not None else shares)
+        llw = ll_nc + prior
+        m = llw.max(axis=1, keepdims=True)
+        fit_ll = float(m[:, 0].sum()
+                       + np.log(np.exp(llw - m).sum(axis=1)).sum())
+        p = np.exp(llw - m)
+        p /= p.sum(axis=1, keepdims=True)
+        restart_lls.append(fit_ll)
+        if best is None or fit_ll > best[0]:
+            best = (fit_ll, betas, shares, p, converged, iterations,
+                    None if gammas is None else np.asarray(gammas).copy())
+    fit_ll, betas, shares, resp, converged, iterations, gammas = best
+    if case_X is None:
+        # label switching only reorders the fixed-share solution; with a
+        # membership equation the reference class structure must be kept.
+        order = np.argsort(-np.asarray(shares))
+        betas = [betas[i] for i in order]
+        shares = np.asarray(shares)[order]
+        resp = resp[:, order]
+    else:
+        shares = np.asarray(shares)
+    ses = []
+    for c in range(n_classes):
+        fw = _weighted_frame(frame, resp[:, c])
+        info, _, _ = fw.information(betas[c])
+        cov = np.linalg.pinv(info + np.eye(d) / (prior_scale ** 2))
+        ses.append(np.sqrt(np.clip(np.diag(cov), 0.0, None)))
+    return _lc_result("lc-em", names, betas, ses, shares, fit_ll, float("nan"),
+                      converged, iterations, frame, responsibilities=resp,
+                      membership_coefs=gammas, membership_vars=memb_cols,
+                      crash_cols=crash_cols, restart_lls=restart_lls)
+
+
+def _lc_result(method, names, betas, ses, shares, fit_ll, _unused, converged,
+               iterations, frame, labels=None, responsibilities=None,
+               membership_coefs=None, membership_vars=None, crash_cols=None,
+               restart_lls=None) -> dict:
+    n_classes = len(betas)
+    k_params = n_classes * frame.dimension + (n_classes - 1)
+    if membership_vars:
+        # Each non-reference class adds an intercept + one gamma per
+        # membership covariate.
+        k_params = (n_classes * frame.dimension
+                    + (n_classes - 1) * (len(membership_vars) + 1))
+    out = {
+        "method": method,
+        "n_classes": n_classes,
+        "feature_names": list(names),
+        "betas": [{str(n): float(v) for n, v in zip(names, b)} for b in betas],
+        "std_err": [{str(n): float(v) for n, v in zip(names, s)} for s in ses],
+        "shares": [float(s) for s in np.asarray(shares).ravel()],
+        "loglike": float(fit_ll),
+        "bic": float(-2.0 * fit_ll + k_params * np.log(max(frame.n_cases, 2))),
+        "n_cases": int(frame.n_cases),
+        "n_features": int(frame.dimension),
+        "converged": bool(converged),
+        "iterations": int(iterations),
+    }
+    if labels is not None:
+        out["group_labels"] = list(labels)
+    if responsibilities is not None:
+        out["responsibilities"] = np.asarray(responsibilities)
+    if restart_lls:
+        out["restart_lls"] = [float(v) for v in restart_lls]
+        out["restart_ll_span"] = float(max(restart_lls) - min(restart_lls))
+    if membership_coefs is not None and membership_vars is not None:
+        G = np.atleast_2d(np.asarray(membership_coefs, dtype=float))
+        memb = {}
+        for c in range(G.shape[0]):
+            memb[f"g_intercept_c{c + 2}"] = float(G[c, 0])
+            for k, var in enumerate(membership_vars):
+                memb[f"g_{var}_c{c + 2}"] = float(G[c, k + 1])
+        out["membership_coefs"] = memb
+        out["membership_vars"] = list(membership_vars)
+    if crash_cols:
+        out["crash_cols"] = list(crash_cols)
+        cc = crash_cols[0]
+        vals = [b.get(cc) for b in out["betas"]]
+        out["class_crash"] = [float(v) if v is not None else None for v in vals]
+        finite = [v for v in out["class_crash"] if v is not None]
+        out["crash_class_gap"] = (max(finite) - min(finite)) if finite else None
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Behavioural interactions: component x people-type
+# ---------------------------------------------------------------------------
+
+
+def add_actor_columns(data: pd.DataFrame, actor_defs: Mapping,
+                      *, case_col: str = "case_id") -> pd.DataFrame:
+    """Add behavioural "actor" columns to a long choice-set frame.
+
+    ``actor_defs`` maps a new column name to one of:
+      * an expression string over existing columns, e.g.
+        ``"STUDYING > 0"``, ``"occp_group == 3"``, ``"incp >= 6"``,
+        ``"age5p >= 9"``, ``"vehrd == 0"``;
+      * a ``{case_id: value}`` mapping (person-level value broadcast to that
+        case's alternatives);
+      * a pandas Series / array aligned to ``data.index``.
+
+    Expressions are evaluated with pandas ``eval`` (Python engine) and coerced
+    to numeric, so both dummies (0/1) and continuous moderators (income, age)
+    are supported.
+    """
+    out = data.copy()
+    for name, spec in dict(actor_defs or {}).items():
+        if isinstance(spec, str):
+            values = out.eval(spec, engine="python")
+        elif isinstance(spec, Mapping):
+            values = out[case_col].map(spec)
+        else:
+            values = pd.Series(np.asarray(spec).ravel(), index=out.index)
+        out[str(name)] = pd.to_numeric(values, errors="coerce").fillna(0.0).astype(float)
+    return out
+
+
+def add_interaction_columns(data: pd.DataFrame, interactions: Mapping,
+                            *, actor_defs: Mapping | None = None,
+                            case_col: str = "case_id"):
+    """Add component x actor interaction columns (the "grouping" feature).
+
+    ``interactions`` maps a destination component column to a list of actors::
+
+        {"log_DIST_1": ["student", "senior"],      # distance effect for those groups
+         "log_CRASH_1": ["occp_trades"],           # crash effect for trades workers
+         "logsum": ["noveh"]}                      # accessibility for car-less people
+
+    An actor may be an existing column, a column added via ``actor_defs``, or an
+    expression string (e.g. ``"occp_group == 3"``).  Each interaction becomes a
+    new column ``ix_<actor>__x__<component>`` and the base component stays in
+    the model, so the interaction is a *deviation* for that group relative to
+    everyone else.
+
+    Returns ``(frame, new_feature_names, mapping)`` where ``mapping`` maps each
+    new column to ``(component, actor)``.
+    """
+    out = data.copy()
+    if actor_defs:
+        out = add_actor_columns(out, actor_defs, case_col=case_col)
+    mapping: dict[str, tuple[str, str]] = {}
+    for component, actors in dict(interactions or {}).items():
+        if component not in out.columns:
+            raise KeyError(f"interaction component {component!r} not in frame")
+        comp = pd.to_numeric(out[component], errors="coerce").fillna(0.0).astype(float)
+        if isinstance(actors, str):
+            actors = [actors]
+        for actor in actors or []:
+            name = str(actor)
+            if name not in out.columns:
+                try:
+                    actor_vals = pd.to_numeric(out.eval(name, engine="python"),
+                                               errors="coerce").fillna(0.0)
+                except Exception as exc:  # noqa: BLE001
+                    raise KeyError(
+                        f"actor {name!r} is neither a frame column nor an "
+                        f"evaluable expression: {exc}") from exc
+            else:
+                actor_vals = pd.to_numeric(out[name], errors="coerce").fillna(0.0)
+            token = re.sub(r"[^0-9A-Za-z]+", "_", f"{name}_x_{component}").strip("_")
+            column = f"ix_{token}"
+            out[column] = (actor_vals * comp).astype(float)
+            mapping[column] = (component, name)
+    return out, list(mapping), mapping
+
+
+def estimate_dest_choice_interactions(
+    data: pd.DataFrame,
+    base_features: Sequence[str],
+    interactions: Mapping,
+    *,
+    actor_defs: Mapping | None = None,
+    method: str | None = None,
+    initial: Mapping | None = None,
+    identify: bool = False,
+    precondition: bool | None = None,
+    target_accept: float = 0.234,
+    case_col: str = "case_id",
+    **kwargs,
+):
+    """Destination model with behavioural interactions as first-class features.
+
+    Example::
+
+        est = estimate_dest_choice_interactions(
+            frame,
+            base_features=["log_DIST_1", "DIST", "size_term", "logsum",
+                           "log_CRASH_1"],
+            interactions={"log_DIST_1": ["student", "senior"],
+                          "log_CRASH_1": ["occp_trades"],
+                          "logsum": ["noveh"]},
+            actor_defs={"student": "STUDYING > 0",
+                        "senior": "age5p >= 9",
+                        "occp_trades": "occp_group == 4",
+                        "noveh": "vehrd == 0"},
+            method="mh", initial=pooled_coefs, precondition=True,
+            draws=32000, burn_in=6400)
+        # est.metadata["interactions"] maps each ix_* coefficient to its
+        # (component, actor) pair; the coefficient is the group's DEVIATION
+        # from the pooled effect, with posterior std errors in est.std_err_dict.
+
+    Returns the :class:`ChoiceEstimate` of the augmented spec.  Everything else
+    (identification, preconditioning, posterior mean/SE, draw controls) is the
+    standard estimator behaviour.
+    """
+    augmented, interaction_features, mapping = add_interaction_columns(
+        data, interactions, actor_defs=actor_defs, case_col=case_col)
+    features = [c for c in base_features] + [
+        c for c in interaction_features if c not in set(base_features)]
+    init = dict(initial) if isinstance(initial, Mapping) else initial
+    if isinstance(init, dict):
+        for column in interaction_features:
+            init.setdefault(column, 0.0)
+    # The interactions were explicitly requested, so never let the
+    # identification step silently drop them; it can still drop weak base
+    # terms unless the caller adds its own protected list.
+    protected = list(dict.fromkeys(
+        list(kwargs.pop("protected_features", ()) or ())
+        + list(interaction_features)))
+    estimate = estimate_dest_choice(
+        augmented, method=method, feature_cols=features, initial=init,
+        identify=identify, precondition=precondition,
+        target_accept=target_accept, case_col=case_col,
+        protected_features=protected, **kwargs)
+    estimate.metadata["interactions"] = {
+        column: {"component": component, "actor": actor}
+        for column, (component, actor) in mapping.items()}
+    estimate.metadata["interaction_features"] = list(interaction_features)
+    return estimate
+
+
 def estimate_stage_choice(*args, **kwargs) -> ChoiceEstimate:
     """Stage-neutral alias for :func:`estimate_dest_choice`."""
     return estimate_dest_choice(*args, **kwargs)
@@ -1233,7 +1778,11 @@ def estimate_stage_choice(*args, **kwargs) -> ChoiceEstimate:
 
 __all__ = [
     "ChoiceEstimate", "ChoiceEstimateResult", "ChoiceSetFrame",
-    "GaussianRandomWalkProposal", "BlockRandomWalkProposal",
-    "HHTSCompetingPrior", "chain_diagnostics", "effective_sample_size",
-    "split_rhat", "r_hat", "estimate_dest_choice", "estimate_stage_choice",
+    "GaussianRandomWalkProposal", "PreconditionedRandomWalkProposal",
+    "BlockRandomWalkProposal", "HHTSCompetingPrior", "chain_diagnostics",
+    "effective_sample_size", "split_rhat", "r_hat",
+    "IdentificationReport", "identify_weak_features",
+    "add_actor_columns", "add_interaction_columns",
+    "estimate_dest_choice", "estimate_dest_choice_lc",
+    "estimate_dest_choice_interactions", "estimate_stage_choice",
 ]
