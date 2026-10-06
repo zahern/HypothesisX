@@ -54,15 +54,21 @@ def transform(x, lmda):
 ''' ---------------------------------------------------------- '''
 def transform_derivative(x, lmda):
 # {
-    """ Derivative of log likelihood with respect to lmda """
-    ln_x = np.log1p(x.astype(float)) # Evaluate ln(1+x) because elements of x are close to zero
-    # Note: original code was ln_x = np.log(x)
+    """ Derivative of the Box-Cox transform with respect to lmda.
+
+    Must be consistent with ``transform``: for lmda != 0 the transform is
+    ``(x**lmda - 1) / lmda`` so the derivative uses ``log(x)`` (NOT
+    ``log1p(x)``); the lmda == 0 branch is ``log1p(x)`` and uses
+    ``log1p`` accordingly.
+    """
+    x = x.astype(float)
 
     if lmda == 0:
-        return 0.5*(ln_x)**2  # i.e., 0.5 * ln(x)^2
+        return 0.5*(np.log1p(x))**2
     else:
     # {
-        x_lmda = np.nan_to_num(np.power(x.astype(float), lmda))
+        ln_x = np.log(x)
+        x_lmda = np.nan_to_num(np.power(x, lmda))
         val = (lmda * x_lmda * ln_x - x_lmda + 1) / np.power(lmda, 2)
         return np.nan_to_num(val) # Return zero
     # }

@@ -93,6 +93,15 @@ class MixedLogitGSE(MixedLogit):
             pads.append(np.repeat(0.1, self.Kgrad_w))
         return pads
 
+    def _assemble_init_coeff(self, bf_init, br_b_init, variance_init,
+                             bftrans_b, bftrans_l):
+        # GSE beta layout: [Bf | Br_b | grad | grad_w | chol | Br_w]
+        parts = ([bf_init, br_b_init] + list(self._init_pad_arrays())
+                 + [variance_init])
+        parts = [np.asarray(p, dtype=float).ravel() for p in parts
+                 if p is not None and len(p)]
+        return np.concatenate(parts) if parts else None
+
     def _jax_negloglik_extra_kwargs(self):
         gd = (jnp.array(self.gamma_draws) if self.Kgrad_w > 0
               and self.gamma_draws is not None else None)

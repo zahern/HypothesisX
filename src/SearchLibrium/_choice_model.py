@@ -21,6 +21,21 @@ def _clip_zval(z, cap=50.0):
         return z
     return max(-float(cap), min(float(cap), z))
 
+
+def _result_get(result, key, default=None):
+    """Read *key* from a dict-like OR attribute-style optimiser result.
+
+    ``post_process`` accepts SciPy ``OptimizeResult``/dicts as well as plain
+    objects (e.g. the ``SimpleNamespace`` Larch models build), so membership
+    tests like ``'stderr' in result`` must not assume a mapping.
+    """
+    try:
+        if isinstance(result, dict):
+            return result.get(key, default)
+        return getattr(result, key, default)
+    except Exception:
+        return default
+
 """
 BACKGROUND - Choice Modelling
 
@@ -397,10 +412,10 @@ class DiscreteChoiceModel(ABC):
     ''' ---------------------------------------------------------- '''
     def post_process(self, result, coeff_names, sample_size, hess_inv=None):
     # {
-        self.converged = result.success
-        self.coeff_est = result.x
-        self.loglik = -result.fun
-        self.total_iter = result.nit
+        self.converged = _result_get(result, 'success', False)
+        self.coeff_est = _result_get(result, 'x')
+        self.loglik = -_result_get(result, 'fun', np.nan)
+        self.total_iter = _result_get(result, 'nit', 0)
 
         self.estim_time_sec = time() - self.fit_start_time
         self.sample_size = sample_size
@@ -412,9 +427,10 @@ class DiscreteChoiceModel(ABC):
         self.stderr = np.zeros_like(self.coeff_est)
         std_err_estimated = False
 
-        if 'stderr' in result:  # {
+        _stderr = _result_get(result, 'stderr')
+        if _stderr is not None:  # {
             std_err_estimated = True
-            self.stderr = result['stderr']
+            self.stderr = _stderr
         # }
 
 
@@ -453,13 +469,17 @@ class DiscreteChoiceModel(ABC):
         if not std_err_estimated:
         # {
             if self.method == "bfgs":
-                self.stderr = np.sqrt(np.abs(np.diag(result.hess_inv)))
-                std_err_estimated = True
+                _hess = _result_get(result, 'hess_inv')
+                if _hess is not None:
+                    self.stderr = np.sqrt(np.abs(np.diag(np.array(_hess))))
+                    std_err_estimated = True
 
             if self.method == "l-bfgs-b":
-                hess = result['hess_inv'].todense()
-                self.stderr = np.sqrt(np.abs(np.diag(np.array(hess))))
-                std_err_estimated = True
+                _hess = _result_get(result, 'hess_inv')
+                if _hess is not None:
+                    _hess = _hess.todense() if hasattr(_hess, 'todense') else _hess
+                    self.stderr = np.sqrt(np.abs(np.diag(np.array(_hess))))
+                    std_err_estimated = True
         # }
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -471,9 +491,9 @@ class DiscreteChoiceModel(ABC):
         # this fallback self.stderr silently stays all-zero for every other
         # method even though a usable Hessian was already computed.
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        if not std_err_estimated and 'hess_inv' in result and result['hess_inv'] is not None:
+        hess_inv = _result_get(result, 'hess_inv')
+        if not std_err_estimated and hess_inv is not None:
         # {
-            hess_inv = result['hess_inv']
             hess_inv = hess_inv.todense() if hasattr(hess_inv, 'todense') else hess_inv
             diag_arr_tmp = np.diag(np.array(hess_inv))
             pos_vals_idx = [ii for ii, el in enumerate(diag_arr_tmp) if el > 0]

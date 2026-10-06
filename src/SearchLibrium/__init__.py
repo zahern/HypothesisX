@@ -131,6 +131,7 @@ try:
     from .multinomial_logit import MultinomialLogit
     from .logistic_regression import LogisticRegression
     from .MixedLogit import MixedLogit
+    from .coupled_solver import CoupledMXLMinimiser, make_coupled_minimiser
     from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
     from .mixed_nested import MixedNested
     from .Halton import Halton
@@ -177,6 +178,7 @@ except Exception:
         from multinomial_logit import MultinomialLogit
         from logistic_regression import LogisticRegression
         from MixedLogit import MixedLogit
+        from coupled_solver import CoupledMXLMinimiser, make_coupled_minimiser
         from multinomial_nested import NestedLogit, MultiLayerNestedLogit
         from mixed_nested import MixedNested
         from Halton import Halton
@@ -231,6 +233,7 @@ __all__ = [
     "__version__", "print_version", "new_features",
     "DiscreteChoiceModel",
     "MultinomialLogit", "LogisticRegression", "MixedLogit",
+    "CoupledMXLMinimiser", "make_coupled_minimiser",
     "NestedLogit", "MultiLayerNestedLogit", "MixedNested", "Halton",
     "RandomRegret", "MixedRandomRegret", "OrderedLogit", "OrderedLogitLong", "ExplodedLogit", "MixedExplodedLogit",
     "BinaryProbit", "HeckmanTwoStep",

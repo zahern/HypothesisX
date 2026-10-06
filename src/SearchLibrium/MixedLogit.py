@@ -464,9 +464,50 @@ class MixedLogit(DiscreteChoiceModel):
         Maps heterogeneity covariates to design matrix columns and tracks which
         random variable each heterogeneity term belongs to.
         """
-        # Map from variable name to its column index in the design matrix (Xnames)
-        # Xnames contains the design matrix variables (first K elements)
-        xname_to_col = {name: i for i, name in enumerate(self.Xnames[:self.K])}
+        # Map from variable name to its DESIGN-MATRIX column index. The design
+        # matrix is built as dstack(Xis, Xas): for each individual-specific
+        # variable, one column per non-base alternative, followed by
+        # ``asvars_construct_matrix`` (all non-isvar candidate columns in
+        # varnames order). ``Xnames`` is the *coefficient* name vector (which
+        # also lists sd./chol./lambda. names), so it must NOT be used as a
+        # column map — doing so mis-picked covariates whenever isvars expanded.
+        _isvar_block = ["{}.{}".format(iv, j) for iv in self.isvars
+                        for j in self.alts if j != self.base_alt]
+        _asvar_block = [str(v) for v in
+                        getattr(self, 'asvars_construct_matrix', [])]
+        xname_to_col = {}
+        for _i, _name in enumerate(_isvar_block + _asvar_block):
+            xname_to_col.setdefault(str(_name), _i)
+
+        def _col_of(name):
+            """Design column of *name*, expanding a random isvar to its first
+            alternative-specific column when necessary."""
+            name = str(name)
+            if name in xname_to_col:
+                return xname_to_col[name]
+            for _n, _i in xname_to_col.items():
+                if _n.startswith(name + "."):
+                    return _i
+            return -1
+
+        # Positions (within the Br / Br_b column order) of the correlated and
+        # independent random coefficients. The covariance-block gradient and
+        # the variance start must not assume the correlated variables are the
+        # first correlationLength coefficients (partial/arbitrary correlated
+        # sets are allowed).
+        rv_names_ordered = [str(v) for v in self.varnames
+                            if str(v) in set(str(x) for x in (self.randvars or []))]
+        _corr = getattr(self, 'correlated_vars', None)
+        if _corr is True:
+            _corr_set = set(rv_names_ordered)
+        elif isinstance(_corr, (list, tuple, set)):
+            _corr_set = set(str(x) for x in _corr)
+        else:
+            _corr_set = set()
+        self.rv_corr_local = [i for i, v in enumerate(rv_names_ordered)
+                              if v in _corr_set]
+        self.rv_indep_local = [i for i in range(len(rv_names_ordered))
+                               if i not in self.rv_corr_local]
         
         # For non-transformed random variables
         self.het_mean_rv_names = []
@@ -479,13 +520,17 @@ class MixedLogit(DiscreteChoiceModel):
         # Map from random variable index (0..Kr-1) to design matrix column index
         self.rv_col_idx = []
         
+        # setup_design_matrix expands/reorders the design columns and updates
+        # rvidx to that layout, so rvidx must NOT be indexed by the original
+        # varnames position here. Iterate the random variables by name in
+        # varnames order (which is the Br column order).
+        randset = set(str(x) for x in (self.randvars or []))
         rv_count = 0
-        for i, var in enumerate(self.varnames):
-            if self.rvidx[i]:
-                self.rv_col_idx.append(i)
+        for var in self.varnames:
+            if str(var) in randset:
+                self.rv_col_idx.append(_col_of(var))
                 het_mean_vars = self.rv_het_mean_vars[rv_count] if rv_count < len(self.rv_het_mean_vars) else []
                 het_var_vars = self.rv_het_var_vars[rv_count] if rv_count < len(self.rv_het_var_vars) else []
-                het_corr = self.rv_het_corr[rv_count] if rv_count < len(self.rv_het_corr) else False
                 
                 for hvar in het_mean_vars:
                     if hvar in xname_to_col:
@@ -516,13 +561,13 @@ class MixedLogit(DiscreteChoiceModel):
         self.het_corr_groups = []  # List of lists of RV indices that share correlated heterogeneity
         self.het_corr_group_id = []  # Group ID for each RV (-1 if not in a group)
         
+        rvtransset = set(str(x) for x in (self.randtransvars or []))
         rvtrans_count = 0
-        for i, var in enumerate(self.varnames):
-            if self.rvtransidx[i]:
-                self.rvtrans_col_idx.append(i)
+        for var in self.varnames:
+            if str(var) in rvtransset:
+                self.rvtrans_col_idx.append(_col_of(var))
                 het_mean_vars = self.rvtrans_het_mean_vars[rvtrans_count] if rvtrans_count < len(self.rvtrans_het_mean_vars) else []
                 het_var_vars = self.rvtrans_het_var_vars[rvtrans_count] if rvtrans_count < len(self.rvtrans_het_var_vars) else []
-                het_corr = self.rvtrans_het_corr[rvtrans_count] if rvtrans_count < len(self.rvtrans_het_corr) else False
                 
                 for hvar in het_mean_vars:
                     if hvar in xname_to_col:
@@ -807,13 +852,25 @@ class MixedLogit(DiscreteChoiceModel):
             # else:
             # self.isvars = self.asvars
 
-            mnl = MultinomialLogit()
+            def _run_seed_mnl(jax_flag):
+                _mnl = MultinomialLogit(_jax=jax_flag)
+                _mnl.setup(self.X_original, self.y_original.flatten(),  # Collapse to one dimension!
+                           self.varnames, self.alts, self.isvars, transvars=self.transvars,
+                           ids=self.ids, weights=self.weights, avail=self.avail,
+                           base_alt=self.base_alt, fit_intercept=False)
+                _mnl.fit()
+                return _mnl
 
-            mnl.setup(self.X_original, self.y_original.flatten(),  # Collapse to one dimension!
-                      self.varnames, self.alts, self.isvars, transvars=self.transvars,
-                      ids=self.ids, weights=self.weights, avail=self.avail, base_alt=self.base_alt,
-                      fit_intercept=False)
-            mnl.fit()
+            # Match the model's own backend. The JAX MNL path can return an
+            # all-zero / non-converged seed for Box-Cox designs, which then
+            # poisons the MXL start (all-zero fixed coefficients and a
+            # log-normal mean at log(1e-3)); fall back to the numpy path.
+            mnl = _run_seed_mnl(getattr(self, '_jax', False))
+            if not bool(getattr(mnl, 'converged', False)) or not np.any(
+                    np.asarray(mnl.coeff_est, dtype=float)):
+                _mnl_np = _run_seed_mnl(False)
+                if np.any(np.asarray(_mnl_np.coeff_est, dtype=float)):
+                    mnl = _mnl_np
 
             # Build init_coeff from MNL estimates, mapping each MXL coefficient to
             # its MNL counterpart BY NAME. Name-based mapping is robust to the
@@ -831,11 +888,57 @@ class MixedLogit(DiscreteChoiceModel):
             random_distributions = [d for d in self.rvdist if d is not False]
             if len(random_distributions) != self.Kr:
                 random_distributions = (random_distributions + ['n'] * self.Kr)[:self.Kr]
-            br_b_init, variance_init, effective_dists = _mxl_variance_start(
-                mnl_random_means, random_distributions, self.correlationLength,
-                relative_sd=self.random_sd_start,
-                sd_floor=self.random_sd_floor,
-                align_sign=self.align_random_distributions)
+
+            # Place the spread starts in the objective's chol/Br_w layout. The
+            # correlated variables are not necessarily the first
+            # correlationLength random coefficients (partial/arbitrary
+            # correlated sets), and _mxl_variance_start assumes they are, so
+            # reorder means/distributions by the actual positions first.
+            _corr_local = list(getattr(self, 'rv_corr_local', []) or [])
+            _indep_local = list(getattr(self, 'rv_indep_local', []) or [])
+            if (len(_corr_local) + len(_indep_local) == self.Kr
+                    and len(random_distributions) == self.Kr
+                    and len(mnl_random_means) == self.Kr
+                    and sorted(_corr_local + _indep_local) == list(range(self.Kr))):
+                _c_means, _c_var, _c_eff = _mxl_variance_start(
+                    [mnl_random_means[i] for i in _corr_local],
+                    [random_distributions[i] for i in _corr_local],
+                    len(_corr_local),
+                    relative_sd=self.random_sd_start,
+                    sd_floor=self.random_sd_floor,
+                    align_sign=self.align_random_distributions)
+                _i_means, _i_var, _i_eff = _mxl_variance_start(
+                    [mnl_random_means[i] for i in _indep_local],
+                    [random_distributions[i] for i in _indep_local], 0,
+                    relative_sd=self.random_sd_start,
+                    sd_floor=self.random_sd_floor,
+                    align_sign=self.align_random_distributions)
+                # Use the LATENT-SPACE aligned means returned by
+                # _mxl_variance_start: for log-normal variables the raw MNL
+                # coefficient is a utility-space mean and must be converted
+                # (latent mean = log(magnitude) - sd^2/2), otherwise the
+                # start coefficient is exp() of the wrong value.
+                br_b_init = np.asarray(mnl_random_means, dtype=float).copy()
+                for _pos, _i in enumerate(_corr_local):
+                    br_b_init[_i] = _c_means[_pos]
+                for _pos, _i in enumerate(_indep_local):
+                    br_b_init[_i] = _i_means[_pos]
+                variance_init = np.zeros(self.Kchol + self.Kbw)
+                variance_init[:self.Kchol] = np.asarray(_c_var)[:self.Kchol]
+                if self.Kbw:
+                    variance_init[self.Kchol:] = np.asarray(_i_var)[:self.Kbw]
+                effective_dists = [None] * self.Kr
+                for _pos, _i in enumerate(_corr_local):
+                    effective_dists[_i] = _c_eff[_pos]
+                for _pos, _i in enumerate(_indep_local):
+                    effective_dists[_i] = _i_eff[_pos]
+            else:
+                br_b_init, variance_init, effective_dists = _mxl_variance_start(
+                    mnl_random_means, random_distributions,
+                    self.correlationLength,
+                    relative_sd=self.random_sd_start,
+                    sd_floor=self.random_sd_floor,
+                    align_sign=self.align_random_distributions)
             self.effective_rvdist = list(effective_dists)
             if self.align_random_distributions and effective_dists != random_distributions:
                 self.rvdist = list(effective_dists)
@@ -850,15 +953,8 @@ class MixedLogit(DiscreteChoiceModel):
             bftrans_b = mnl.coeff_est[mnl_Kf:mnl_Kf + mnl_Kftrans] if mnl_Kftrans > 0 else np.array([])
             bftrans_l = mnl.coeff_est[mnl_Kf + mnl_Kftrans:mnl_Kf + 2 * mnl_Kftrans] if mnl_Kftrans > 0 else np.array([])
 
-            arr = np.concatenate([bf_init, br_b_init] + list(self._init_pad_arrays()) + [bftrans_b, bftrans_l])
-            self.init_coeff = np.concatenate([arr, variance_init])
-
-            if self.Krtrans:
-                self.init_coeff = np.concatenate([
-                    self.init_coeff,
-                    np.repeat(0.1, self.Krtrans),
-                    np.repeat(0.1, self.Krtrans),
-                ])
+            self.init_coeff = self._assemble_init_coeff(
+                bf_init, br_b_init, variance_init, bftrans_b, bftrans_l)
         # }
 
         betas = np.repeat(0.1, n_coeff) if self.init_coeff is None else self.init_coeff
@@ -1006,7 +1102,8 @@ class MixedLogit(DiscreteChoiceModel):
         # SOLVE OPTIMISATION PROBLEM - COMPUTATIONALLY TIME CONSUMING!
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # ---- JAX fast path ----
-        if getattr(self, '_jax', False) and not use_numba:
+        if (getattr(self, '_jax', False) and not use_numba
+                and self.minimise_func is None):
             jax_result = self.optimize_jax(betas, draws, drawstrans)
             if jax_result is not None:
                 # ── L-BFGS-B polish for stable Hessian ──────────────────
@@ -1228,6 +1325,18 @@ class MixedLogit(DiscreteChoiceModel):
 
         # ---- sample random coefficients: (N, Kr, R) ----
         N = X_jax.shape[0]
+
+        # Apply variance heterogeneity BEFORE forming Br: scale the latent
+        # draws by exp(het_var_rv * covariates). Scaling after the sum would
+        # be a no-op (and left the gradient chasing a phantom term).
+        if K_het_var_rv > 0:
+            het_var_rv = betas[het_offset + K_het_mean_rv:het_offset + K_het_mean_rv + K_het_var_rv]
+            for idx, (rv_idx, col) in enumerate(zip(het_var_rv_idx, het_var_rv_cols)):
+                het_cov = X_jax[:, :, :, col]
+                het_cov_mean = jnp.mean(het_cov, axis=(1, 2))
+                scale = jnp.exp(het_var_rv[idx] * het_cov_mean)
+                draws_jax = draws_jax.at[:, rv_idx:rv_idx+1, :].mul(scale[:, None, None])
+
         Br = Br_b[:, None] + jnp.einsum('kl,nlr->nkr',
                                          chol_mat,
                                          draws_jax[:, :Kr, :])   # (N, Kr, R)
@@ -1240,15 +1349,6 @@ class MixedLogit(DiscreteChoiceModel):
                 het_cov = X_jax[:, :, :, col]
                 het_cov_mean = jnp.mean(het_cov, axis=(1, 2))  # (N,)
                 Br = Br.at[:, rv_idx:rv_idx+1, :].add(het_mean_rv[idx] * het_cov_mean[:, None, None])
-
-        # Apply variance heterogeneity: scale draws by exp(het_var_rv * covariates)
-        if K_het_var_rv > 0:
-            het_var_rv = betas[het_offset + K_het_mean_rv:het_offset + K_het_mean_rv + K_het_var_rv]
-            for idx, (rv_idx, col) in enumerate(zip(het_var_rv_idx, het_var_rv_cols)):
-                het_cov = X_jax[:, :, :, col]
-                het_cov_mean = jnp.mean(het_cov, axis=(1, 2))
-                scale = jnp.exp(het_var_rv[idx] * het_cov_mean)
-                draws_jax = draws_jax.at[:, rv_idx:rv_idx+1, :].mul(scale[:, None, None])
 
         # Apply correlated heterogeneity: draw correlated heterogeneity parameters
         if K_het_corr_cov > 0 and het_corr_groups is not None:
@@ -1870,21 +1970,52 @@ class MixedLogit(DiscreteChoiceModel):
 
                 # For correlation parameters
                 # for s.d.: gr_w = (Obs prob. minus predicted probability) * obs. var * random draw
-
-                # Get the lower triangular indices
-                X_tril_idx, draws_tril_idx = np.tril_indices(self.correlationLength)  # i.e., (rows, cols)
-
-                # Find the s.d. for random variables that are not correlated
-                range_var = list(range(self.correlationLength, self.Kr))
-
-                draws_tril_idx = np.array(np.concatenate((draws_tril_idx, range_var)))
-                X_tril_idx = np.array(np.concatenate((X_tril_idx, range_var)))
+                #
+                # Map each covariance-block gradient column to the random
+                # coefficient column and draw column it differentiates:
+                #   chol entry (v, u) -> gr_b[:, v] * draws[:, u]  (row-major
+                #   lower triangle within the correlated random variables)
+                #   independent var k  -> gr_b[:, k] * draws[:, k]
+                # The correlated variables are NOT necessarily the first
+                # correlationLength random coefficients (partial/arbitrary
+                # correlated sets), so use the actual positions.
+                corr_local = getattr(self, 'rv_corr_local', None)
+                indep_local = getattr(self, 'rv_indep_local', None)
+                if corr_local is None or indep_local is None:
+                    X_tril_idx, draws_tril_idx = np.tril_indices(self.correlationLength)
+                    range_var = list(range(self.correlationLength, self.Kr))
+                    draws_tril_idx = np.concatenate((draws_tril_idx, range_var))
+                    X_tril_idx = np.concatenate((X_tril_idx, range_var))
+                else:
+                    _rows, _cols = [], []
+                    for _j, _v in enumerate(corr_local):
+                        for _c in range(_j + 1):
+                            _rows.append(_v)
+                            _cols.append(corr_local[_c])
+                    for _k in indep_local:
+                        _rows.append(_k)
+                        _cols.append(_k)
+                    X_tril_idx = np.asarray(_rows)
+                    draws_tril_idx = np.asarray(_cols)
 
                 draws_tril_idx = draws_tril_idx.astype(int)
                 X_tril_idx = X_tril_idx.astype(int)
 
+                # d Br_k / d(chol[k, u]) = scale_k * draws_u when variance
+                # heterogeneity is active (the objective scales row k of
+                # chol @ draws), so the multiplier carries the scale of the
+                # ROW variable and the raw draw of the column variable.
+                scale_row = np.ones((N, self.Kr))
+                if self.K_het_var_rv > 0:
+                    for _hi, (_rv, _col) in enumerate(zip(self.het_var_rv_idx,
+                                                         self.het_var_rv_cols)):
+                        _cov = np.mean(X[:, :, :, _col], axis=(1, 2))
+                        scale_row[:, _rv] = np.exp(het_var_rv[_hi] * _cov)
+
                 # Perform element-wise multiplication of two subsets of arrays,
-                gr_w = gr_b[:, X_tril_idx, :] * draws_batch[:, draws_tril_idx, :]  # (N,P,Kr,R)
+                gr_w = (gr_b[:, X_tril_idx, :]
+                        * draws_batch[:, draws_tril_idx, :]
+                        * scale_row[:, X_tril_idx, None])  # (N,P,Kr,R)
 
                 gr_b = np.mean(gr_b * pch_batch[:, None, :], axis=2)  # (N,Kr)
                 gr_w = np.mean(gr_w * pch_batch[:, None, :], axis=2)  # (N,Kr)
@@ -1940,7 +2071,17 @@ class MixedLogit(DiscreteChoiceModel):
                     grtrans_b = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xrtrans_lmda) * dertrans
 
                     # for s.d. (obs - pred) * obs var * der rand coef * rd draw
-                    grtrans_w = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xrtrans_lmda) * dertrans * drawstrans_batch
+                    # (draws carry the variance-heterogeneity scale when active)
+                    drawstrans_for_w = drawstrans_batch
+                    if self.K_het_var_rvtrans > 0:
+                        drawstrans_for_w = drawstrans_batch.copy()
+                        for _hi, (_rv, _col) in enumerate(zip(
+                                self.het_var_rvtrans_idx,
+                                self.het_var_rvtrans_cols)):
+                            _cov = np.mean(X[:, :, :, _col], axis=(1, 2))
+                            drawstrans_for_w[:, _rv, :] *= np.exp(
+                                het_var_rvtrans[_hi] * _cov)[:, None]
+                    grtrans_w = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xrtrans_lmda) * dertrans * drawstrans_for_w
 
                     # for the lambda param. gradient = (obs - pred) * deriv x_lambda * beta
                     der_Xrtrans_lmda = self.transform_deriv(Xrtrans, rlmda)
@@ -1978,15 +2119,19 @@ class MixedLogit(DiscreteChoiceModel):
 
             if self.K_het_var_rv > 0 and self.Kr > 0:
                 gr_het_var_rv = np.zeros((N, self.K_het_var_rv))
+                # d Br / d het_var = (chol @ draws) * scale * covariate,
+                # then through the mixing distribution (ln/tn) via `der`.
+                tmp_r = np.matmul(chol_mat[:self.Kr, :self.Kr], draws_batch) \
+                    if chol_mat.size else draws_batch[:, :self.Kr, :]
                 for idx, (rv_idx, col) in enumerate(zip(self.het_var_rv_idx, self.het_var_rv_cols)):
                     het_cov = X[:, :, :, col]
                     het_cov_mean = np.mean(het_cov, axis=(1, 2))
                     scale = np.exp(het_var_rv[idx] * het_cov_mean)
-                    # Gradient: (y-p) * X_r * draw * covariate_mean * scale
                     rv_col = self.rv_col_idx[rv_idx]
                     x_r = X[:, :, :, rv_col:rv_col+1]
-                    draws_r = draws_batch[:, rv_idx:rv_idx+1, :] * scale[:, None, None]
-                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * draws_r[:, 0, :] * het_cov_mean[:, None]
+                    deriv = (tmp_r[:, rv_idx, :] * scale[:, None]
+                             * het_cov_mean[:, None] * der[:, rv_idx, :])
+                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * deriv
                     gr_het_var_rv[:, idx] = np.mean(grad * pch_batch, axis=1)
 
                 g = np.concatenate((g, gr_het_var_rv), axis=1) if g.size else gr_het_var_rv
@@ -2011,8 +2156,12 @@ class MixedLogit(DiscreteChoiceModel):
                     scale = np.exp(het_var_rvtrans[idx] * het_cov_mean)
                     rv_col = self.rvtrans_col_idx[rv_idx]
                     x_r = X[:, :, :, rv_col:rv_col+1]
-                    draws_r = drawstrans_batch[:, rv_idx:rv_idx+1, :] * scale[:, None, None]
-                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * draws_r[:, 0, :] * het_cov_mean[:, None]
+                    # d Brtrans / d het_var = draw * scale * sd * covariate,
+                    # then through the mixing distribution via `dertrans`.
+                    deriv = (drawstrans_batch[:, rv_idx, :] * scale[:, None]
+                             * Brtrans_w[rv_idx] * het_cov_mean[:, None]
+                             * dertrans[:, rv_idx, :])
+                    grad = dev.np.einsum('npjr,npjk -> nr', ymp, x_r) * deriv
                     gr_het_var_rvtrans[:, idx] = np.mean(grad * pch_batch, axis=1)
 
                 g = np.concatenate((g, gr_het_var_rvtrans), axis=1) if g.size else gr_het_var_rvtrans
@@ -2066,6 +2215,11 @@ class MixedLogit(DiscreteChoiceModel):
 
         g = np.sum(g, axis=0) / n_batches  # (K, )
         g = g - self.regularize_l1_grad(betas)
+        # L2 ridge penalty gradient: the objective subtracts
+        # reg_penalty * sum(betas^2) from the log-likelihood, so its
+        # derivative (2 * reg_penalty * betas) must be included too.
+        if self.reg_penalty:
+            g = g - 2.0 * self.reg_penalty * betas
         self.gtol_res = np.linalg.norm(g, ord=np.inf)
 
         result = (-loglik,)  # Create a tuple
@@ -2426,6 +2580,17 @@ class MixedLogit(DiscreteChoiceModel):
         if self.Kr != 0:  # {
             tmp = dev.np.matmul(chol_mat[:self.Kr, :self.Kr], draws)
 
+            # Apply variance heterogeneity to the latent draws BEFORE forming
+            # Br: scale each affected row of chol @ draws by
+            # exp(het_var * covariate). Scaling `tmp` after `Br = Br_b + tmp`
+            # would be a no-op (the addition already copied).
+            if self.K_het_var_rv > 0:
+                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rv_idx, self.het_var_rv_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    scale = np.exp(het_var_rv[idx] * het_cov_mean)  # (N,)
+                    tmp[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
+
             Br = Br_b[None, :, None] + tmp
             # Br_b has dimension (Kr) and tmp has dimension (N, Kr, P*J)
             # First reshape Br, creating a first and third dimension so dimension (1, Kr, 1)
@@ -2439,14 +2604,6 @@ class MixedLogit(DiscreteChoiceModel):
                     # Average across alternatives and panels for individual-level covariate
                     het_cov_mean = np.mean(het_cov, axis=(1, 2))  # (N,)
                     Br[:, rv_idx:rv_idx+1, :] += het_mean_rv[idx] * het_cov_mean[:, None, None]
-
-            # Apply variance heterogeneity: scale draws by exp(het_var_rv * covariates)
-            if self.K_het_var_rv > 0:
-                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rv_idx, self.het_var_rv_cols)):
-                    het_cov = X[:, :, :, col]
-                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
-                    scale = np.exp(het_var_rv[idx] * het_cov_mean)  # (N,)
-                    tmp[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
 
             # apply_distribution - rvdist is already filtered in generate_draws()
             Br = self.draws_generator.apply_distribution(Br, self.rvdist)
@@ -2470,6 +2627,18 @@ class MixedLogit(DiscreteChoiceModel):
 
         if self.Krtrans != 0:
             # {
+            # Apply variance heterogeneity for transformed random vars BEFORE
+            # forming Brtrans (scaling after the sum would be a no-op). Copy
+            # first: drawstrans is a view into the model's draw array and the
+            # in-place scaling would otherwise compound across evaluations.
+            if self.K_het_var_rvtrans > 0:
+                drawstrans = drawstrans.copy()
+                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rvtrans_idx, self.het_var_rvtrans_cols)):
+                    het_cov = X[:, :, :, col]
+                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
+                    scale = np.exp(het_var_rvtrans[idx] * het_cov_mean)
+                    drawstrans[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
+
             Brtrans = Brtrans_b[None, :, None] + drawstrans[:, 0:self.Krtrans, :] * Brtrans_w[None, :,
                                                                                     None]  # Creating the random coeffs
 
@@ -2479,14 +2648,6 @@ class MixedLogit(DiscreteChoiceModel):
                     het_cov = X[:, :, :, col]
                     het_cov_mean = np.mean(het_cov, axis=(1, 2))
                     Brtrans[:, rv_idx:rv_idx+1, :] += het_mean_rvtrans[idx] * het_cov_mean[:, None, None]
-
-            # Apply variance heterogeneity for transformed random vars
-            if self.K_het_var_rvtrans > 0:
-                for idx, (rv_idx, col) in enumerate(zip(self.het_var_rvtrans_idx, self.het_var_rvtrans_cols)):
-                    het_cov = X[:, :, :, col]
-                    het_cov_mean = np.mean(het_cov, axis=(1, 2))
-                    scale = np.exp(het_var_rvtrans[idx] * het_cov_mean)
-                    drawstrans[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
 
             Brtrans = self.draws_generator.apply_distribution(Brtrans, self.rvtransdist)
             self.Brtrans = Brtrans  # saving for later use
@@ -2607,10 +2768,12 @@ class MixedLogit(DiscreteChoiceModel):
         Kr = K if K else self.Kr
         der = dev.np.ones((N, Kr, R))
         distr = distr if distr else self.rvdist
-        if any(set(distr).intersection(['ln', 'tn'])):  # If any ln or tn
+        if any(set(distr).intersection(['ln', 'nln', 'tn'])):  # ln / negative-ln / tn
         # {
             for k, distr_k in enumerate(distr):  # {
-                if distr_k == 'ln':
+                if distr_k in ('ln', 'nln'):
+                    # ln: Br = exp(z); nln: Br = -exp(z). In both cases
+                    # d Br / d z = Br, so the derivative is the coefficient.
                     der[:, k, :] = betas_random[:, k, :]
                 elif distr_k == 'tn':  # Set any element > 0 as 1 and 0 otherwise
                     der[:, k, :] = (betas_random[:, k, :] > 0).astype(int)
@@ -2790,6 +2953,25 @@ class MixedLogit(DiscreteChoiceModel):
             self.corr_mat = corr
         except Exception:
             pass
+
+    def _assemble_init_coeff(self, bf_init, br_b_init, variance_init,
+                             bftrans_b, bftrans_l):
+        """Assemble the MNL-based start in the objective's beta layout.
+
+        The layout is ``[Bf | Br_b | chol | Br_w | Bftrans | flmbda |
+        Brtrans_b | Brtrans_w | rlmda | het_* | subclass extras]``. The
+        previous assembly inserted the het pads between Br_b and Bftrans and
+        appended the variance block at the end, scrambling the start for any
+        Box-Cox/heterogeneity spec (e.g. lambda seeded with a Cholesky
+        spread and the log-normal mean start landing on a wrong slot).
+        """
+        parts = [bf_init, br_b_init, variance_init, bftrans_b, bftrans_l]
+        if getattr(self, 'Krtrans', 0):
+            parts += [np.repeat(0.1, self.Krtrans)] * 3
+        parts += list(self._init_pad_arrays())
+        parts = [np.asarray(p, dtype=float).ravel() for p in parts
+                 if p is not None and len(p)]
+        return np.concatenate(parts) if parts else None
 
     def _init_pad_arrays(self):
         """Extra arrays to insert between Br_b and Bftrans in init_coeff.

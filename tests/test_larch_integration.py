@@ -11,10 +11,53 @@ import pandas as pd
 import pytest
 
 
+_LARCH_WORKS = None
+
+
+def _larch_works():
+    """True when larch is installed AND can fit a trivial MNL.
+
+    larch can be importable yet non-functional when its sharrow dataflow
+    stack is missing/incompatible: every larch flow then fails with
+    "Setup failed for variable ..." (even larch's own bundled examples).
+    Probe once so the larch-dependent tests skip cleanly instead of failing
+    on an environment problem unrelated to SearchLibrium.
+    """
+    global _LARCH_WORKS
+    if _LARCH_WORKS is None:
+        _LARCH_WORKS = False
+        try:
+            import larch as lx
+            from larch import P, X as LX
+
+            rng = np.random.default_rng(0)
+            rows = []
+            for i in range(12):
+                x = rng.normal(size=2)
+                ch = int(np.argmax(x + rng.gumbel(size=2)))
+                for j, a in enumerate((0, 1)):
+                    rows.append((i, a, x[j], 1 if j == ch else 0))
+            frame = pd.DataFrame(rows, columns=["case", "alt", "x", "ch"])
+            frame = frame.set_index(["case", "alt"])
+            ds = lx.Dataset.construct.from_idca(frame)
+            m = lx.Model(ds)
+            m.choice_ca_var = "ch"
+            for a in (0, 1):
+                m.utility_co[a] = P("B_x") * LX("x")
+            m.maximize_loglike()
+            _LARCH_WORKS = bool(np.isfinite(m.loglike()))
+        except Exception:
+            _LARCH_WORKS = False
+    return _LARCH_WORKS
+
+
 def _needs_larch():
+    if __import__("importlib").util.find_spec("larch") is None:
+        return pytest.mark.skipif(True, reason="larch not installed")
     return pytest.mark.skipif(
-        __import__("importlib").util.find_spec("larch") is None,
-        reason="larch not installed")
+        not _larch_works(),
+        reason="larch installed but its sharrow dataflow stack cannot fit a "
+               "trivial MNL in this environment")
 
 
 # ---------------------------------------------------------------------------
