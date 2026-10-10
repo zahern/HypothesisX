@@ -398,8 +398,10 @@ def call_siman(parameters, init_sol=None, ctrl=None, thorough=False, deep=False,
     # letting choose_starting_solution recompute (override) it from delta-E sampling.
     kwargs.setdefault('calibrate_tI', not ctrl_was_provided)
     solver = SA(parameters, init_sol, ctrl, id_num, **kwargs)
-    solver.run()
-    solver.close_files()
+    try:
+        solver.run()
+    finally:
+        solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='SA')
     return best
@@ -451,8 +453,10 @@ def call_sapbil(parameters, init_sol=None, ctrl=None, **kwargs):
     print()
 
     solver = SAPBIL(parameters, init_sol, ctrl, id_num, **kwargs)
-    solver.run()
-    solver.close_files()
+    try:
+        solver.run()
+    finally:
+        solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm="SA+PBIL")
     return best
@@ -499,8 +503,10 @@ def call_banditsa(parameters, init_sol=None, ctrl=None, **kwargs):
     print()
 
     solver = BanditSA(parameters, init_sol, ctrl, id_num, **kwargs)
-    solver.run()
-    solver.close_files()
+    try:
+        solver.run()
+    finally:
+        solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='BanditSA')
     return best
@@ -563,8 +569,10 @@ def call_harmony(parameters, init_sol=None, ctrl=None, thorough=False, deep=Fals
     if kwargs:
         solver.set_control_parameters(**kwargs)
     existing = [init_sol] if init_sol is not None else None
-    solver.run_search(existing_sols=existing)
-    solver.close_files()
+    try:
+        solver.run_search(existing_sols=existing)
+    finally:
+        solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='HS')
     return best
@@ -623,8 +631,10 @@ def call_agds(parameters, init_sol=None, ctrl=None, thorough=False, deep=False, 
     if kwargs:
         solver.set_control_parameters(**kwargs)
     existing = [init_sol] if init_sol is not None else None
-    solver.run_search(existing_sols=existing)
-    solver.close_files()
+    try:
+        solver.run_search(existing_sols=existing)
+    finally:
+        solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='AGDS')
     return best
@@ -688,8 +698,10 @@ def call_harmony_pbil(parameters, init_sol=None, ctrl=None, **kwargs):
         except TypeError:
             pass
     existing = [init_sol] if init_sol is not None else None
-    solver.run_search(existing_sols=existing)
-    solver.close_files()
+    try:
+        solver.run_search(existing_sols=existing)
+    finally:
+        solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='HS+PBIL')
     return best
@@ -808,8 +820,10 @@ def call_threshold(parameters, init_sol=None, ctrl=None, **kwargs):
     print()
 
     solver = TA(parameters, init_sol, ctrl, id_num, **kwargs)
-    solver.run()
-    solver.close_files()
+    try:
+        solver.run()
+    finally:
+        solver.close_files()
     best = solver.return_best()
     _print_dashboard(solver, best, algorithm='TA')
     return best
@@ -843,8 +857,10 @@ def call_threshold(parameters, init_sol=None, ctrl=None):
     if ctrl is None:
         ctrl = (10, 20, 20)     # (threshold, max_steps, max_iter)
     solver = TA(parameters, init_sol, ctrl)
-    solver.run()
-    solver.close_files()
+    try:
+        solver.run()
+    finally:
+        solver.close_files()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

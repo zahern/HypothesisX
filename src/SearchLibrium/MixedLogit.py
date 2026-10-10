@@ -6,6 +6,8 @@ import scipy.stats as ss
 from scipy.optimize import minimize, differential_evolution
 from typing import Callable, Tuple
 import inspect
+import weakref
+from collections import OrderedDict
 
 # Set env var SL_QUIET=1 to suppress per-fit progress/debug prints (useful when
 # the model is fit hundreds of times inside a metaheuristic search, which
@@ -1489,9 +1491,64 @@ class MixedLogit(DiscreteChoiceModel):
     # ------------------------------------------------------------------
     # Per-shape JIT cache: avoids recompilation when the same (N, P, J,
     # Kf, Kr, Kchol, Kbw) combination is visited again during GA search.
-    # Cleared by _clear_jit_cache() when memory pressure is high.
+    #
+    # MEMORY: the cache is a bounded LRU, and every cached callable closes
+    # over a *weakref* to the model that built it. Caching a closure that
+    # captured ``self`` directly made each entry pin a whole model (and its
+    # X/y/draws arrays plus a live XLA executable) for the life of the
+    # process; during a heterogeneous GA search that is one retained model
+    # per distinct parameter-count combination.
     # ------------------------------------------------------------------
-    _mxl_jit_cache: dict = {}
+    _JIT_CACHE_MAXSIZE = 16
+    _mxl_jit_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+
+    @staticmethod
+    def _freeze(value):
+        """Hashable, structural fingerprint of a closure-constant value.
+
+        Used so the cache key actually reflects the per-instance data baked
+        into the cached callable (index lists, group definitions). Keying on
+        shapes alone let two specs with identical shapes but different index
+        lists collide and silently reuse the wrong compiled function.
+        """
+        if isinstance(value, np.ndarray):
+            return (value.shape, str(value.dtype), value.tobytes())
+        if isinstance(value, (list, tuple)):
+            return tuple(MixedLogit._freeze(v) for v in value)
+        if isinstance(value, dict):
+            return tuple(sorted((k, MixedLogit._freeze(v))
+                                for k, v in value.items()))
+        return value
+
+    @classmethod
+    def _closure_key(cls, extra):
+        """Cache-key fragment covering everything captured from ``self``."""
+        return tuple((k, cls._freeze(v)) for k, v in sorted(extra.items()))
+
+    @classmethod
+    def _jit_cache_get(cls, key):
+        """Fetch a live cache entry, dropping it if its owner was collected."""
+        entry = cls._mxl_jit_cache.get(key)
+        if entry is None:
+            return None
+        ref, value = entry
+        if ref is not None and ref() is None:
+            cls._mxl_jit_cache.pop(key, None)
+            return None
+        cls._mxl_jit_cache.move_to_end(key)
+        return value
+
+    @classmethod
+    def _jit_cache_put(cls, key, value, owner):
+        """Insert an entry, evicting least-recently-used ones past maxsize."""
+        try:
+            ref = weakref.ref(owner)
+        except TypeError:
+            ref = None
+        cls._mxl_jit_cache[key] = (ref, value)
+        cls._mxl_jit_cache.move_to_end(key)
+        while len(cls._mxl_jit_cache) > cls._JIT_CACHE_MAXSIZE:
+            cls._mxl_jit_cache.popitem(last=False)
 
     @classmethod
     def _clear_jit_cache(cls):
@@ -1526,23 +1583,23 @@ class MixedLogit(DiscreteChoiceModel):
             import jax
             import numpy as _np
             key = tuple(_cache_key) + ('jaxopt',)
-            solver = self._mxl_jit_cache.get(key)
+            solver = self._jit_cache_get(key)
             if solver is None:
                 solver = jaxopt.LBFGS(
                     fun=_fn, value_and_grad=False,
                     maxiter=int(self.maxiter),
                     tol=float(self.gtol), jit=True)
-                self._mxl_jit_cache[key] = solver
+                self._jit_cache_put(key, solver, self)
             import jax.numpy as _jnp
             b0 = _jnp.array(np.asarray(betas, dtype=float), dtype=_jnp.float64)
             params, state = solver.run(b0, X_jax, y_jax, pi_jax, draws_jax)
             x = _np.asarray(params, dtype=float)
             # Objective value via a jitted value_and_grad (one extra
             # compile per shape, reused across fits like everything else).
-            _vg = self._mxl_jit_cache.get(_cache_key)
+            _vg = self._jit_cache_get(_cache_key)
             if _vg is None:
                 _vg = jax.jit(jax.value_and_grad(_fn))
-                self._mxl_jit_cache[_cache_key] = _vg
+                self._jit_cache_put(_cache_key, _vg, self)
             v, _g = _vg(_jnp.array(x, dtype=_jnp.float64),
                         X_jax, y_jax, pi_jax, draws_jax)
             fun = float(v)
@@ -1564,10 +1621,10 @@ class MixedLogit(DiscreteChoiceModel):
             # path below so post_process behaves identically).
             try:
                 _hkey = key + ('hess',)
-                _ch = self._mxl_jit_cache.get(_hkey)
+                _ch = self._jit_cache_get(_hkey)
                 if _ch is None:
                     _ch = jax.jit(jax.hessian(_fn))
-                    self._mxl_jit_cache[_hkey] = _ch
+                    self._jit_cache_put(_hkey, _ch, self)
                 _H = _ch(_jnp.array(x, dtype=_jnp.float64),
                          X_jax, y_jax, pi_jax, draws_jax)
                 _Hnp = _np.asarray(_H, dtype=float)
@@ -1644,18 +1701,30 @@ class MixedLogit(DiscreteChoiceModel):
                 # else: fall through to the per-shape path
 
             # ── per-shape JIT cache ────────────────────────────────
-            # Key only on shape; data arrays are passed as explicit
-            # arguments so the same compiled function works for any
-            # concrete data of matching shape.
+            # Key on shape AND on every value captured from ``self``, so two
+            # specs with the same shape but different index lists cannot
+            # collide. The callable dereferences a weakref rather than
+            # capturing ``self``, so a cache hit never keeps a dead model
+            # (and its X/y/draws arrays) alive.
             _N = X_jax.shape[0]
             _P = X_jax.shape[1] if X_jax.ndim > 1 else 1
             _J = X_jax.shape[2] if X_jax.ndim > 2 else 1
-            _cache_key = (_N, _P, _J, Kf, Kr, Kchol, Kbw) + self._jax_cache_key_extra()
             _extra = self._jax_negloglik_extra_kwargs()
-            _fn = lambda b, _X, _y, _pi, _dr: self._jax_mxl_negloglik(
-                b, _X, _y, _pi, _dr,
-                fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names, correlationLength,
-                **_extra)
+            _cache_key = ((_N, _P, _J, Kf, Kr, Kchol, Kbw)
+                          + self._jax_cache_key_extra()
+                          + (self._closure_key(_extra),))
+            _sref = weakref.ref(self)
+
+            def _fn(b, _X, _y, _pi, _dr):
+                _self = _sref()
+                if _self is None:
+                    raise RuntimeError(
+                        "MixedLogit instance was garbage-collected while its "
+                        "compiled objective was still in use")
+                return _self._jax_mxl_negloglik(
+                    b, _X, _y, _pi, _dr,
+                    fxidx, rvidx, Kf, Kr, Kchol, Kbw, rvdist_names,
+                    correlationLength, **_extra)
             # ── jaxopt solver (experiment): same likelihood, jaxopt.LBFGS
             # instead of SciPy. Selected via model.engine == 'jaxopt'.
             # Falls through to the SciPy path on any failure.
@@ -1667,10 +1736,10 @@ class MixedLogit(DiscreteChoiceModel):
                 if not _SL_QUIET:
                     print("[JAX MXL optimizer] jaxopt unavailable/failed; "
                           "falling back to scipy.")
-            _compiled = self._mxl_jit_cache.get(_cache_key)
+            _compiled = self._jit_cache_get(_cache_key)
             if _compiled is None:
                 _compiled = jax.jit(jax.value_and_grad(_fn))
-                self._mxl_jit_cache[_cache_key] = _compiled
+                self._jit_cache_put(_cache_key, _compiled, self)
             # ────────────────────────────────────────────────────────
 
             def _obj(betas_np):
@@ -1692,10 +1761,10 @@ class MixedLogit(DiscreteChoiceModel):
             # ── JAX autograd Hessian for standard errors ───────────────
             try:
                 hess_cache_key = _cache_key + ('hess',)
-                _compiled_hess = self._mxl_jit_cache.get(hess_cache_key)
+                _compiled_hess = self._jit_cache_get(hess_cache_key)
                 if _compiled_hess is None:
                     _compiled_hess = jax.jit(jax.hessian(_fn))
-                    self._mxl_jit_cache[hess_cache_key] = _compiled_hess
+                    self._jit_cache_put(hess_cache_key, _compiled_hess, self)
                 b_opt = jnp.array(result['x'], dtype=jnp.float64)
                 H = _compiled_hess(b_opt, X_jax, y_jax, pi_jax, draws_jax)
                 H_np = np.asarray(H, dtype=float)
@@ -1768,14 +1837,21 @@ class MixedLogit(DiscreteChoiceModel):
             # masks/codes are ARGUMENTS (dynamic data, static shape) so one
             # compiled fn serves every spec; KF/KR/reg/sdp are baked in (keyed).
             key = ('masked', N, P, J, KF, KR, reg, sdp)
-            fn = self._mxl_jit_cache.get(key)
+            fn = self._jit_cache_get(key)
             if fn is None:
-                _f = lambda b, _X, _y, _pi, _dr, _mf, _mr, _cd: \
-                    self._jax_mxl_negloglik_masked(
+                _sref = weakref.ref(self)
+
+                def _f(b, _X, _y, _pi, _dr, _mf, _mr, _cd):
+                    _self = _sref()
+                    if _self is None:
+                        raise RuntimeError(
+                            "MixedLogit instance was garbage-collected while "
+                            "its compiled objective was still in use")
+                    return _self._jax_mxl_negloglik_masked(
                         b, _X, _y, _pi, _dr, _mf, _mr, _cd, KF, KR,
                         reg_penalty=reg, sd_penalty=sdp)
                 fn = jax.jit(jax.value_and_grad(_f))
-                self._mxl_jit_cache[key] = fn
+                self._jit_cache_put(key, fn, self)
 
             def _scatter(real_bnp):
                 bpad = _np.zeros(KF + 2 * KR, dtype=_np.float64)
@@ -1807,14 +1883,21 @@ class MixedLogit(DiscreteChoiceModel):
             # (padded rows/cols are exactly flat -> singular otherwise).
             try:
                 hkey = key + ('hess',)
-                hfn = self._mxl_jit_cache.get(hkey)
+                hfn = self._jit_cache_get(hkey)
                 if hfn is None:
-                    _fh = lambda b, _X, _y, _pi, _dr, _mf, _mr, _cd: \
-                        self._jax_mxl_negloglik_masked(
+                    _sref_h = weakref.ref(self)
+
+                    def _fh(b, _X, _y, _pi, _dr, _mf, _mr, _cd):
+                        _self = _sref_h()
+                        if _self is None:
+                            raise RuntimeError(
+                                "MixedLogit instance was garbage-collected "
+                                "while its compiled objective was still in use")
+                        return _self._jax_mxl_negloglik_masked(
                             b, _X, _y, _pi, _dr, _mf, _mr, _cd, KF, KR,
                             reg_penalty=reg, sd_penalty=sdp)
                     hfn = jax.jit(jax.hessian(_fh))
-                    self._mxl_jit_cache[hkey] = hfn
+                    self._jit_cache_put(hkey, hfn, self)
                 H = _np.asarray(hfn(jnp.asarray(xr, dtype=jnp.float64), X_pad_j,
                                     y_jax, pi_jax, draws_pad_j,
                                     mask_f_j, mask_r_j, codes_j), dtype=float)

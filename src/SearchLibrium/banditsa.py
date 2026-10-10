@@ -8,6 +8,7 @@ This module provides:
 import logging
 
 import numpy as np
+from collections import deque
 
 try:
     from siman import SA
@@ -90,7 +91,10 @@ class BanditSA(SA):
             prior_beta=bandit_prior_beta,
             epsilon=bandit_epsilon,
         )
-        self.bandit_history = []
+        # Appended once per perturbation attempt; unbounded list grew to
+        # max_iter x max_temp_steps entries (1e6+ on deep searches). Only
+        # recent history is useful for diagnostics.
+        self.bandit_history: deque = deque(maxlen=8192)
 
     def _build_action_table(self):
         return [

@@ -459,33 +459,35 @@ class SparseEAAGDS(Search):
             for mn, v in model_best.items():
                 model_hist.setdefault(mn, []).append((gen, v))
 
-        for gen in range(self.maxiter):
-            children = self._reproduce(memory)
-            memory = self._environmental_selection(memory + children, self.pop_size)
-            best = self._sort_mem(memory)[0]
-            if self.best_sol is None or best.obj(0) < self.best_sol.obj(0):
-                self.best_sol = best
-            logger.info("[AGDS] gen {}: best obj0 = {:.6g}".format(gen, best.obj(0)))
-            _record_model_history(gen, memory)
+        try:
+            for gen in range(self.maxiter):
+                children = self._reproduce(memory)
+                memory = self._environmental_selection(memory + children, self.pop_size)
+                best = self._sort_mem(memory)[0]
+                if self.best_sol is None or best.obj(0) < self.best_sol.obj(0):
+                    self.best_sol = best
+                logger.info("[AGDS] gen {}: best obj0 = {:.6g}".format(gen, best.obj(0)))
+                _record_model_history(gen, memory)
 
-            # Log per-generation best values
-            try:
-                _best = {}
-                for sol in memory:
-                    for ci, cn in enumerate(crit_names):
-                        try:
-                            v = float(sol.obj(ci))
-                        except Exception:
-                            v = float('inf')
-                        if cn not in _best or abs(v) < abs(_best[cn]):
-                            _best[cn] = v
-                _vals = ','.join(str(_best.get(cn, '')) for cn in crit_names)
-                print(f"{gen},{_vals}", file=pf)
-                pf.flush()
-            except Exception:
-                pass
+                # Log per-generation best values
+                try:
+                    _best = {}
+                    for sol in memory:
+                        for ci, cn in enumerate(crit_names):
+                            try:
+                                v = float(sol.obj(ci))
+                            except Exception:
+                                v = float('inf')
+                            if cn not in _best or abs(v) < abs(_best[cn]):
+                                _best[cn] = v
+                    _vals = ','.join(str(_best.get(cn, '')) for cn in crit_names)
+                    print(f"{gen},{_vals}", file=pf)
+                    pf.flush()
+                except Exception:
+                    pass
+        finally:
+            pf.close()
 
-        pf.close()
         self.memory = self._sort_mem(memory)
         logger.info("[AGDS] search complete; best obj0 = {:.6g}"
                     .format(self.memory[0].obj(0)))

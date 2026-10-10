@@ -479,8 +479,14 @@ class SA(Search):
 
     def close_files(self):
     # {
-        for f in (self.results_file, self.progress_file,
-                  self.debug_file, self.archive_file, self.best_file):
+        # Idempotent + fault-tolerant: __del__ and context-manager cleanup
+        # both reach here, so it must tolerate partially-initialised or
+        # already-closed handles, and must not strand the remaining files.
+        for name in ('results_file', 'progress_file', 'debug_file',
+                     'archive_file', 'best_file'):
+            f = getattr(self, name, None)
+            if f is None:
+                continue
             try:
                 f.flush()
                 f.close()
@@ -1502,18 +1508,22 @@ class SA(Search):
 
         # }
 
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(solver.run) for solver in self.solvers]
+        try:
+            with ThreadPoolExecutor() as executor:
+                futures = [executor.submit(solver.run) for solver in self.solvers]
 
-        for future in as_completed(futures):
-            result = future.result()  # This will wait until each task completes
+            for future in as_completed(futures):
+                result = future.result()  # This will wait until each task completes
 
-        for q, solver in enumerate(self.solvers):
-        # {
-            solver.current_sol['class_num'] = q
-            solver.best_sol['class_num'] = q
-            solver.finalise()
-        # }
+            for q, solver in enumerate(self.solvers):
+            # {
+                solver.current_sol['class_num'] = q
+                solver.best_sol['class_num'] = q
+                solver.finalise()
+            # }
+        finally:
+            # One SA per class count, each holding 5 log handles.
+            self.close_worker_files()
 
     # }
 
@@ -1573,11 +1583,28 @@ class PARSA():
         for i in range(self.nthrds):
             self.solvers[i].comm_int = self.comm_int
 
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self.solvers[i].run) for i in range(self.nthrds)]
+        try:
+            with ThreadPoolExecutor() as executor:
+                futures = [executor.submit(self.solvers[i].run) for i in range(self.nthrds)]
+        finally:
+            # Each worker SA opened 5 log handles in __init__; releasing them
+            # here stops 5 * nthrds descriptors surviving the call.
+            self.close_worker_files()
 
         self.wait(futures)
         print("PARSA FINISHED!")
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Close the log files of every worker solver.        '''
+    ''' ---------------------------------------------------------- '''
+    def close_worker_files(self):
+    # {
+        for solver in getattr(self, 'solvers', ()):
+            try:
+                solver.close_files()
+            except Exception:
+                pass
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1647,20 +1674,24 @@ class PARCOPSA(PARSA):
             self.wait(futures)
             # ~~~~~~~~~~~~~~~~~~~~~~
             cont, step = True, 0
-            while cont:
-            # {
-                step += 1
-                print(f"PARCOPSA. Step {step}")
-                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                futures = [executor.submit(self.solvers[i].iterate) for i in range(self.nthrds)]
-                self.wait(futures)
-                best_sol = self.get_best()
-                self.communicate(best_sol)
-                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                cont = all(not self.solvers[i].terminate for i in range(self.nthrds))
-            # }
+            try:
+                while cont:
+                # {
+                    step += 1
+                    print(f"PARCOPSA. Step {step}")
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    futures = [executor.submit(self.solvers[i].iterate) for i in range(self.nthrds)]
+                    self.wait(futures)
+                    best_sol = self.get_best()
+                    self.communicate(best_sol)
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    cont = all(not self.solvers[i].terminate for i in range(self.nthrds))
+                # }
+            finally:
+                for i in range(self.nthrds):
+                    self.solvers[i].finalise()
+                # Release each worker's log handles (5 per worker).
+                self.close_worker_files()
         # }
-        for i in range(self.nthrds):
-            self.solvers[i].finalise()
     # }
 # }

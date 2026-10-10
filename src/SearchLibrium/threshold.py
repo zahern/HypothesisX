@@ -103,11 +103,17 @@ class TA(Search):
 
     def close_files(self):
     # {
-        self.results_file.close()
-        self.progress_file.close()
-        self.archive_file.close()
-        self.debug_file.close()
-        self.best_file.close()
+        # Idempotent + fault-tolerant: an unguarded close() here meant one
+        # bad handle raised and left the rest open for the process lifetime.
+        for name in ('results_file', 'progress_file', 'archive_file',
+                     'debug_file', 'best_file'):
+            f = getattr(self, name, None)
+            if f is None:
+                continue
+            try:
+                f.close()
+            except Exception:
+                pass
     # }
     ''' ---------------------------------------------------------- '''
     ''' Function.                                                  '''
@@ -683,11 +689,28 @@ class PARTA():
         for i in range(self.nthrds):
             self.solvers[i].comm_int = self.comm_int
 
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self.solvers[i].run) for i in range(self.nthrds)]
+        try:
+            with ThreadPoolExecutor() as executor:
+                futures = [executor.submit(self.solvers[i].run) for i in range(self.nthrds)]
+        finally:
+            # Each worker TA opened 5 log handles in __init__; release them so
+            # 5 * nthrds descriptors do not survive the call.
+            self.close_worker_files()
 
         self.wait(futures)
         print("PARSA FINISHED!")
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Close the log files of every worker solver.        '''
+    ''' ---------------------------------------------------------- '''
+    def close_worker_files(self):
+    # {
+        for solver in getattr(self, 'solvers', ()):
+            try:
+                solver.close_files()
+            except Exception:
+                pass
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -757,21 +780,25 @@ class PARCOPTA(PARTA):
             self.wait(futures)
             # ~~~~~~~~~~~~~~~~~~~~~~
             cont, step = True, 0
-            while cont:
-            # {
-                step += 1
-                print(f"PARCOPSA. Step {step}")
-                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                futures = [executor.submit(self.solvers[i].iterate) for i in range(self.nthrds)]
-                self.wait(futures)
-                best_sol = self.get_best()
-                self.communicate(best_sol)
-                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                cont = all(not self.solvers[i].terminate for i in range(self.nthrds))
-            # }
+            try:
+                while cont:
+                # {
+                    step += 1
+                    print(f"PARCOPSA. Step {step}")
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    futures = [executor.submit(self.solvers[i].iterate) for i in range(self.nthrds)]
+                    self.wait(futures)
+                    best_sol = self.get_best()
+                    self.communicate(best_sol)
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    cont = all(not self.solvers[i].terminate for i in range(self.nthrds))
+                # }
+            finally:
+                for i in range(self.nthrds):
+                    self.solvers[i].finalise()
+                # Release each worker's log handles (5 per worker).
+                self.close_worker_files()
         # }
-        for i in range(self.nthrds):
-            self.solvers[i].finalise()
     # }
 # }
 

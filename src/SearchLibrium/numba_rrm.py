@@ -46,7 +46,7 @@ def _softplus_py(z):
 # ---------------------------------------------------------------------------
 # fixed-coefficient RRM
 # ---------------------------------------------------------------------------
-@njit(cache=False)
+@njit(cache=True)
 def _rrm_negloglik_nb(beta, X, y_idx, avail, has_avail):
     """Negative log-likelihood.
 
@@ -100,7 +100,7 @@ def _rrm_negloglik_nb(beta, X, y_idx, avail, has_avail):
     return nll
 
 
-@njit(cache=False, parallel=True)
+@njit(cache=True, parallel=True)
 def _rrm_negloglik_and_grad_nb(beta, X, y_idx, avail, has_avail, grad_out):
     """Value + central-difference gradient (prange over parameters)."""
     K = beta.shape[0]
@@ -120,7 +120,7 @@ def _rrm_negloglik_and_grad_nb(beta, X, y_idx, avail, has_avail, grad_out):
 # ---------------------------------------------------------------------------
 # mixed RRM (simulated ML)
 # ---------------------------------------------------------------------------
-@njit(cache=False)
+@njit(cache=True)
 def _mrrm_negloglik_nb(theta, D, y_idx, eta, uni,
                        fixed_idx, rand_idx, dist_ids,
                        avail, has_avail, Mf, Kr, reg_pen, sd_pen):
@@ -220,7 +220,7 @@ def _mrrm_negloglik_nb(theta, D, y_idx, eta, uni,
     return nll
 
 
-@njit(cache=False, parallel=True)
+@njit(cache=True, parallel=True)
 def _mrrm_negloglik_and_grad_nb(theta, D, y_idx, eta, uni,
                                 fixed_idx, rand_idx, dist_ids,
                                 avail, has_avail, Mf, Kr,

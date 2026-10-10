@@ -6511,6 +6511,41 @@ class Search():
         '''
     # }
 
+    ''' ---------------------------------------------------------- '''
+    ''' Function. Release log-file handles. Subclasses that open logs '''
+    ''' override this; the base is a no-op so cleanup is always safe. '''
+    ''' ---------------------------------------------------------- '''
+    def close_files(self):
+    # {
+        return None
+    # }
+
+    ''' ---------------------------------------------------------- '''
+    ''' Context-manager support: `with SA(...) as solver:` closes the '''
+    ''' run's log files on exit, including on exception.              '''
+    ''' ---------------------------------------------------------- '''
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.close_files()
+        except Exception:
+            pass
+        return False
+
+    def __del__(self):
+        # Safety net: solvers open several log handles in __init__ but
+        # historically only released them if the caller invoked
+        # close_files(). Without this a solver that raised mid-run (or was
+        # simply dropped, e.g. the nthrds instances inside PARSA/PARTA)
+        # held its file descriptors until the process exited.
+        try:
+            self.close_files()
+        except Exception:
+            pass
+    # }
+
 
 # }
 

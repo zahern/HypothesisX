@@ -101,6 +101,8 @@ except ImportError:
 
 from contextlib import contextmanager
 import time
+import weakref
+from collections import OrderedDict
 
 @contextmanager
 def timer(name="Code block"):
@@ -1012,9 +1014,38 @@ class MultinomialLogit(DiscreteChoiceModel):
     # ------------------------------------------------------------------
     # Per-shape JIT cache: avoids recompilation when the same (n_rows,
     # Kf, Kftrans) combination is visited again during GA search.
-    # Cleared by _clear_jit_cache() when memory pressure is high.
+    #
+    # MEMORY: bounded LRU, and cached callables dereference a weakref to the
+    # owning model instead of capturing ``self``, so an entry never pins a
+    # dead model (and its X/y arrays) for the life of the process.
     # ------------------------------------------------------------------
-    _jit_cache: dict = {}
+    _JIT_CACHE_MAXSIZE = 16
+    _jit_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+
+    @classmethod
+    def _jit_cache_get(cls, key):
+        """Fetch a live cache entry, dropping it if its owner was collected."""
+        entry = cls._jit_cache.get(key)
+        if entry is None:
+            return None
+        ref, value = entry
+        if ref is not None and ref() is None:
+            cls._jit_cache.pop(key, None)
+            return None
+        cls._jit_cache.move_to_end(key)
+        return value
+
+    @classmethod
+    def _jit_cache_put(cls, key, value, owner):
+        """Insert an entry, evicting least-recently-used ones past maxsize."""
+        try:
+            ref = weakref.ref(owner)
+        except TypeError:
+            ref = None
+        cls._jit_cache[key] = (ref, value)
+        cls._jit_cache.move_to_end(key)
+        while len(cls._jit_cache) > cls._JIT_CACHE_MAXSIZE:
+            cls._jit_cache.popitem(last=False)
 
     @classmethod
     def _clear_jit_cache(cls):
@@ -1051,20 +1082,26 @@ class MultinomialLogit(DiscreteChoiceModel):
             fxidx       = jnp.array(self.fxidx,      dtype=bool)
             fxtransidx  = jnp.array(self.fxtransidx, dtype=bool)
             Kf, Kftrans = int(self.Kf), int(self.Kftrans)
+            _sref = weakref.ref(self)
 
             def _fn(b, _X, _y, _av):
-                return self._jax_mnl_negloglik(
+                _self = _sref()
+                if _self is None:
+                    raise RuntimeError(
+                        "MultinomialLogit instance was garbage-collected "
+                        "while its compiled objective was still in use")
+                return _self._jax_mnl_negloglik(
                     b, _X, _y, _av, fxidx, fxtransidx, Kf, Kftrans)
 
             # ── per-shape JIT cache ────────────────────────────────
-            # Key only on shape; the actual data is passed as explicit
-            # arguments so JAX traces once per shape and accepts any
-            # concrete array of matching shape at call time.
+            # The data is passed as explicit arguments so JAX traces once per
+            # shape and accepts any concrete array of matching shape at call
+            # time.
             _cache_key = (X.shape[0], Kf, Kftrans)
-            _compiled = self._jit_cache.get(_cache_key)
+            _compiled = self._jit_cache_get(_cache_key)
             if _compiled is None:
                 _compiled = jax.jit(jax.value_and_grad(_fn))
-                self._jit_cache[_cache_key] = _compiled
+                self._jit_cache_put(_cache_key, _compiled, self)
             # ────────────────────────────────────────────────────────
 
             def _obj(betas_np):

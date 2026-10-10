@@ -12,10 +12,11 @@ import logging
 import os
 import re
 from typing import Iterable, Mapping, Sequence
-
 import numpy as np
 import pandas as pd
 from scipy.special import logsumexp
+from collections import deque
+
 
 try:
     from numba import njit, prange
@@ -32,7 +33,7 @@ except Exception:  # pragma: no cover - numba simply absent
         return range(*a)
 
 
-@njit(cache=False, parallel=True)
+@njit(cache=True, parallel=True)
 def _choice_case_ll_nb(beta, x, valid, off, chosen_col):
     """Per-case log-likelihood contributions, compiled.
 
@@ -72,7 +73,7 @@ def _choice_case_ll_nb(beta, x, valid, off, chosen_col):
     return out
 
 
-@njit(cache=False, parallel=True)
+@njit(cache=True, parallel=True)
 def _choice_case_grad_nb(beta, x, valid, off, chosen_col, chosen_x):
     """Per-case gradient contributions ``w_i * (x_chosen - E_p[x])``, compiled.
 
@@ -410,7 +411,9 @@ class PreconditionedRandomWalkProposal:
         self.log_scale = 0.0
         self.n_observed = 0
         self.rng = np.random.default_rng(seed)
-        self.acceptance_history: list[int] = []
+        # Appended once per MCMC step; the running rate is tracked separately
+        # via n_observed, so only a recent window needs retaining.
+        self.acceptance_history: deque = deque(maxlen=4096)
 
     @property
     def covariance(self) -> np.ndarray:
@@ -506,7 +509,12 @@ class HHTSCompetingPrior:
         self.adaptation_rate = float(adaptation_rate)
         self.min_alpha, self.max_alpha = float(min_alpha), float(max_alpha)
         self.min_temperature, self.max_temperature = float(min_temperature), float(max_temperature)
-        self.history: list[dict] = []
+        # adapt_to_denominator_ess runs once per CHOICE CASE per Gibbs
+        # iteration, so an unbounded list here grew by n_cases x outer
+        # iterations (millions of dicts on the 13k-case datasets). Only the
+        # most recent entry is ever read, so keep a bounded window.
+        self.history_maxlen: int = 512
+        self.history: deque = deque(maxlen=self.history_maxlen)
 
     @classmethod
     def from_hhts(

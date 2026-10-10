@@ -200,49 +200,50 @@ def omx_to_dataframe(omx_path, matrices=None, zone_index=None, chunksize=500):
         raise ImportError("pip install openmatrix") from e
 
     f = omx.open_file(omx_path, 'r')
-    available = f.list_matrices()
-    logger.info("OMX: %d matrices available", len(available))
-    if matrices is None:
-        matrices = [m for m in DEFAULT_MATRICES if m in available]
+    try:
+        available = f.list_matrices()
+        logger.info("OMX: %d matrices available", len(available))
+        if matrices is None:
+            matrices = [m for m in DEFAULT_MATRICES if m in available]
+            if not matrices:
+                matrices = list(available)
+                logger.warning("None of the default matrix names found. "
+                               "Reading all %d matrices.", len(matrices))
+        else:
+            missing = [m for m in matrices if m not in available]
+            if missing:
+                logger.warning("Requested matrices not found in OMX: %s", missing)
+            matrices = [m for m in matrices if m in available]
         if not matrices:
-            matrices = list(available)
-            logger.warning("None of the default matrix names found. "
-                           "Reading all %d matrices.", len(matrices))
-    else:
-        missing = [m for m in matrices if m not in available]
-        if missing:
-            logger.warning("Requested matrices not found in OMX: %s", missing)
-        matrices = [m for m in matrices if m in available]
-    if not matrices:
-        f.close()
-        raise ValueError(f"No readable matrices found in {omx_path}. "
-                         f"Available: {available}")
+            raise ValueError(f"No readable matrices found in {omx_path}. "
+                             f"Available: {available}")
 
-    mappings = f.list_mappings()
-    if zone_index is None:
-        zone_index = mappings[0] if mappings else None
-    zone_ids, row_order = None, None
-    if zone_index and zone_index in mappings:
-        try:
-            raw = f.mapping(zone_index)
-            if isinstance(raw, dict):
-                pairs = sorted(raw.items(), key=lambda kv: kv[1])
-                zone_ids = np.array([int(k) for k, _v in pairs], dtype=int)
-                row_order = np.array([int(v) for _k, v in pairs], dtype=int)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Zone mapping read failed (%s); using 1-based indices.", e)
-    arrays = {}
-    for name in matrices:
-        try:
-            arr = np.array(f[name], dtype=np.float32)
-            arrays[name] = arr
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Matrix '%s' unreadable (%s) — skipping.", name, e)
-    if zone_ids is None:
-        n = next(iter(arrays.values())).shape[0]
-        zone_ids = np.arange(1, n + 1, dtype=int)
-        row_order = np.arange(n, dtype=int)
-    f.close()
+        mappings = f.list_mappings()
+        if zone_index is None:
+            zone_index = mappings[0] if mappings else None
+        zone_ids, row_order = None, None
+        if zone_index and zone_index in mappings:
+            try:
+                raw = f.mapping(zone_index)
+                if isinstance(raw, dict):
+                    pairs = sorted(raw.items(), key=lambda kv: kv[1])
+                    zone_ids = np.array([int(k) for k, _v in pairs], dtype=int)
+                    row_order = np.array([int(v) for _k, v in pairs], dtype=int)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Zone mapping read failed (%s); using 1-based indices.", e)
+        arrays = {}
+        for name in matrices:
+            try:
+                arr = np.array(f[name], dtype=np.float32)
+                arrays[name] = arr
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Matrix '%s' unreadable (%s) — skipping.", name, e)
+        if zone_ids is None:
+            n = next(iter(arrays.values())).shape[0]
+            zone_ids = np.arange(1, n + 1, dtype=int)
+            row_order = np.arange(n, dtype=int)
+    finally:
+        f.close()
     if not arrays:
         raise ValueError("No matrices could be read from the OMX file.")
     return _matrices_to_long(arrays, zone_ids, row_order, chunksize)

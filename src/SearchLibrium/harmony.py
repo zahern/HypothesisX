@@ -427,6 +427,31 @@ class HarmonySearch(Search):
         self.memory.append(copy.deepcopy(solution))
         self.remove_non_unique_solutions()
         self.memory = self.sort_memory(self.memory)
+        self.trim_memory()
+    # }
+
+    ''' ------------------------------------------------------------ '''
+    ''' Function. Trim the harmony memory back down to ``max_mem``.     '''
+    '''                                                             '''
+    ''' Without this the memory grew for the whole run: the local-search '''
+    ''' "make_change_*" moves insert from INNER loops over candidate     '''
+    ''' variables, so growth is superlinear in the problem size. Each    '''
+    ''' retained solution is a deep copy that shares its fitted model by '''
+    ''' reference (see Solution.__deepcopy__), so an untrimmed memory    '''
+    ''' pins one whole fitted model per entry — hundreds of MB to many GB '''
+    ''' on real datasets. ``max_mem`` is documented as the harmony memory '''
+    ''' size but was previously only applied to the INITIAL population.  '''
+    ''' ------------------------------------------------------------ '''
+    def trim_memory(self):
+    # {
+        cap = getattr(self, 'max_mem', None)
+        if cap is None:
+            return
+        cap = int(cap)
+        if cap <= 0:
+            return
+        if len(self.memory) > cap:
+            self.memory = self.memory[:cap]
     # }
 
     ''' ---------------------------------------------------------- '''
@@ -1808,14 +1833,15 @@ class HarmonySearch(Search):
 
     def close_files(self):
     # {
-        try:
-            self.results_file.close()
-        except Exception:
-            pass
-        try:
-            self.progress_file.close()
-        except Exception:
-            pass
+        # Idempotent + fault-tolerant (reached from __del__/__exit__ too).
+        for name in ('results_file', 'progress_file'):
+            f = getattr(self, name, None)
+            if f is None:
+                continue
+            try:
+                f.close()
+            except Exception:
+                pass
     # }
 
     def return_best(self):

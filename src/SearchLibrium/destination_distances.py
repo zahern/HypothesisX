@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import logging
 import math
-from functools import lru_cache
 
 import numpy as np
 import pandas as pd

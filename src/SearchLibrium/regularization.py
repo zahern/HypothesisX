@@ -230,9 +230,13 @@ class elasticnet_objective:
                 xv = x if x is not None else model.pvals
                 return _base_logloss(xv) + _penalty_only(xv)
 
+            # JIT the gradient ONCE at __enter__ time so SLSQP's repeated
+            # calls don't re-trace jax.grad(penalized_logloss) every iteration.
+            _penalized_grad_jitted = jax.jit(jax.grad(penalized_logloss))
+
             def penalized_d_logloss(x=None, **kwargs):
                 xv = jnp.asarray(x if x is not None else model.pvals)
-                g = np.asarray(jax.grad(penalized_logloss)(xv))
+                g = np.asarray(_penalized_grad_jitted(xv))
                 if _hf_j is not None:
                     g = np.where(np.asarray(_hf_j), 0.0, g)
                 if not np.all(np.isfinite(g)):

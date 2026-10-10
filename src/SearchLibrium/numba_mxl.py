@@ -65,7 +65,7 @@ def encode_distributions(rvdist_names):
     return codes
 
 
-@njit(cache=False)
+@njit(cache=True)
 def _negloglik_nb(betas, X, y, panel, draws,
                   fx_cols, rv_cols, Kf, Kr, Kchol, Kbw,
                   dcodes, corr_len, reg, sd_pen):
@@ -165,7 +165,7 @@ def _negloglik_nb(betas, X, y, panel, draws,
     return ll
 
 
-@njit(cache=False, parallel=True)
+@njit(cache=True, parallel=True)
 def _negloglik_and_grad_nb(betas, X, y, panel, draws,
                            fx_cols, rv_cols, Kf, Kr, Kchol, Kbw,
                            dcodes, corr_len, reg, sd_pen, grad_out):
