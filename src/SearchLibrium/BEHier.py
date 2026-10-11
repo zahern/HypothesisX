@@ -286,8 +286,20 @@ def BEHier(search_instance, sol, max_passes=10):
             sd_insig  = sd_pval   > param.p_val
             mean_insig= mean_pval > param.p_val
 
-            if sd_insig:
-                # Mean sig, sd insig — OR — Mean insig, sd insig: remove sd
+            if sd_insig and mean_insig:
+                # Mean insig, sd insig — the whole random component of this
+                # variable is weak AND its fixed mean is weak. These two are
+                # structurally required together (the fixed mean parameterises
+                # the variable's fixed effect, the sd its required random
+                # variation), so do NOT penalise the random parameter just
+                # because the fixed parameter is bad. Keep both and move on.
+                print(f"    [Random]     : mean (p={round(mean_pval,3)}) and sd "
+                      f"(p={round(sd_pval,3)}) of {var_name} insignificant — "
+                      f"keeping both (structurally required pair).")
+                skipped.add(worst_name)
+                continue
+            elif sd_insig:
+                # Mean sig, sd insig — remove the insignificant sd only
                 insig = [sd_name] if sd_name in pval_dict else [chol_diag]
                 print(f"    [Random]     : sd insignificant (p={round(sd_pval,3)}) — removing sd of {var_name}.")
             else:
@@ -325,7 +337,17 @@ def BEHier(search_instance, sol, max_passes=10):
             else:
                 # Diagonal chol — treat as sd
                 sd_insig = pval_dict.get(worst_name, 0.0) > param.p_val
-                if sd_insig:
+                mean_pval = pval_dict.get(v, 0.0)
+                mean_insig = mean_pval > param.p_val
+                if sd_insig and mean_insig:
+                    # Both the fixed mean and the random sd are insignificant;
+                    # the pair is structurally required, so keep the sd.
+                    print(f"    [Chol diag]  : mean (p={round(mean_pval,3)}) and sd "
+                          f"{worst_name} of {v} insignificant — keeping both "
+                          f"(structurally required pair).")
+                    skipped.add(worst_name)
+                    continue
+                elif sd_insig:
                     insig = [f'sd.{v}']
                     print(f"    [Chol diag]  : {worst_name} insignificant — removing sd of {v}.")
                 else:
