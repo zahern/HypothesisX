@@ -21,9 +21,11 @@ import time as _time
 try:
     from .harmony import HarmonySearch
     from .sapbil import ProbabilityMatrix
+    from .search import get_unique_spec
 except ImportError:
     from harmony import HarmonySearch
     from sapbil import ProbabilityMatrix
+    from search import get_unique_spec
 
 logger = logging.getLogger(__name__)
 
@@ -339,7 +341,11 @@ class HSPBIL(HarmonySearch):
         existing_memory = self.screen_solutions(existing_sols)
         generated_memory = self.initialize_memory(self.max_mem)
         init_memory = generated_memory + existing_memory
-        unique_memory = get_unique(init_memory, 0)
+        # De-duplicate by SPECIFICATION, not objective value: get_unique(init_memory, 0)
+        # drops every candidate sharing an obj(0) value with one already kept, which
+        # silently shrinks the memory below max_mem (most acute when criterion 0 is
+        # a coarse value like an nsig-style count rather than BIC).
+        unique_memory = get_unique_spec(init_memory, 0)
         for sol in unique_memory:
             sol.data['is_initial_sol'] = True
 

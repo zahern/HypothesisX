@@ -48,61 +48,11 @@ except ImportError:                # running as a top-level module
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------- #
-#  Specification-based de-duplication                                      #
-# ---------------------------------------------------------------------- #
-def _agds_spec_key(sol):
-    """Hashable key identifying a solution's model *specification*.
-
-    Used to de-duplicate populations by spec instead of by objective value.
-    (The old ``get_unique(mem, 0)`` dropped every solution sharing an
-    objective value; with ``nsig`` as crit 0 that collapses the whole
-    population to a handful of distinct integers and stalls the search.)
-    """
-    try:
-        _get = sol.get if hasattr(sol, 'get') else (
-            lambda k, d=None: getattr(sol, k, d))
-
-        def _norm(v):
-            try:
-                if isinstance(v, np.ndarray):
-                    v = v.tolist()
-            except Exception:
-                pass
-            if isinstance(v, dict):
-                return tuple(sorted((str(k), str(x)) for k, x in v.items()))
-            if isinstance(v, (list, tuple, set, frozenset)):
-                return tuple(sorted(str(x) for x in v))
-            return str(v)
-
-        return tuple((k, _norm(_get(k))) for k in (
-            'model_n', 'asvars', 'isvars', 'randvars', 'corvars',
-            'bcvars', 'transvars', 'trans_asvars', 'asc_ind',
-            'class_params_spec', 'member_params_spec'))
-    except Exception:
-        try:
-            return ('__tuple__', tuple(sol.values()))
-        except Exception:
-            return ('__repr__', repr(sol))
-
-
-def get_unique_spec(solutions, key=0):
-    """Like ``get_unique`` but de-duplicates by specification, not objective.
-
-    Keeps ``get_unique``'s ordering (sorted by objective ``key``) so callers
-    see the same ranking with duplicates-by-spec removed.
-    """
-    if not solutions:
-        return []
-    ordered = sorted(solutions, key=lambda sol: sol.obj(key))
-    seen, out = set(), []
-    for sol in ordered:
-        k = _agds_spec_key(sol)
-        if k not in seen:
-            seen.add(k)
-            out.append(sol)
-    return out
+# ``spec_key`` / ``get_unique_spec`` (de-duplicate a population by model
+# SPECIFICATION rather than by objective value) now live in search.py so every
+# algorithm shares them. The originals were defined here; _agds_spec_key is kept
+# as an alias for backwards compatibility.
+_agds_spec_key = spec_key
 
 
 # ---------------------------------------------------------------------- #

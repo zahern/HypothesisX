@@ -237,34 +237,49 @@ class HarmonySearch(Search):
     def initialize_memory(self, nb_sols):
         """
         Initialize harmony memory and opposite harmony memory with unique random solutions.
+
+        De-duplicates by model SPECIFICATION (``get_unique_spec``), not by
+        objective value (``get_unique``). Criterion 0 is usually BIC (a
+        continuous float), but many specs still share an objective value —
+        and where the objective is a coarse count (e.g. an ``nsig``-style
+        criterion) ``get_unique(mem, 0)`` collapses the whole memory to a
+        handful of entries, so the loop burns its entire attempt budget
+        without ever reaching ``nb_sols``. Only NEW opposite solutions are
+        folded in each pass (the old ``mem += opp_mem`` re-merged and
+        re-sorted the whole accumulated ``opp_mem`` every iteration — O(n^2)
+        work and needless model fits).
         """
-        mem, opp_mem = [], []  # Initialize memory and opposite memory
-        for counter in range(30000):
+        mem = []
+        seen = set()          # spec keys already represented in mem
+        max_attempts = 30000  # safety ceiling on outer generation attempts
+
+        def _admit(cand):
+            """True if ``cand`` is converged, within BOUND, and a new spec."""
+            if cand is None or not abs(cand.obj(0)) < BOUND:
+                return False
+            k = spec_key(cand)
+            if k in seen:
+                return False
+            seen.add(k)
+            mem.append(cand)
+            return True
+
+        attempts = 0
+        while len(mem) < nb_sols and attempts < max_attempts:
+            attempts += 1
             sol = self.generate_solution()  # Generate a solution
             sol, converged = self.evaluate_solution(sol)
 
-            if converged:
-                mem.append(sol)  # Add solution to harmony memory
-
-            # Generate opposite solution only if the original solution is valid
-            if sol is not None:
+            if converged and _admit(sol):
+                # Generate one opposite solution and fold it in directly
                 opp_sol = self.create_opposite_solution(sol)
-
                 if opp_sol is not None:  # Validate opposite solution before evaluating
-                    opp_sol, converged = self.evaluate_solution(opp_sol)
-                    if converged:
-                        opp_mem.append(opp_sol)  # Add opposite solution to opposite memory
+                    opp_sol, o_converged = self.evaluate_solution(opp_sol)
+                    if o_converged:
+                        _admit(opp_sol)
 
-            mem += opp_mem  # Combine memory and opposite memory
-            mem = get_unique(mem, 0)  # Keep unique solutions only
-
-            # Filter memory to remove poor solutions based on the first objective
-            mem = [sol for sol in mem if abs(sol.obj(0)) < BOUND]  # Call obj(0) correctly
-
-            if len(mem) >= nb_sols:
-                return mem[:nb_sols]  # Return the initialized memory
-
-        return mem  # Return memory after exhausting attempts
+        # Keep the best nb_sols by objective (get_unique_spec sorts by obj(0))
+        return get_unique_spec(mem, 0)[:nb_sols]
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Build new solution using Harmony Memory          '''
@@ -1435,7 +1450,11 @@ class HarmonySearch(Search):
         # OPTIONAL: CREATE max(max_mem - existing, 0) NEW SOLUTIONS?
 
         init_memory = generated_memory + existing_memory    # Aggregate solution lists
-        unique_memory = get_unique(init_memory, 0)  # Remove duplicate solutions if present
+        # De-duplicate by SPECIFICATION, not objective value: get_unique(init_memory, 0)
+        # drops every candidate sharing an obj(0) value with one already kept, which
+        # silently shrinks the memory below max_mem (most acute when criterion 0 is
+        # a coarse value like an nsig-style count rather than BIC).
+        unique_memory = get_unique_spec(init_memory, 0)  # Remove duplicate specifications
         for sol in unique_memory:
             sol.data['is_initial_sol'] = True  # Set solution status
 
@@ -1804,7 +1823,8 @@ class HarmonySearch(Search):
         existing_memory   = self.screen_solutions(existing_sols)
         generated_memory  = self.initialize_memory(self.max_mem)
         init_memory       = generated_memory + existing_memory
-        unique_memory     = get_unique(init_memory, 0)
+        # De-duplicate by SPECIFICATION, not objective value (see note above).
+        unique_memory     = get_unique_spec(init_memory, 0)
         for sol in unique_memory:
             sol.data['is_initial_sol'] = True
 

@@ -525,6 +525,64 @@ def get_unique_tuple(solutions):
     return unique_solutions
 # }
 
+
+def spec_key(sol):
+    ''' ---------------------------------------------------------- '''
+    ''' Hashable key identifying a solution's model *specification*.   '''
+    '''                                                              '''
+    ''' Used to de-duplicate populations by spec instead of by objective '''
+    ''' value. ``get_unique`` de-dupes on ``obj(key)``, which collapses   '''
+    ''' the population whenever that objective takes only a handful of   '''
+    ''' distinct values (an integer count such as ``nsig``, or tied      '''
+    ''' BICs) — the initialisation loops then spin their whole attempt   '''
+    ''' budget without ever filling the memory/population target.        '''
+    ''' ---------------------------------------------------------- '''
+    try:
+        _get = sol.get if hasattr(sol, 'get') else (
+            lambda k, d=None: getattr(sol, k, d))
+
+        def _norm(v):
+            try:
+                if isinstance(v, np.ndarray):
+                    v = v.tolist()
+            except Exception:
+                pass
+            if isinstance(v, dict):
+                return tuple(sorted((str(k), str(x)) for k, x in v.items()))
+            if isinstance(v, (list, tuple, set, frozenset)):
+                return tuple(sorted(str(x) for x in v))
+            return str(v)
+
+        return tuple((k, _norm(_get(k))) for k in (
+            'model_n', 'asvars', 'isvars', 'randvars', 'corvars',
+            'bcvars', 'transvars', 'trans_asvars', 'asc_ind',
+            'class_params_spec', 'member_params_spec'))
+    except Exception:
+        try:
+            return ('__tuple__', tuple(sol.values()))
+        except Exception:
+            return ('__repr__', repr(sol))
+
+
+def get_unique_spec(solutions, key=0):
+    ''' ---------------------------------------------------------- '''
+    ''' Like ``get_unique`` but de-duplicates by specification, not     '''
+    ''' objective. Keeps ``get_unique``'s ordering (sorted by objective '''
+    ''' ``key``) so callers see the same ranking with by-spec           '''
+    ''' duplicates removed.                                            '''
+    ''' ---------------------------------------------------------- '''
+    if not solutions:
+        return []
+    ordered = sorted(solutions, key=lambda sol: sol.obj(key))
+    seen, out = set(), []
+    for sol in ordered:
+        k = spec_key(sol)
+        if k not in seen:
+            seen.add(k)
+            out.append(sol)
+    return out
+
+
 ''' ---------------------------------------------------------- '''
 ''' FUNCTION.  CREATE TEST DATASET                             '''
 ''' ---------------------------------------------------------- '''
