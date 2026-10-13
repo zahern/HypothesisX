@@ -37,7 +37,9 @@ object and call ``run()`` (which dispatches to ``run_search``).
 
 import copy
 import datetime
+import gc as _gc
 import logging
+import os
 
 import numpy as np
 
@@ -53,6 +55,84 @@ logger = logging.getLogger(__name__)
 # algorithm shares them. The originals were defined here; _agds_spec_key is kept
 # as an alias for backwards compatibility.
 _agds_spec_key = spec_key
+
+
+# ---------------------------------------------------------------------- #
+#  Memory reclamation                                                      #
+# ---------------------------------------------------------------------- #
+# A long AGDS run re-fits one model per evaluated individual - tens of
+# thousands over a 500-generation search.  Each fit materialises a full
+# case x alternative design frame (and, under a JAX backend, a freshly
+# compiled executable), so the transient peak per fit is orders of magnitude
+# larger than the live population.  Those objects *are* released, but glibc
+# retains the freed spans in its arenas, so RSS ratchets steadily upward and a
+# process holding only a few hundred MB of live data still walks into a
+# cgroup memory limit and gets OOM-killed.
+#
+# Calling collect() + malloc_trim() once per generation returns those spans to
+# the OS so RSS tracks the live set instead of the high-water mark.  Every
+# CLEAR_JAX_EVERY generations (and every force=True release) the JAX
+# compilation cache is dropped as well: one executable per distinct spec is
+# retained there beyond the reach of gc/malloc_trim (+24.3 MB/fit measured
+# Oct-2026 on a 1016-trip x 233-destination larch workload, identical across
+# three runs, OOM-killing two 128 GB jobs in the refit that follows the
+# search).  Recompile cost is bounded: only re-visited specs recompile, and
+# an evolutionary search rarely revisits.
+#
+#   SEARCHLIBRIUM_RECLAIM_EVERY=<n>  reclaim every <n> generations (default 1)
+#   SEARCHLIBRIUM_RECLAIM=0          disable entirely
+#   SEARCHLIBRIUM_CLEAR_JAX=1        also drop JAX's cache on EVERY call
+#   SEARCHLIBRIUM_CLEAR_JAX_EVERY=<n>
+#                                    ... otherwise drop it every <n>
+#                                    generations (default 5) and on every
+#                                    force=True release
+
+def _env_int(name, default):
+    try:
+        return int(str(os.environ.get(name, "")).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+RECLAIM_EVERY = max(1, _env_int("SEARCHLIBRIUM_RECLAIM_EVERY", 1))
+RECLAIM_ENABLED = str(os.environ.get("SEARCHLIBRIUM_RECLAIM", "1")).strip().lower() \
+    not in {"0", "false", "no", "off"}
+CLEAR_JAX = str(os.environ.get("SEARCHLIBRIUM_CLEAR_JAX", "0")).strip().lower() \
+    in {"1", "true", "yes", "on"}
+CLEAR_JAX_EVERY = max(1, _env_int("SEARCHLIBRIUM_CLEAR_JAX_EVERY", 5))
+
+
+def _malloc_trim():
+    """Return free glibc heap arenas to the OS.  No-op on non-glibc platforms."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        malloc_trim = libc.malloc_trim
+        malloc_trim.argtypes = [ctypes.c_size_t]
+        malloc_trim.restype = ctypes.c_int
+        malloc_trim(0)
+    except Exception:
+        pass
+
+
+def reclaim_memory(force=False, clear_jax=False):
+    """Collect search-local garbage and hand freed heap back to the OS.
+
+    ``force=True`` releases (one-off phase transitions) always also drop
+    JAX's compiled-executable cache; in-loop callers pass ``clear_jax=True``
+    every ``CLEAR_JAX_EVERY`` generations; ``SEARCHLIBRIUM_CLEAR_JAX=1``
+    clears on every call.
+    """
+    if not (force or RECLAIM_ENABLED):
+        return
+    _gc.collect()
+    if clear_jax or force or CLEAR_JAX:
+        try:
+            import jax
+            jax.clear_caches()
+        except Exception:
+            pass
+    _malloc_trim()
 
 
 # ---------------------------------------------------------------------- #
@@ -435,6 +515,15 @@ class SparseEAAGDS(Search):
                     pf.flush()
                 except Exception:
                     pass
+
+                # Return the per-generation fit garbage to the OS.  Without
+                # this RSS follows the high-water mark of the transient fit
+                # buffers and a long search is OOM-killed despite a small live
+                # set.  Every CLEAR_JAX_EVERY generations also drop JAX's
+                # global compilation cache (see reclaim_memory).
+                if (gen + 1) % RECLAIM_EVERY == 0:
+                    reclaim_memory(
+                        clear_jax=((gen + 1) % (RECLAIM_EVERY * CLEAR_JAX_EVERY) == 0))
         finally:
             pf.close()
 

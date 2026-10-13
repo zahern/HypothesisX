@@ -481,6 +481,13 @@ class BlockRandomWalkProposal:
 # ---------------------------------------------------------------------------
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, "")).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 class HHTSCompetingPrior:
     """Dirichlet-smoothed HHTS shares blended with current utilities."""
 
@@ -496,6 +503,8 @@ class HHTSCompetingPrior:
         max_alpha: float = 0.95,
         min_temperature: float = 0.15,
         max_temperature: float = 8.0,
+        max_history: int | None = None,
+        record_history: bool = True,
     ) -> None:
         raw = shares or {}
         if raw and all(not isinstance(value, Mapping) for value in raw.values()):
@@ -512,8 +521,13 @@ class HHTSCompetingPrior:
         # adapt_to_denominator_ess runs once per CHOICE CASE per Gibbs
         # iteration, so an unbounded list here grew by n_cases x outer
         # iterations (millions of dicts on the 13k-case datasets). Only the
-        # most recent entry is ever read, so keep a bounded window.
-        self.history_maxlen: int = 512
+        # most recent entry is ever read, so keep a bounded window
+        # (SL_HHTS_MAX_HISTORY, default 4096; 0 disables recording).
+        if max_history is None:
+            max_history = _env_int("SL_HHTS_MAX_HISTORY", 4096)
+        self.max_history = max(0, int(max_history))
+        self.record_history = bool(record_history) and self.max_history > 0
+        self.history_maxlen: int = self.max_history or 1
         self.history: deque = deque(maxlen=self.history_maxlen)
 
     @classmethod
@@ -578,7 +592,8 @@ class HHTSCompetingPrior:
         self.alpha = float(np.clip(self.alpha + self.adaptation_rate * error, self.min_alpha, self.max_alpha))
         self.temperature = float(np.clip(self.temperature * np.exp(self.adaptation_rate * error),
                                          self.min_temperature, self.max_temperature))
-        self.history.append({"denominator_ess": ess, "alpha": self.alpha, "temperature": self.temperature})
+        if self.record_history:
+            self.history.append({"denominator_ess": ess, "alpha": self.alpha, "temperature": self.temperature})
         return ess
 
     def sample_choice_sets(self, observations: pd.DataFrame, zone_ids: Sequence[object],

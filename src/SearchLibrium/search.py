@@ -60,6 +60,7 @@ from collections import UserDict
 
 from enum import Enum
 import copy
+import itertools
 import numpy as np
 import pandas as pd
 import random
@@ -213,6 +214,16 @@ def process_criterions(criterions):
 # {
     return len(criterions), criterions
 # }
+
+
+def _search_env_int(name, default):
+    ''' Read an integer tuning knob from the environment, falling back to
+    `default` when it is unset or not a valid integer. '''
+    import os
+    try:
+        return int(str(os.environ.get(name, '')).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def count_insig_groups(coeff_names, pvalues, p_val=0.05):
@@ -1554,6 +1565,18 @@ class Search():
         self.evaluated_solutions = {}    # {hash: solution} for all evaluated solutions
         self.explored_specs      = set() # Set of hashes for all explored specifications (evaluated or not)
         self.cache_hits           = 0    # Count of how many times a solution was found in the cache
+
+        # Cache growth bound (SEARCHLIBRIUM_CACHE_LIMIT, default 250000).
+        # evaluated_solutions / explored_specs / _banlist are keyed by a
+        # 64-char signature and grow by one entry per evaluated individual.
+        # Over a long evolutionary search (tens of thousands of fits) that is
+        # tens of MB of dead weight, and a specification-search job can then
+        # trip a cgroup memory limit that the live population never came
+        # close to.  Cap them and drop the oldest entries under pressure.
+        # Both caches are pure speed/heuristic aids: evicting an entry costs a
+        # refit (or one retry of an already-failed spec), never correctness.
+        self._cache_limit = _search_env_int('SEARCHLIBRIUM_CACHE_LIMIT', 250000)
+        self._n_explored = 0             # monotonic count; survives cache trimming
 
         self.last_printed_solution = None  # Track the last printed solution
         self.best_solution = None  # T
@@ -4859,12 +4882,37 @@ class Search():
     ''' and cache the result if it converged.                              '''
     ''' ------------------------------------------------------------------ '''
 
+    def _trim_search_caches(self):
+        ''' Drop the oldest entries from the specification caches once they
+        exceed `self._cache_limit`.
+
+        `evaluated_solutions` is insertion-ordered, so the front is the
+        oldest.  `explored_specs` and `_banlist` are unordered sets whose
+        only role is bookkeeping / avoiding a retry of a known-bad spec, so
+        they are cleared wholesale when oversized.  `self._n_explored` keeps
+        the true running total for the exploration summary. '''
+        limit = getattr(self, '_cache_limit', 0)
+        if not limit:
+            return
+        if len(self.evaluated_solutions) > limit:
+            # free ~25% in one pass rather than trimming on every single insert
+            for _sig in list(itertools.islice(self.evaluated_solutions,
+                                              len(self.evaluated_solutions) - limit // 4)):
+                self.evaluated_solutions.pop(_sig, None)
+            logging.debug('trimmed evaluated_solutions to %d (limit %d)',
+                          len(self.evaluated_solutions), limit)
+        if len(self.explored_specs) > limit:
+            self.explored_specs.clear()
+        if len(self._banlist) > limit:
+            self._banlist.clear()
+
     def evaluate_solution(self, sol, track_best=True):
 
         sig = self.setup_signature(sol)
 
         if sig not in self.explored_specs:
             self.explored_specs.add(sig)
+            self._n_explored += 1
 
         if sig in self.evaluated_solutions:
             self.cache_hits += 1
@@ -4877,6 +4925,7 @@ class Search():
 
         if converged:
             self.evaluated_solutions[sig] = [sol.obj(i) for i in range(self.nb_crit)]
+            self._trim_search_caches()
 
         return sol, converged
 
@@ -5124,7 +5173,7 @@ class Search():
         served from cache instead of re-fitting the model. """
 
         sep = '═' * 60
-        total   = len(self.explored_specs)
+        total   = getattr(self, '_n_explored', len(self.explored_specs))
         hits    = self.cache_hits
         hit_pct = (hits / total * 100) if total else 0.0
 
