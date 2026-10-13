@@ -1265,17 +1265,29 @@ def _weighted_frame(frame: "ChoiceSetFrame",
         frame.feature_names, tuple(float(w) for w in np.asarray(weights).ravel()))
 
 
-def _fit_membership_gammas(case_X, resp, l2: float = 1.0, maxiter: int = 200):
+def _fit_membership_gammas(case_X, resp, l2: float = 1.0, maxiter: int = 200,
+                           standardize: bool = True):
     """Weighted multinomial-logit M-step for the class-membership equation.
 
     ``gammas`` has shape (C-1, K+1) with class 0 as the reference and an
     intercept column.  Rows are weighted by the EM responsibilities (soft
     labels), so the step maximises the expected membership log-likelihood;
     slopes carry an L2 penalty, intercepts do not.
+
+    If ``standardize=True`` (default), covariates are standardized to mean=0,
+    std=1 before fitting, and coefficients are transformed back to the original
+    scale for the returned ``gammas``.
     """
     from scipy.optimize import minimize
     N = np.asarray(case_X).shape[0]
-    Xa = np.column_stack([np.ones(N), np.asarray(case_X, dtype=float)])
+    X = np.asarray(case_X, dtype=float)
+    if standardize:
+        X_mean = X.mean(axis=0)
+        X_std = X.std(axis=0, ddof=0)
+        X_std = np.where(X_std > 1e-12, X_std, 1.0)
+        Xa = np.column_stack([np.ones(N), (X - X_mean) / X_std])
+    else:
+        Xa = np.column_stack([np.ones(N), X])
     C = np.asarray(resp).shape[1]
     Ka = Xa.shape[1]
     if C < 2:
@@ -1296,7 +1308,18 @@ def _fit_membership_gammas(case_X, resp, l2: float = 1.0, maxiter: int = 200):
 
     res = minimize(nll, g0.ravel(), method="L-BFGS-B",
                    options={"maxiter": int(maxiter)})
-    return res.x.reshape(C - 1, Ka)
+    G = res.x.reshape(C - 1, Ka)
+    # Transform back to original scale if standardized
+    if standardize:
+        # G has shape (C-1, Ka) where Ka = n_features + 1 (intercept)
+        # G[:, 0] are intercepts, G[:, 1:] are slopes on standardized features
+        G_out = G.copy()
+        G_out[:, 1:] = G[:, 1:] / X_std
+        # Intercept adjustment: intercept = intercept - sum(mean_k * slope_k / std_k)
+        # For each class (row), compute dot product of (mean/std) with slopes
+        G_out[:, 0] = G[:, 0] - np.sum((X_mean / X_std) * G[:, 1:], axis=1)
+        return G_out
+    return G
 
 
 def _fit_frame_mnl(frame: "ChoiceSetFrame", x0, *, prior_scale: float = 5.0,
@@ -1530,7 +1553,7 @@ def estimate_dest_choice_lc(
                                     prior_scale=prior_scale, bounds=bounds)[0]
                      for c in range(n_classes)]
             if case_X is not None:
-                gammas = _fit_membership_gammas(case_X, p, l2=membership_l2)
+                gammas = _fit_membership_gammas(case_X, p, l2=membership_l2, standardize=True)
             shares = new_shares
             if share_floor and float(share_floor) > 0:
                 _coll = int(np.argmin(shares))
