@@ -56,6 +56,22 @@ jobs:
       - name: Install build tools
         run: python -m pip install --upgrade pip build twine
 
+      - name: Strip UTF-8 BOM from metadata files
+        # A UTF-8 BOM (EF BB BF) at the start of pyproject.toml breaks
+        # tomllib parsing and the version.txt regex, silently blocking the
+        # build/publish. Strip it here so a Windows-editor save can never
+        # block a release.
+        run: |
+          python - <<'PY'
+          import pathlib
+          for p in ("pyproject.toml", "src/SearchLibrium/version.txt"):
+              f = pathlib.Path(p)
+              raw = f.read_bytes()
+              if raw.startswith(b"\xef\xbb\xbf"):
+                  f.write_bytes(raw[3:])
+                  print(f"stripped BOM: {p}")
+          PY
+
       - name: Validate version metadata
         # Guard against the 2026-09-16 failure: a manual merge committed
         # conflict markers into version.txt (both sides had bumped the same
