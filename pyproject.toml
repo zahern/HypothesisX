@@ -25,11 +25,14 @@ requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Zeke Ahern", email = "z.ahern@qut.edu.au" },
+    { name = "Zeke Ahern" },
     { name = "Mario Fernando Taco Morales" },
     { name = "Alexander Paz" },
     { name = "Prithvi Beeramole" },
     { name = "Robert Burdett" },
+]
+maintainers = [
+    { name = "Zeke Ahern", email = "z.ahern@qut.edu.au" },
 ]
 keywords = [
     "econometrics",
