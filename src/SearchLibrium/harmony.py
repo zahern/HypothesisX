@@ -1252,7 +1252,7 @@ class HarmonySearch(Search):
     # }
 
     ''' ---------------------------------------------------------- '''
-    ''' Function.  Discard non-convergent solutions                '''
+    ''' Function.  Discard non-convergent solutions                 '''
     ''' ---------------------------------------------------------- '''
     def screen_solutions(self, solutions):
     # {
