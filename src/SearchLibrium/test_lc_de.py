@@ -231,6 +231,7 @@ def run_class_search(
         max_classes=max_classes,
         criterion="bic",
         warm_start=True,
+        retain_all=True,
         de_init=de_init,
         de_popsize=de_popsize,
         de_maxiter=de_maxiter,

@@ -1780,6 +1780,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         member_params_spec=None,
         class_params_spec=None,
         panels=None,
+        retain_all=False,
         ident_penalty_kwargs=None,
         **kwargs,
     ):
@@ -1797,8 +1798,17 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             Variables used in the class membership equation.
         member_params_spec : list or array, optional
             Per-class membership variable specification.
+        retain_all : bool
+            MEMORY: when False (default) only the best model is kept alive and
+            the returned list contains just that model; every intermediate
+            class-count model is released as the search advances. Each model
+            otherwise pins its X/y/draws design, JAX device copies and cached
+            JIT objectives, so retaining all of them across a GA search leaks
+            hundreds of MB per candidate. Set True to recover the previous
+            behaviour (all models returned and stored on
+            ``best_model.search_results``).
         """
-        fitted_models = []
+        fitted_models = [] if retain_all else None
         best_model = None
         _best_nsig = float('inf')
         prev_model = None
@@ -1833,7 +1843,8 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 de_seed=de_seed,
             )
             model.get_loglik_null()
-            fitted_models.append(model)
+            if fitted_models is not None:
+                fitted_models.append(model)
 
             # Pareto-style significance prioritisation:
             #  1) prefer fewer insignificant variable groups,
@@ -1858,8 +1869,14 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
                 _best_nsig = nsig
             prev_model = model
 
-        best_model.search_results = fitted_models
-        return best_model, fitted_models
+        if fitted_models is not None:
+            best_model.search_results = fitted_models
+            return best_model, fitted_models
+        # Default path: keep only the best model alive. Drop the warm-start
+        # chain's trailing reference so intermediate models can be collected.
+        best_model.search_results = None
+        prev_model = None
+        return best_model, [best_model]
 
     # ------------------------------------------------------------------
     # Internal helpers for numerical standard errors

@@ -54,6 +54,7 @@ in a panel or longitudinal dataset.
 ''' LIBRARIES                                                  '''
 ''' ---------------------------------------------------------- '''
 import itertools
+import os
 import numpy as np
 import scipy.stats as ss
 from scipy.optimize import minimize
@@ -273,6 +274,8 @@ class MixedLogit(DiscreteChoiceModel):
         self.rvdist = None          # Distributions for randvar
         self.correlated_vars, self.halton_opts = None, None
         self.batch_size, self.minimise_func = None, None
+        if not hasattr(self, "save_prob_full"):
+            self.save_prob_full = bool(os.environ.get("SEARCHLIBRIUM_SAVE_PROB_FULL", ""))
     # }
 
     ''' -------------------------------------------------------------------- '''
@@ -781,10 +784,16 @@ class MixedLogit(DiscreteChoiceModel):
             self.ind_pred_prob, self.pred_prob = _panel_weighted_shares(
                 self.choice_pred_prob, self.panel_info)
 
-            self.prob_full = p
+            if self.save_prob_full:
+                self.prob_full = p
         # }
         self.post_process(result, self.Xnames, self.N)
     # }
+
+    def release_memory(self):
+        """Drop prob_full if not explicitly saved. Safe between GA candidates."""
+        if not getattr(self, "save_prob_full", False):
+            self.prob_full = None
 
     ''' ---------------------------------------------------------- '''
     ''' Function. This code segments the betas array into different 

@@ -69,6 +69,8 @@ from scipy import stats
 from scipy.optimize import minimize
 
 import inspect
+import os
+from collections import OrderedDict
 
 minval = 1E-30
 
@@ -2481,7 +2483,15 @@ class SA_ORDLOG():
         self.mod = OrderedLogit(X=X, y=y, J=J, distr='logit', start=None, fit_intercept=True)
 
         # SA specific parameters
-        self.archive = {}  # Define a dictionary
+        # MEMORY: the archive memoises spec -> loglik so repeated specs skip
+        # the expensive refit. It used to be an unbounded dict, so a long run
+        # retained one entry per distinct predictor mask (2**K in the limit).
+        # It is now an LRU-bounded OrderedDict; evicting an entry only costs a
+        # future refit, never correctness. Set
+        # SEARCHLIBRIUM_ORDLOG_ARCHIVE_MAX=0 to restore unbounded behaviour.
+        self.archive = OrderedDict()
+        self.archive_maxsize = int(
+            os.environ.get("SEARCHLIBRIUM_ORDLOG_ARCHIVE_MAX", "50000"))
         self.tI = 100
         self.tF = 0.001
         self.t = self.tI
@@ -2543,6 +2553,12 @@ class SA_ORDLOG():
         else:
             print("Solution already seen")
             candidate_score = self.archive[key]
+
+        # LRU touch + bounded eviction (see archive_maxsize above).
+        self.archive.move_to_end(key)
+        _amax = getattr(self, "archive_maxsize", 0)
+        while _amax and len(self.archive) > _amax:
+            self.archive.popitem(last=False)
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -122,10 +122,19 @@ def _panel_weighted_shares(prob_np, panel_info):
     return ind, np.mean(ind, axis=0)
 
 class MixedLogit(DiscreteChoiceModel):
-    def __init__(self, halton_opts=None, distributions=['n', 'ln', 'nln', 't', 'tn', 'u'], _jax=None):
+    def __init__(self, halton_opts=None, distributions=['n', 'ln', 'nln', 't', 'tn', 'u'], _jax=None,
+                 save_prob_full=None):
         super().__init__(_jax)
         self.descr = "MXL"
         self.halton_opts = halton_opts
+        # MEMORY: prob_full is the full (N, P, J, R) probability tensor built in
+        # post-process for the summary/plots. For a 13k-case/20-alt/1000-draw
+        # model that is ~2 GB, and it is never read during estimation, so it is
+        # now opt-in. Pass save_prob_full=True (or set
+        # SEARCHLIBRIUM_SAVE_PROB_FULL=1) to retain the previous behaviour.
+        if save_prob_full is None:
+            save_prob_full = bool(os.environ.get("SEARCHLIBRIUM_SAVE_PROB_FULL", ""))
+        self.save_prob_full = bool(save_prob_full)
         self.draws_generator = Draws(k=len(distributions), halton_opts=halton_opts, rvdist=distributions)
         self.random_parameters = RandomParameters(distributions or [])
         self.softmax_r = True
@@ -1173,7 +1182,8 @@ class MixedLogit(DiscreteChoiceModel):
                 self.choice_pred_prob = np.mean(p, axis=3)
                 self.ind_pred_prob, self.pred_prob = _panel_weighted_shares(
                     self.choice_pred_prob, self.panel_info)
-                self.prob_full = p
+                if self.save_prob_full:
+                    self.prob_full = p
                 self._refresh_corr_from_varlist()
                 self.post_process(jax_result, self.Xnames, self.N)
                 return
@@ -1251,7 +1261,8 @@ class MixedLogit(DiscreteChoiceModel):
             self.ind_pred_prob, self.pred_prob = _panel_weighted_shares(
                 self.choice_pred_prob, self.panel_info)
 
-            self.prob_full = p
+            if self.save_prob_full:
+                self.prob_full = p
         # }
         self._refresh_corr_from_varlist()
         self.post_process(result, self.Xnames, self.N)
@@ -1499,7 +1510,11 @@ class MixedLogit(DiscreteChoiceModel):
     # process; during a heterogeneous GA search that is one retained model
     # per distinct parameter-count combination.
     # ------------------------------------------------------------------
-    _JIT_CACHE_MAXSIZE = 16
+    # MEMORY: cache size is in *live models*, each of which can pin its X/y
+    # arrays and a compiled XLA executable. The old default of 16 was tuned for
+    # speed; 4 keeps most of the reuse benefit while capping the worst case.
+    # Override with SEARCHLIBRIUM_JIT_CACHE_MAXSIZE (0 disables the cache).
+    _JIT_CACHE_MAXSIZE = max(0, int(os.environ.get("SEARCHLIBRIUM_JIT_CACHE_MAXSIZE", "4")))
     _mxl_jit_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
 
     @staticmethod
@@ -1561,6 +1576,17 @@ class MixedLogit(DiscreteChoiceModel):
         except Exception:
             pass
         gc.collect()
+
+    def release_memory(self):
+        """Free per-fit caches and large post-process tensors this model holds.
+
+        Safe to call between metaheuristic candidates: it clears the process-
+        wide JIT/XLA cache and drops ``prob_full`` unless it was explicitly
+        saved. Fitted coefficients, standard errors and covariance are kept.
+        """
+        if not getattr(self, "save_prob_full", False):
+            self.prob_full = None
+        type(self)._clear_jit_cache()
 
     def _run_jaxopt(self, betas, X_jax, y_jax, pi_jax, draws_jax,
                     _fn, _cache_key):
