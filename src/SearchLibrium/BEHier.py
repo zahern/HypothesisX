@@ -240,8 +240,9 @@ def _behier_latent(search_instance, sol, max_passes=10):
     """
     param = search_instance.param
     p_val = param.p_val
-    ps_asvars = set(getattr(param, 'ps_asvars', []))
-    ps_isvars = set(getattr(param, 'ps_isvars', []))
+
+    ps_asvars = set(getattr(param, 'ps_asvars', [])) | set(search_instance._get_forced_vars())
+    ps_isvars = set(getattr(param, 'ps_isvars', [])) | set(search_instance._get_forced_vars())
 
     if sol.get('model') is None or getattr(sol['model'], 'pvalues', None) is None:
         print("No p-values available for _behier_latent. Returning original solution.")
@@ -347,6 +348,28 @@ def _behier_latent(search_instance, sol, max_passes=10):
     if not to_remove:
         return sol
 
+    # Never empty a class: a class with zero class_fixed coeffs is not a
+    # behaviourally meaningful segment, and the EM crashes on a zero-size
+    # gradient reduction. For any class that would be emptied, keep its
+    # least-insignificant coeff (smallest p in the removal batch).
+    from collections import defaultdict
+    cf_by_class = defaultdict(list)
+    for it in to_remove:
+        if it[0] == 'class_fixed':
+            cf_by_class[it[1]].append(it)
+    keep_set = set()
+    for c_idx, items in cf_by_class.items():
+        current_vars = list(sol['class_params_spec'][c_idx])
+        removing_vars = {it[2] for it in items}
+        if not any(v not in removing_vars for v in current_vars):
+            items_sorted = sorted(items, key=lambda x: x[3])
+            keep_set.add(items_sorted[0])
+            print(f"    [Guard] class {c_idx + 1} would be emptied — "
+                  f"keeping '{items_sorted[0][2]}' (p={items_sorted[0][3]:.3f})")
+    to_remove = [it for it in to_remove if it not in keep_set]
+    if not to_remove:
+        return sol
+
     new_class, new_member = remove_from_spec(sol, to_remove)
     trial, reliable = refit(sol, new_class, new_member, df=len(to_remove))
 
@@ -372,6 +395,13 @@ def _behier_latent(search_instance, sol, max_passes=10):
         still_present = (kind == 'class_fixed' and var in cur_class[c_idx]) or \
                          (kind == 'member_gamma' and cur_member is not None and var in cur_member[c_idx])
         if not still_present:
+            cleanup_pass += 1
+            continue
+
+        # Same guard as Phase 1: never empty a class in sequential mode.
+        if kind == 'class_fixed' and len(cur_class[c_idx]) <= 1:
+            print(f"    [Guard] class {c_idx + 1} would be emptied — "
+                  f"skipping removal of '{var}'.")
             cleanup_pass += 1
             continue
 

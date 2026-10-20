@@ -201,7 +201,7 @@ class HarmonySearch(Search):
             'result', 'converged', 'loglik', 'bic', 'class_shares', 'solution_flag', 'bic_penalized', 'aic',
             'class_vars', 'member_vars', 'p_val_threshold', 'significant', 'not_significant', 'asvars', 'isvars', 'randvars', 'bcvars',
             'corvars',
-            'flag_degen', 'flag_sep_choice', 'flag_sep_member',
+            'flag_degen', 'flag_sep_choice', 'flag_sep_member', 'flag_sep_reviewed',
             'flag_near_unident', 'flag_opg_hess', 'flag_low_entropy',
             'flag_low_occ', 'flag_firth',
             'entropy', 'occ_min', 'bic_penalty_flags', 'winner_gap',
@@ -1763,7 +1763,10 @@ class HarmonySearch(Search):
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         self.log_solutions(all_solutions)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        if self.generate_plots:
+        # The finally-block in improvise() already regenerated the multiclass
+        # plot after the last class count. Re-running it here would just
+        # render the same figure twice.
+        if self.generate_plots and not self._plot_history:
             try:
                 self.plot_multiclass_search()
             except Exception as exc:
@@ -2040,8 +2043,11 @@ class HarmonySearch(Search):
         lgd = ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),
                         ncol=2, fontsize=10)
 
-        current_time = datetime.datetime.now().strftime("%d%m%Y-%H%M%S")
-        plot_filename = self.idnum + "_multiclass_" + current_time + "_SOOF.png"
+        # Fixed filename: this plot is regenerated after every class count
+        # during a latent run, so a timestamped name would create N+1 files
+        # for N levels. Keeping the name constant makes each save overwrite
+        # the previous one — only the most complete version survives.
+        plot_filename = self.idnum + "_multiclass_SOOF.png"
         plt.savefig(plot_filename, bbox_extra_artists=(lgd,), bbox_inches='tight')
         plt.close(fig)
 

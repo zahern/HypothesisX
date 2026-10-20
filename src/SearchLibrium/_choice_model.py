@@ -1299,22 +1299,15 @@ class DiscreteChoiceModel(ABC):
             if (se_pi is not None and ci_lo is not None and ci_hi is not None
                     and len(se_pi) == len(self.class_probs)):
                 base_c = getattr(self, 'base_class', self.n_classes - 1)
-                def _stars(pv):
-                    if pv < 0.001: return "(***)"
-                    if pv < 0.01:  return "(**)"
-                    if pv < 0.05:  return "(*)"
-                    if pv < 0.1:   return "(.)"
-                    return "(-)"
-                p(f"  {'Class':<10}{'Share':>9}{'SE':>9}{'t-stat':>9}{'p-val':>9}")
-                p(f"  {'-'*10}{'-'*9}{'-'*9}{'-'*9}{'-'*9}")
+                p(f"  {'Class':<10}{'Share':>9}{'SE':>9}{'95% CI':>20}")
+                p(f"  {'-'*10}{'-'*9}{'-'*9}{'-'*20}")
                 for c in range(self.n_classes):
-                    sh = float(self.class_probs[c])
-                    se_c = float(se_pi[c])
-                    z_c = sh / se_c if se_c > 0 else float('nan')
-                    pv = 2.0 * (1.0 - ss.norm.cdf(abs(z_c))) if np.isfinite(z_c) else float('nan')
-                    stars = _stars(pv) if np.isfinite(pv) else ""
                     label = f"{c+1} (Base)" if c == base_c else f"{c+1}"
-                    p(f"  {label:<10}{sh:>9.4f}{se_c:>9.4f}{z_c:>9.3f}{pv:>9.4f} {stars}")
+                    ci = f"[{float(ci_lo[c]):.4f}, {float(ci_hi[c]):.4f}]"
+                    p(f"  {label:<10}{float(self.class_probs[c]):>9.4f}"
+                      f"{float(se_pi[c]):>9.4f}{ci:>20}")
+                p(LINE2)
+                p("  95% C.I computed on the logit scale (Bounded in [0, 1])")
             else:
                 p(f"  {np.round(self.class_probs, 3)}")
         elif hasattr(self, 'class_freq'):
@@ -1322,7 +1315,7 @@ class DiscreteChoiceModel(ABC):
             p("  Estimated Proportion of Classes")
             p(f"  {np.round(self.class_freq, 3)}")
             
-        if is_latent_class and hasattr(self, "entropy"):
+        if is_latent_class and getattr(self, "entropy", None) is not None:
             p(LINE)
             p("  Classification Quality")
             p(LINE2)
@@ -1397,33 +1390,51 @@ class DiscreteChoiceModel(ABC):
                 return ""
             return f"  VP={share_arr[idx]:>5.2f}"
         
-        OPG_HESS_SHOW = 3.0
+        OPG_HESS_SHOW = 3.0 
         def opg_str(idx):
             opg = getattr(self, 'opg_se', None)
-            if opg is None or idx >= len(opg) or opg[idx] <= 0:
+            if opg is None or idx >= len(opg):
+                return ""
+            v = opg[idx]
+            if not np.isfinite(v) or v <= 0:
                 return ""
             if se is None or idx >= len(se) or se[idx] <= 0:
                 return ""
-            ratio = opg[idx] / se[idx]
+            ratio = v / se[idx]
             if ratio <= OPG_HESS_SHOW:
                 return ""
-            return f"  (OPG={opg[idx]:.4f}, x{ratio:.1f})"
+            return f"  (OPG={v:.4f}, x{ratio:.1f})"
         def gamma_opg_str(gi):
             opg = getattr(self, 'gamma_opg_se', None)
-            if opg is None or gi >= len(opg) or opg[gi] <= 0:
+            if opg is None or gi >= len(opg):
+                return ""
+            v = opg[gi]
+            if not np.isfinite(v) or v <= 0:
                 return ""
             gse = getattr(self, 'gamma_se', None)
             if gse is None or gi >= len(gse) or gse[gi] <= 0:
                 return ""
-            ratio = opg[gi] / gse[gi]
+            ratio = v / gse[gi]
             if ratio <= OPG_HESS_SHOW:
                 return ""
-            return f"  (OPG={opg[gi]:.4f}, x{ratio:.1f})"
+            return f"  (OPG={v:.4f}, x{ratio:.1f})"
 
         def id_tag(flag_arr, idx):
             if not show_diag or flag_arr is None or idx >= len(flag_arr):
                 return ""
             return "  [NEAR-UNIDENTIFIED]" if flag_arr[idx] else ""
+        
+        def nonpd_tag(idx, attr='nonpd_flag'):
+            flags = getattr(self, attr, None)
+            if flags is None or idx >= len(flags):
+                return ""
+            return "  [NON-PD]" if flags[idx] else ""
+        
+        def hde_tag(idx, attr='hde_flag'):
+            flags = getattr(self, attr, None)
+            if flags is None or idx >= len(flags):
+                return ""
+            return "  [HDE]" if flags[idx] else ""
 
         # ══════════════════════════════════════════════════════════════════
         # LATENT CLASS BRANCH 
@@ -1483,9 +1494,26 @@ class DiscreteChoiceModel(ABC):
 
             offset_cum = n_phi
             shares_by_class = self.class_specific_choice_shares() 
+            # Conditional models append one extra column (purchase rate) to
+            # class_specific_choice_shares(); base LC returns exactly J.
+            has_purchase = hasattr(self, 'w') and shares_by_class.shape[1] > len(self.alts)
+            # Base class label: use the model's own base_class when available
+            # (0-indexed internally). Fall back to the last class for models
+            # that don't expose the attribute — this preserves the old default.
+            _base_c = getattr(self, 'base_class', C - 1)
+
+            nonpd = getattr(self, 'nonpd_flag', None)
+            n_nonpd = int(np.sum(nonpd[C - 1:])) if nonpd is not None else 0
+            n_hde = (int(np.sum(getattr(self, 'hde_flag', [])))
+                     + int(np.sum(getattr(self, 'gamma_hde_flag', []))))
+            if n_nonpd:
+                p(f"  WARNING: Hessian not positive definite: {n_nonpd} parameter(s) with "
+                  f"non-positive variance (min eigenvalue = "
+                  f"{getattr(self, 'hess_min_eig', float('nan')):.2e})")
+                
             for c in range(C):
                 K_c = self._Ks[c]
-                is_base = (c == C - 1)
+                is_base = (c == _base_c)
                 if c > 0:
                     p("")
                 label = f"CLASS {c + 1}   (Share = {self.class_probs[c]:.2%})"
@@ -1493,6 +1521,8 @@ class DiscreteChoiceModel(ABC):
                     f"{a}: {shares_by_class[c, j]:.2%}" for j, a in enumerate(self.alts)
                 ) + ")"
                 label += alt_shares
+                if has_purchase:
+                    label += f"  | Purchase: {shares_by_class[c, len(self.alts)]:.2%}"
                 if is_base:
                     label += "   (Base)"
                 section(label)
@@ -1515,7 +1545,7 @@ class DiscreteChoiceModel(ABC):
 
                     row_vp = vp_str(getattr(self, 'collin_share', None), pi)
                     row_tag = id_tag(getattr(self, 'collin_flag', None), pi)
-                    p(fmt_lc.format(vname[:22], params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])) + row_vp + opg_str(pi) + row_tag)
+                    p(fmt_lc.format(vname[:22], params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])) + row_vp + opg_str(pi) + row_tag + nonpd_tag(pi) + hde_tag(pi))
                     #p(fmt.format(vname[:16], "", params[pi], se[pi], t_stats[pi], p_values[pi], sig(p_values[pi])) + row_vp + row_tag)
                 offset_cum += K_c
             
@@ -1541,7 +1571,7 @@ class DiscreteChoiceModel(ABC):
                         row_tag = id_tag(getattr(self, 'gamma_collin_flag', None), gi)
                         p(fmt_lc.format(var_name[:22], self.gamma_params[gi], self.gamma_se[gi],
                                 self.gamma_t_stats[gi], self.gamma_p_values[gi],
-                                sig(self.gamma_p_values[gi])) + row_vp + gamma_opg_str(gi) + row_tag)
+                                sig(self.gamma_p_values[gi])) + row_vp + gamma_opg_str(gi) + row_tag + nonpd_tag(gi, 'gamma_nonpd_flag') + hde_tag(gi, 'gamma_hde_flag'))
                     if not printed_any and is_base_c:
                         p("  (Base)")
                         #p(fmt.format(var_name[:16], "", self.gamma_params[gi], self.gamma_se[gi],
@@ -1552,7 +1582,7 @@ class DiscreteChoiceModel(ABC):
             p(LINE3)
             
             loglik_null = self.get_loglik_null()
-            adjlik = 1 - (self.loglik / loglik_null)
+            adjlik = 1 - ((self.loglik - self.num_params) / loglik_null)
             self.adjust_lik_ratio = adjlik
 
             p("  In-Sample")
@@ -1566,6 +1596,10 @@ class DiscreteChoiceModel(ABC):
             p(LINE)
             p("  Significance:  0 '(***)' 0.001 '(**)' 0.01 '(*)' 0.05 '(.)' 0.1 '(-)' 1")
             p("  (two-sided)")
+            if n_nonpd:
+                p("  [NON-PD]: non-positive Hessian variance; S.E. clipped to 0")
+            if n_hde:
+                p("  [HDE]: Hauck-Donner effect; Wald z unreliable (near-separation)")
             p(LINE)
             if hasattr(self, "summarise_wald"):
                 try:
@@ -1752,7 +1786,7 @@ class DiscreteChoiceModel(ABC):
         p(LINE)
         
         loglik_null = self.get_loglik_null()
-        adjlik = 1 - (self.loglik / loglik_null)
+        adjlik = 1 - ((self.loglik - self.num_params) / loglik_null)
         self.adjust_lik_ratio = adjlik
         
         

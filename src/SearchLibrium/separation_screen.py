@@ -35,6 +35,7 @@ elsewhere in the codebase).
 
 import numpy as np
 from scipy.optimize import linprog
+from scipy.stats import norm
 
 
 # ------------------------------------------------------------------------
@@ -64,6 +65,44 @@ def is_degenerate_candidate(betas, pi, min_share=0.01, max_abs_beta=200.0):
         if not np.all(np.isfinite(b_np)) or np.any(np.abs(b_np) > max_abs_beta):
             return True
     return False
+
+def hauck_donner_flags(H, dH, theta, alpha=0.05):
+    """Hauck-Donner effect (HDE) detection for the Wald statistic of each
+    parameter (Hauck & Donner, 1977; Yee, 2022).
+
+    The Wald statistic z_k = theta_k / se_k exhibits HDE when it decreases as
+    |theta_k| grows, i.e. dz_k/dtheta_k < 0. With v_k = [H^{-1}]_kk this is
+    equivalent to theta_k * dv_k/dtheta_k > 2 v_k, where
+    dv_k/dtheta_k = -[H^{-1} (dH/dtheta_k) H^{-1}]_kk. The criterion is the sign
+    of a derivative, so it needs no tuning threshold, and it is invariant to
+    rescaling of theta_k.
+
+    A parameter is flagged only when HDE is present AND its Wald test fails to
+    reject H0: theta_k = 0 at level `alpha`. Past the tipping point a strongly
+    significant estimate only loses power (inference is unchanged); the harmful
+    case is the large estimate whose inflated SE renders it non-significant.
+
+    H     : (p, p) observed information (Hessian of the negative log-likelihood)
+    dH    : (p, p, p) third-derivative tensor, dH[:, :, k] = dH/dtheta_k
+    theta : (p,) parameter vector at which H and dH were evaluated
+    alpha : two-sided significance level of the Wald test
+
+    References
+    ----------
+    Hauck, W. W., & Donner, A. (1977). Wald's test as applied to hypotheses in
+        logit analysis. JASA, 72(360), 851-853.
+    Yee, T. W. (2022). On the Hauck-Donner effect in Wald tests: Detection,
+        tipping points, and parameter space characterization. JASA, 117(540),
+        1763-1774.
+    """
+    H_inv = np.linalg.inv(H)
+    v = np.diag(H_inv)
+    dv = -np.einsum('ki,ijk,jk->k', H_inv, dH, H_inv)
+    theta = np.asarray(theta)
+    valid = v > 0
+    hde = valid & (theta * dv > 2.0 * v)
+    z = np.where(valid, theta / np.sqrt(np.where(valid, v, 1.0)), 0.0)
+    return hde & (np.abs(z) < norm.ppf(1.0 - alpha / 2.0))
 
 
 def collinearity_diag(H, ratio_thresh=1e-3, vdp_thresh=0.5):

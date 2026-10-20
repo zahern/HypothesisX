@@ -2393,14 +2393,35 @@ class Search():
         
         if 'force_include' in constraints:
             force_vars = constraints['force_include']
-            solution['asvars'] = list(set(force_vars + solution['asvars']))
-            # Also enforce in class_params_spec: every forced var must appear in at least one class
+            force_as = [v for v in force_vars if v not in self.param.isvarnames]
+            force_is = [v for v in force_vars if v in self.param.isvarnames]
+            solution['asvars'] = list(set(force_as + solution['asvars']))
+            # Also enforce in class_params_spec: every forced var must appear in every class
             if 'class_params_spec' in solution and solution['class_params_spec'] is not None:
                 cp = solution['class_params_spec']
-                for v in force_vars:
-                    if not any(v in arr for arr in cp):
-                        cp[0] = np.sort(np.append(cp[0], v))
+                for c in range(len(cp)):
+                    missing = [v for v in force_as if v not in cp[c]]
+                    if missing:
+                        cp[c] = np.sort(np.append(cp[c], missing))
                 solution['class_params_spec'] = cp
+            # Enforce forced membership vars in every non-base class
+            if force_is:
+                solution['isvars'] = list(set(force_is + solution['isvars']))
+                mp = solution.get('member_params_spec', None)
+                if mp is None:
+                    n_classes = getattr(self.param, 'num_classes', 2)
+                    mp = np.empty(n_classes, dtype=object)
+                    for c in range(n_classes):
+                        mp[c] = np.array([], dtype=object)
+                base = getattr(self.param, 'base_class', None)
+                base = len(mp) - 1 if base is None else base
+                for c in range(len(mp)):
+                    if c == base:
+                        continue
+                    missing = [v for v in force_is if v not in mp[c]]
+                    if missing:
+                        mp[c] = np.sort(np.append(mp[c], missing))
+                solution['member_params_spec'] = mp
             
         if 'force_exclude' in constraints:
             exclude_vars = constraints['force_exclude']
@@ -3363,9 +3384,21 @@ class Search():
 
         # ── Iteration / class-count tag ──────────────────────────────
         _ctx_iter = (getattr(self, '_csv_context', {}) or {}).get('iter', '')
-        _K        = getattr(self.param, 'num_classes', None)
         _maxit    = getattr(self, 'maxiter', None)
         _is_lc    = bool(getattr(self.param, 'latent_class', False))
+
+        # K must be derived from the SOLUTION, not from param.num_classes.
+        # param.num_classes is a mutable attribute reassigned inside
+        # _run_search_latent_inner's class-count loop; once that loop
+        # closes it equals max_classes for every subsequent call — which
+        # is why Top-N logs (emitted after the loop) all showed [K=7]
+        # regardless of the actual number of classes in the solution.
+        _cps = solution.get('class_params_spec', None)
+        if _cps is not None:
+            _K = len(_cps)
+        else:
+            _mps = solution.get('member_params_spec', None)
+            _K = (len(_mps) + 1) if (_is_lc and _mps is not None) else None
 
         _origen = (getattr(self, '_csv_context', {}) or {}).get('origen', '')
 
@@ -3448,7 +3481,8 @@ class Search():
         loglik      = getattr(model, 'loglik', solution.get('loglik', None))
         loglik_null = getattr(model, 'loglik_null', None)
         if loglik is not None and loglik_null not in (None, 0):
-            r2 = 1.0 - (loglik / loglik_null)
+            n_params = getattr(model, 'num_params', 0) or 0
+            r2 = 1.0 - ((loglik - n_params) / loglik_null)
         else:
             r2 = None
         aic     = getattr(model, 'aic',    solution.get('aic', None))
@@ -3463,6 +3497,7 @@ class Search():
             'flag_degen':         'DEGENERATED',
             'flag_sep_choice':    'SEPARATED:CHOICE',
             'flag_sep_member':    'SEPARATED:MEMBER',
+            'flag_sep_reviewed':  'SEPARATED:REVIEWED',
             'flag_near_unident':  'NEAR-UNIDENTIFIED',
             'flag_opg_hess':      'OPG-HESS DIVERGENT',
             'flag_low_entropy':   'LOW ENTROPY',
@@ -4872,17 +4907,30 @@ class Search():
 
         if sig in self.evaluated_solutions:
             self.cache_hits += 1
-            known_scores = self.evaluated_solutions[sig]
-            for i, score in enumerate(known_scores):
+            entry = self.evaluated_solutions[sig]
+            for i, score in enumerate(entry['scores']):
                 sol.update_objective(i, score)
-                self._log_csv_row(sol, 'cache_hit')
+            # Restore heavy fields (model, loglik, bic, ...) from the cached
+            # snapshot — otherwise a cache-hit solution has valid obj[] but
+            # None/inf for everything else and shows up in Top-N logs as
+            # "not converged" despite being a valid cached evaluation.
+            for k in ('model', 'model_n', 'loglik', 'aic', 'bic', 'mae',
+                      'converged', 'nearly_converged', 'pvalues', 'coeff_names',
+                      'flags', 'class_shares', 'solution_flag', 'bic_raw',
+                      'bic_penalty_flags'):
+                if k in entry['snapshot'].data:
+                    sol.data[k] = entry['snapshot'].data[k]
+            self._log_csv_row(sol, 'cache_hit')
             return sol, True
 
         sol, converged = self._evaluate_solution(sol, track_best=track_best)
 
         result = 'converged' if converged else sol.get('fail_reason', 'no_converged')
         if converged:
-            self.evaluated_solutions[sig] = [sol.obj(i) for i in range(self.nb_crit)]
+            self.evaluated_solutions[sig] = {
+                'scores':   [sol.obj(i) for i in range(self.nb_crit)],
+                'snapshot': copy.deepcopy(sol),
+            }
         self._log_csv_row(sol, result)
 
         return sol, converged
@@ -5446,7 +5494,7 @@ class Search():
             class_vars_str, member_vars_str, self.param.p_val, sig, not_sig, sol.get('asvars', []), sol.get('isvars', []),
             sol.get('randvars', {}), sol.get('bcvars', []), sol.get('corvars', []),
             *(sol.get('flags', {}).get(k, '') for k in (
-                'flag_degen', 'flag_sep_choice', 'flag_sep_member',
+                'flag_degen', 'flag_sep_choice', 'flag_sep_member', 'flag_sep_reviewed',
                 'flag_near_unident', 'flag_opg_hess', 'flag_low_entropy',
                 'flag_low_occ', 'flag_firth', 'entropy', 'occ_min',
             )),
@@ -5655,7 +5703,11 @@ class Search():
             fit_intercept=fit_intercept,
             base_alt=base_alt,
             compute_opg=True,
-            verbose=1 if getattr(self.param, 'verbose', False) else 0
+            verbose=1 if getattr(self.param, 'verbose', False) else 0,
+            max_plateau=getattr(self.param, 'max_plateau', 50),
+            plateau_tol=getattr(self.param, 'plateau_tol', 1e-6),
+            max_stagnant=getattr(self.param, 'max_stagnant', 20),
+            step_tol=getattr(self.param, 'step_tol', 1e-8),
         )
         
         _fit_buf = io.StringIO()
@@ -5911,7 +5963,102 @@ class Search():
             model.fit(betas0=betas0)
         model.get_loglik_null()
 
-        return model       
+        return model   
+
+    def fit_lcm_conditional(self, X, y, w, varnames, class_params_spec,
+                            member_params_spec=None,
+                            num_classes=2, ids=None, transvars=None,
+                            maxiter=50, gtol=1e-6,
+                            gtol_membership_func=1e-5, avail=None,
+                            avail_latent=None, fit_intercept=True,
+                            weights=None, seed=None, alts=None,
+                            ftol_lccm=1e-6, base_alt=None, ind_id=None,
+                            panels=None, betas0=None, n_init=10, gamma0=None):
+        """Latent Class Conditional Logit via LatentClassConditionalFinal."""
+        try:
+            from .latent_class_final import LatentClassConditionalFinal
+        except ImportError:
+            from SearchLibrium.latent_class_final import LatentClassConditionalFinal
+
+        model = LatentClassConditionalFinal()
+
+        X_arr = X.values if hasattr(X, 'values') else np.asarray(X, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        w_arr = np.asarray(w, dtype=float)
+
+        # param.base_class is 0-indexed; Final wants 1-indexed at the API
+        bc = getattr(self.param, 'base_class', None)
+        if bc is not None:
+            bc = int(bc) + 1
+
+        # Membership intercepts travel inside gamma0 dicts under '_inter'
+        inter0 = None
+        if (gamma0 is not None and isinstance(gamma0, list) and gamma0
+                and isinstance(gamma0[0], dict)):
+            inter0 = {}
+            for c_idx, dom in enumerate(gamma0):
+                if isinstance(dom, dict) and '_inter' in dom:
+                    inter0[c_idx] = float(dom['_inter'])
+
+        # Warm-start previews (unchanged)
+        if (betas0 is not None and isinstance(betas0, list) and betas0
+                and isinstance(betas0[0], dict)):
+            for c_idx, dom in enumerate(betas0):
+                preview = (', '.join(f"{k}={v:.4f}" for k, v in dom.items())
+                           if dom else 'empty')
+                print(f"[WARM START] Class {c_idx + 1}: {preview}")
+        if (gamma0 is not None and isinstance(gamma0, list) and gamma0
+                and isinstance(gamma0[0], dict)):
+            for c_idx, dom in enumerate(gamma0):
+                preview = (', '.join(f"{k}={v:.4f}" for k, v in dom.items())
+                           if dom else 'empty')
+                print(f"[WARM START MEMBERSHIP] Class {c_idx + 1}: {preview}")
+
+        model.setup(
+            X=X_arr, y=y_arr, w=w_arr,
+            varnames=list(varnames),
+            ids=ids,
+            alts=alts if alts is not None else np.ones(len(y_arr), dtype=int),
+            class_params_spec=class_params_spec,
+            member_params_spec=member_params_spec,
+            base_class=bc,
+            betas0=betas0,
+            gamma0=gamma0,
+            inter0=inter0 if inter0 else None,
+            n_init=n_init,
+            maxiter=maxiter,
+            ftol=getattr(self.param, 'ftol', 1e-10),
+            gtol=getattr(self.param, 'gtol', 1e-6),
+            random_state=seed if seed is not None else 0,
+            choice_correction=False,
+            membership_correction=False,
+            panels=panels,
+            ind_id=ind_id,
+            avail=avail,
+            fit_intercept=fit_intercept,
+            base_alt=base_alt,
+            compute_opg=True,
+            verbose=1 if getattr(self.param, 'verbose', False) else 0,
+            max_plateau=getattr(self.param, 'max_plateau', 50),
+            plateau_tol=getattr(self.param, 'plateau_tol', 1e-6),
+            max_stagnant=getattr(self.param, 'max_stagnant', 20),
+            step_tol=getattr(self.param, 'step_tol', 1e-8),
+        )
+
+        _fit_buf = io.StringIO()
+        with contextlib.redirect_stdout(_fit_buf):
+            model.fit()
+            model.get_loglik_null()
+
+        model._fit_log = _fit_buf.getvalue()
+
+        try:
+            import jax as _jax
+            _jax.clear_caches()
+        except Exception:
+            pass
+
+        return model    
 
     ''' ---------------------------------------------------------- '''
     ''' Function. Fit and Evaluate Latent Class Conditional Model  '''
@@ -6003,11 +6150,72 @@ class Search():
                 print(f"[LCC] standard errors unavailable for this candidate: {exc}")
 
         aic = getattr(model, 'aic', float('inf'))
-        bic = getattr(model, 'bic', float('inf'))
+        bic_raw = getattr(model, 'bic', float('inf'))
         loglik = getattr(model, 'loglik', float('-inf'))
         mae = float('inf')
 
-        tuple_ = (aic, bic, loglik, mae, sorted(all_vars_set), [], {}, bc_vars, [], converged, sol)
+        # ── Flags + BIC penalty (parity with evaluate_lc) ─────────────
+        shares = getattr(model, 'class_probs', None)
+        shares = sorted(list(shares), reverse=True) if shares is not None else []
+        degenerate = False
+        if len(shares) >= 2:
+            smallest, second_smallest = shares[-1], shares[-2]
+            degenerate = (smallest < 0.05 and second_smallest > 0
+                          and smallest / second_smallest < 0.2)
+
+        flag_degen        = bool(getattr(model, 'winner_degenerate', degenerate))
+        flag_sep_choice   = bool(getattr(model, 'winner_sep_choice', False))
+        flag_sep_member   = bool(getattr(model, 'winner_sep_member', False))
+        flag_sep_reviewed = bool(getattr(model, 'winner_sep_reviewed', False))
+        cr_abs = getattr(model, 'class_ratio_min_abs_flag', None)
+        cr_rel = getattr(model, 'class_ratio_min_rel_flag', None)
+        flag_near_unident = bool(
+            (cr_abs is not None and np.any(cr_abs)) or
+            (cr_rel is not None and np.any(cr_rel))
+        )
+        opg_flag = getattr(model, 'opg_hess_flag', None)
+        flag_opg_hess = bool(opg_flag is not None and np.any(opg_flag))
+        entropy = getattr(model, 'entropy', None)
+        flag_low_entropy = bool(entropy is not None and entropy < 0.6)
+        occ = getattr(model, 'occ', None)
+        occ_min = (float(np.nanmin(occ))
+                   if occ is not None and np.isfinite(occ).any()
+                   else float('nan'))
+        flag_low_occ = bool(np.isfinite(occ_min) and occ_min < 5.0)
+        fs = getattr(model, 'firth_summary', None)
+        flag_firth = bool(fs is not None and fs.get('needed_correction', False))
+
+        sol['flags'] = {
+            'flag_degen':         int(flag_degen),
+            'flag_sep_choice':    int(flag_sep_choice),
+            'flag_sep_member':    int(flag_sep_member),
+            'flag_sep_reviewed':  int(flag_sep_reviewed),
+            'flag_near_unident':  int(flag_near_unident),
+            'flag_opg_hess':      int(flag_opg_hess),
+            'flag_low_entropy':   int(flag_low_entropy),
+            'flag_low_occ':       int(flag_low_occ),
+            'flag_firth':         int(flag_firth),
+            'entropy':            float(entropy) if entropy is not None else float('nan'),
+            'occ_min':            occ_min,
+            'winner_gap':         float(getattr(model, 'winner_gap', 0.0)),
+        }
+
+        active = [k.replace('flag_', '') for k, v in sol['flags'].items()
+                  if k.startswith('flag_') and v == 1]
+        sol['solution_flag'] = '|'.join(active) if active else ''
+
+        PENALIZED_FLAGS = ('flag_degen', 'flag_sep_choice', 'flag_sep_member',
+                           'flag_sep_reviewed')
+        n_penalized = sum(1 for k in PENALIZED_FLAGS
+                          if sol['flags'].get(k, 0) == 1)
+        bic_penalty = (1.5 ** n_penalized) if n_penalized > 0 else 1.0
+        sol['bic_raw'] = bic_raw
+        sol['bic_penalty_flags'] = bic_penalty
+        bic = bic_raw * bic_penalty
+        sol['class_shares'] = shares
+
+        tuple_ = (aic, bic, loglik, mae, sorted(all_vars_set), [], {},
+                  bc_vars, [], converged, sol)
         return tuple_
     # }
 
@@ -6172,9 +6380,15 @@ class Search():
             degenerate = smallest < 0.05 and (second_smallest > 0 and smallest / second_smallest < 0.2)
 
         # ── New flags from LatentClassFinal diagnostics ─────────────
-        flag_degen = bool(degenerate)
-        flag_sep_choice = any(getattr(model, 'multistart_separation_choice', []) or [])
-        flag_sep_member = any(getattr(model, 'multistart_separation_member', []) or [])
+        # Use the WINNER chain's own flags, not `any()` over the full
+        # ensemble. A single separated restart would otherwise contaminate
+        # every solution and trigger an unjustified BIC penalty.
+        # Fallback to `degenerate` (recomputed from class_probs) for older
+        # model objects that don't yet expose `winner_degenerate`.
+        flag_degen      = bool(getattr(model, 'winner_degenerate', degenerate))
+        flag_sep_choice = bool(getattr(model, 'winner_sep_choice', False))
+        flag_sep_member = bool(getattr(model, 'winner_sep_member', False))
+        flag_sep_reviewed = bool(getattr(model, 'winner_sep_reviewed', False))
         cr_abs = getattr(model, 'class_ratio_min_abs_flag', None)
         cr_rel = getattr(model, 'class_ratio_min_rel_flag', None)
         flag_near_unident = bool(
@@ -6195,6 +6409,7 @@ class Search():
             'flag_degen':         int(flag_degen),
             'flag_sep_choice':    int(flag_sep_choice),
             'flag_sep_member':    int(flag_sep_member),
+            'flag_sep_reviewed':  int(flag_sep_reviewed),
             'flag_near_unident':  int(flag_near_unident),
             'flag_opg_hess':      int(flag_opg_hess),
             'flag_low_entropy':   int(flag_low_entropy),
@@ -6215,7 +6430,7 @@ class Search():
         #    low entropy, low OCC, Firth) are DIAGNOSTIC: they still appear
         #    in `solution_flag` / the CSV, but they must NOT distort the
         #    objective used for ranking and memory selection.
-        PENALIZED_FLAGS = ('flag_degen', 'flag_sep_choice', 'flag_sep_member')
+        PENALIZED_FLAGS = ('flag_degen', 'flag_sep_choice', 'flag_sep_member','flag_sep_reviewed')
         n_penalized = sum(1 for k in PENALIZED_FLAGS
                           if sol['flags'].get(k, 0) == 1)
         bic_penalty = (1.5 ** n_penalized) if n_penalized > 0 else 1.0
