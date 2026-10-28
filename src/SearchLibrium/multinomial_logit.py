@@ -3,6 +3,7 @@ IMPLEMENTATION: MULTINOMIAL AND CONDITIONAL LOGIT MODEL
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 from sklearn.preprocessing import RobustScaler
 from addicty import  Dict
+import os
 
 """
 BACKGROUND - MULTINOMIAL LOGIT
@@ -1019,7 +1020,9 @@ class MultinomialLogit(DiscreteChoiceModel):
     # owning model instead of capturing ``self``, so an entry never pins a
     # dead model (and its X/y arrays) for the life of the process.
     # ------------------------------------------------------------------
-    _JIT_CACHE_MAXSIZE = 16
+    _JIT_CACHE_MAXSIZE = max(
+        0, int(os.environ.get("SEARCHLIBRIUM_MNL_JIT_CACHE_MAXSIZE", "4"))
+    )
     _jit_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
 
     @classmethod

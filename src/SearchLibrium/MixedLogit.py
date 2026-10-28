@@ -234,7 +234,8 @@ class MixedLogit(DiscreteChoiceModel):
               randvars=None, panels=None, base_alt=None, fit_intercept=False,
               init_coeff=None, maxiter=1000, correlated_vars=None,
               n_draws=1000, halton=True, minimise_func=None,
-              batch_size=None, halton_opts=None, ftol=1e-12,
+              batch_size=None, person_batch_size=None, halton_opts=None,
+              draw_seed=0, ftol=1e-12,
               gtol=1e-6, return_hess=True, return_grad=True, method="slsqp",
               save_fitted_params=True, mnl_init=True,
               de_init=False, de_popsize=4, de_maxiter=3, de_tol=0.5,
@@ -310,7 +311,15 @@ class MixedLogit(DiscreteChoiceModel):
         self.jac = self.return_grad  # scipy optimize parameter
         self.n_draws = n_draws
         self.batch_size = min(n_draws, batch_size) if batch_size is not None else n_draws
-        self.halton_opts = halton_opts  # Store halton options for draw generation
+        if person_batch_size is None:
+            self.person_batch_size = None
+        else:
+            self.person_batch_size = max(1, int(person_batch_size))
+        self._person_batch_active = False
+        self.draw_seed = int(draw_seed)
+        self.halton_opts = dict(halton_opts or {})
+        if self.person_batch_size is not None:
+            self.halton_opts.setdefault("seed", self.draw_seed)
 
         # CRITICAL FIX: Recreate draws_generator with proper halton_opts AND rvdist
         # The __init__ creates it with halton_opts=None, but setup() gets the actual options
@@ -318,7 +327,8 @@ class MixedLogit(DiscreteChoiceModel):
         # AND to pass the correct random variable distributions (e.g., 'ln' for lognormal)
         # IMPORTANT: Order rvdist by varnames order, not dictionary order
         rvdist = [randvars[var] for var in varnames if var in randvars] if randvars else []
-        self.draws_generator = Draws(k=len(randvars or {}), halton_opts=halton_opts, rvdist=rvdist)
+        self.draws_generator = Draws(
+            k=len(randvars or {}), halton_opts=self.halton_opts, rvdist=rvdist)
 
         self.randvarsdict = randvars  # random variables not transformed
 
@@ -821,7 +831,16 @@ class MixedLogit(DiscreteChoiceModel):
     def fit(self):
         # {
         # Generate draws:
-        draws, drawstrans = self.generate_draws(self.N, self.n_draws, self.halton)
+        streaming_people = (
+            self.person_batch_size is not None
+            and self.person_batch_size < self.N
+        )
+        if streaming_people:
+            # Person chunks regenerate deterministic draws during each
+            # objective evaluation, avoiding an (N, Kr, R) draw bank.
+            draws, drawstrans = None, None
+        else:
+            draws, drawstrans = self.generate_draws(self.N, self.n_draws, self.halton)
         self.draws, self.drawstrans = draws, drawstrans  # Record generated values
         # Explicit caller-supplied starts are respected verbatim (no ASC
         # share seeding); the MNL block below may still overwrite
@@ -838,9 +857,15 @@ class MixedLogit(DiscreteChoiceModel):
                 from numba_engine import effective_engine as _mx_eff_eng
             except ImportError:
                 from .numba_engine import effective_engine as _mx_eff_eng
-            use_numba = (_mx_eff_eng(self) == 'numba')
+            # Numba is the default CPU engine. JAX must be selected
+            # explicitly; unsupported specifications fall back to SciPy.
+            use_numba = (_mx_eff_eng(self) != 'jax')
         except Exception:
-            use_numba = (getattr(self, 'engine', None) == 'numba')
+            use_numba = (getattr(self, 'engine', None) != 'jax')
+        if streaming_people:
+            # The streaming path regenerates person-chunk draws and is not
+            # compatible with the current full-array Numba adapter.
+            use_numba = False
 
         # 2x Kftrans - mean and lambda, 3x Krtrans - mean, s.d., lambda
         # Kchol, Kbw - relate to random variables, non-transformed
@@ -1061,11 +1086,12 @@ class MixedLogit(DiscreteChoiceModel):
                 if _v: print(f"[MXL] Differential evolution initialization failed: {e}")
 
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-        if dev.using_gpu:  # {
+        if dev.using_gpu and draws is not None:  # {
             self.X, self.y = dev.convert_array_gpu(self.X), dev.convert_array_gpu(self.y)
             self.panel_info = dev.convert_array_gpu(self.panel_info)
             draws = dev.convert_array_gpu(draws)
-            drawstrans = dev.convert_array_gpu(drawstrans)
+            if drawstrans is not None:
+                drawstrans = dev.convert_array_gpu(drawstrans)
             self.weights = dev.convert_array_gpu(self.weights) if self.weights is not None else None
             self.avail = dev.convert_array_gpu(self.avail) if self.avail is not None else None
         # }
@@ -1113,7 +1139,8 @@ class MixedLogit(DiscreteChoiceModel):
         # SOLVE OPTIMISATION PROBLEM - COMPUTATIONALLY TIME CONSUMING!
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # ---- JAX fast path ----
-        if (getattr(self, '_jax', False) and not use_numba
+        if (getattr(self, '_jax', False) and not streaming_people
+                and not use_numba
                 and self.minimise_func is None):
             jax_result = self.optimize_jax(betas, draws, drawstrans)
             if jax_result is not None:
@@ -1243,6 +1270,16 @@ class MixedLogit(DiscreteChoiceModel):
                     result['hess_inv'] = np.linalg.pinv(H)
                 except Exception:
                     pass
+
+        if draws is None:
+            # Estimation stayed streamed; materialize full draws only for the
+            # final fitted-parameter and prediction summaries.
+            draws, drawstrans = self.generate_draws(
+                self.N, self.n_draws, self.halton)
+            self.draws, self.drawstrans = draws, drawstrans
+            self.p = self.compute_probabilities(
+                result['x'], self.X, self.panel_info, draws, drawstrans,
+                self.avail, self.var_list, self.chol_mat)
 
         if self.save_fitted_params:
             self.compute_fitted_params(self.y, self.p, self.panel_info, self.Br)
@@ -1424,7 +1461,8 @@ class MixedLogit(DiscreteChoiceModel):
 
         sim_p = jnp.mean(pch, axis=1)                        # (N,)
         sim_p = jnp.clip(sim_p, 1e-300, None)
-        ll = -jnp.sum(jnp.log(sim_p))
+        valid_person = jnp.any(panel_info_jax > 0, axis=1)
+        ll = -jnp.sum(jnp.where(valid_person, jnp.log(sim_p), 0.0))
         # Tiny L2 penalty — makes the Hessian diagonally dominant so it
         # never becomes singular, even with near-constant variables or
         # simulation noise in the mixed-logit probability integration.
@@ -1666,6 +1704,125 @@ class MixedLogit(DiscreteChoiceModel):
                 print(f"[JAX MXL optimizer] jaxopt run failed ({_e}).")
             return None
 
+    def _optimize_jax_streamed(self, betas):
+        """Fit plain MXL with bounded person chunks and deterministic draws."""
+        try:
+            import os
+            import jax
+            import jax.numpy as jnp
+            import numpy as _np
+            from scipy.optimize import minimize as sp_min
+
+            chunk_size = int(self.person_batch_size)
+            X_np = _np.asarray(self.X)
+            y_np = _np.asarray(self.y)
+            if y_np.ndim > 3:
+                y_np = y_np[..., 0]
+            pi_np = _np.asarray(self.panel_info)
+            N, P, J, _ = X_np.shape
+            Kf, Kr = int(self.Kf), int(self.Kr)
+            Kchol, Kbw = int(self.Kchol), int(self.Kbw)
+            fxidx = jnp.asarray(self.fxidx, dtype=bool)
+            rvidx = jnp.asarray(self.rvidx, dtype=bool)
+            rvdist_names = [d for d in self.rvdist if d is not False]
+            extra = self._jax_negloglik_extra_kwargs()
+
+            def _pad(value, shape):
+                result = _np.zeros(shape, dtype=_np.float64)
+                result[tuple(slice(0, n) for n in value.shape)] = value
+                return result
+
+            def _chunk_inputs(chunk_index):
+                start = chunk_index * chunk_size
+                end = min(start + chunk_size, N)
+                n = end - start
+                X_chunk = _pad(X_np[start:end], (chunk_size, P, J, X_np.shape[3]))
+                y_chunk = _pad(y_np[start:end], (chunk_size, P, J))
+                pi_chunk = _pad(pi_np[start:end], (chunk_size, P))
+
+                state = _np.random.get_state()
+                try:
+                    _np.random.seed(self.draw_seed + chunk_index)
+                    if self.halton and hasattr(self.draws_generator, "halton"):
+                        self.draws_generator.halton.seed = (
+                            self.draw_seed + chunk_index)
+                    draws_chunk, _ = self.generate_draws(
+                        n, self.n_draws, self.halton)
+                finally:
+                    _np.random.set_state(state)
+                draws_chunk = _pad(
+                    _np.asarray(draws_chunk),
+                    (chunk_size, int(self.Kr), self.n_draws))
+                return (
+                    jnp.asarray(X_chunk),
+                    jnp.asarray(y_chunk),
+                    jnp.asarray(pi_chunk),
+                    jnp.asarray(draws_chunk),
+                )
+
+            def _chunk_objective(b, X_j, y_j, pi_j, draws_j):
+                return self._jax_mxl_negloglik(
+                    b, X_j, y_j, pi_j, draws_j,
+                    fxidx, rvidx, Kf, Kr, Kchol, Kbw,
+                    rvdist_names, int(self.correlationLength),
+                    **extra)
+
+            compiled = jax.jit(jax.value_and_grad(_chunk_objective))
+            chunk_args = [
+                _chunk_inputs(i)
+                for i in range((N + chunk_size - 1) // chunk_size)
+            ]
+            valid_counts = [
+                min(chunk_size, N - i * chunk_size)
+                for i in range(len(chunk_args))
+            ]
+
+            def _objective(betas_np):
+                b = jnp.asarray(betas_np, dtype=jnp.float64)
+                value = 0.0
+                gradient = jnp.zeros_like(b)
+                for args, valid in zip(chunk_args, valid_counts):
+                    chunk_value, chunk_gradient = compiled(b, *args)
+                    # Padded people contribute zero because their panel mask
+                    # is zero; valid is retained for clarity and future
+                    # weighted-panel support.
+                    del valid
+                    value = value + chunk_value
+                    gradient = gradient + chunk_gradient
+                value, gradient = jax.block_until_ready((value, gradient))
+                return float(value), _np.asarray(gradient, dtype=_np.float64)
+
+            options = {'maxiter': self.maxiter, 'disp': False}
+            if self.method in ('bfgs', 'l-bfgs-b'):
+                options['gtol'] = self.gtol
+                options['ftol'] = self.ftol
+            else:
+                options['ftol'] = self.ftol
+            result = sp_min(
+                _objective, betas, jac=True, method=self.method,
+                options=options)
+
+            if self.return_hess:
+                def _hessian_objective(b):
+                    value = 0.0
+                    for args in chunk_args:
+                        value = value + _chunk_objective(b, *args)
+                    return value
+
+                hessian_fn = jax.jit(jax.hessian(_hessian_objective))
+                hessian = _np.asarray(
+                    hessian_fn(jnp.asarray(result['x'], dtype=jnp.float64)),
+                    dtype=float)
+                try:
+                    result['hess_inv'] = _np.linalg.inv(hessian)
+                except _np.linalg.LinAlgError:
+                    result['hess_inv'] = _np.linalg.pinv(hessian)
+            return result
+        except Exception as exc:
+            if not _SL_QUIET:
+                print(f"[JAX streamed MXL] falling back to scipy: {exc}")
+            return None
+
     def optimize_jax(self, betas, draws, drawstrans):
         """JAX-accelerated optimisation for the Mixed Logit model.
 
@@ -1680,6 +1837,10 @@ class MixedLogit(DiscreteChoiceModel):
             if not _SL_QUIET:
                 print("[JAX MXL optimizer] heterogeneity detected; falling back to scipy.")
             return None
+
+        if (self.person_batch_size is not None
+                and self.person_batch_size < self.N):
+            return self._optimize_jax_streamed(betas)
 
         try:
             import os
@@ -1940,12 +2101,88 @@ class MixedLogit(DiscreteChoiceModel):
                 print(f"[JAX MXL masked] falling back: {e}")
             return None
 
+    def _person_batch_slice(self, value, start, end):
+        """Slice an observation-level array while preserving scalar settings."""
+        if value is None:
+            return None
+        try:
+            if np.ndim(value) > 0 and np.shape(value)[0] == self.N:
+                return value[start:end]
+        except (TypeError, IndexError):
+            pass
+        return value
+
+    def _stream_person_batches(self, betas, X, y, panel_info, draws,
+                               drawstrans, weights, avail, batch_size):
+        """Evaluate the objective in bounded person chunks.
+
+        When ``draws`` is absent, each chunk receives deterministic random
+        draws derived from ``draw_seed`` and its chunk index. This keeps every
+        optimizer evaluation reproducible without retaining all draws.
+        """
+        original_n = self.N
+        total_value = 0.0
+        total_gradient = None
+        has_gradient = bool(self.return_grad)
+        try:
+            self._person_batch_active = True
+            for chunk_index, start in enumerate(
+                    range(0, original_n, self.person_batch_size)):
+                end = min(start + self.person_batch_size, original_n)
+                self.N = end - start
+                chunk_X = X[start:end]
+                chunk_y = y[start:end]
+                chunk_panel = panel_info[start:end]
+                chunk_weights = self._person_batch_slice(weights, start, end)
+                chunk_avail = self._person_batch_slice(avail, start, end)
+
+                if draws is None:
+                    rng_state = np.random.get_state()
+                    try:
+                        np.random.seed(self.draw_seed + chunk_index)
+                        if self.halton and hasattr(self.draws_generator, "halton"):
+                            self.draws_generator.halton.seed = (
+                                self.draw_seed + chunk_index)
+                        chunk_draws, chunk_drawstrans = self.generate_draws(
+                            self.N, self.n_draws, self.halton)
+                    finally:
+                        np.random.set_state(rng_state)
+                else:
+                    chunk_draws = draws[start:end]
+                    chunk_drawstrans = (
+                        drawstrans[start:end] if drawstrans is not None
+                        else drawstrans
+                    )
+
+                result = self.get_loglik_gradient(
+                    betas, chunk_X, chunk_y, chunk_panel,
+                    chunk_draws, chunk_drawstrans, chunk_weights,
+                    chunk_avail, batch_size)
+                total_value += float(result[0])
+                if has_gradient and len(result) > 1:
+                    if total_gradient is None:
+                        total_gradient = np.zeros_like(result[1], dtype=float)
+                    total_gradient += np.asarray(result[1], dtype=float)
+        finally:
+            self.N = original_n
+            self._person_batch_active = False
+
+        if has_gradient:
+            return total_value, total_gradient
+        return (total_value,)
+
     def get_loglik_gradient(self, betas, X, y, panel_info, draws,
                             drawstrans, weights, avail, batch_size):
         # {
         """ Fixed and random parameters are handled separately to
         speed up the estimation and the results are concatenated.
         """
+        if (not self._person_batch_active
+                and self.person_batch_size is not None
+                and self.person_batch_size < self.N):
+            return self._stream_person_batches(
+                betas, X, y, panel_info, draws, drawstrans,
+                weights, avail, batch_size)
         # Segregating initial values to fixed betas (Bf),
         # random beta means (Br_b)
         # for both non-transformed and transformed variables
@@ -2025,11 +2262,10 @@ class MixedLogit(DiscreteChoiceModel):
 
         # _, gr_b, gr_w, pch = np.zeros((N, self.Kf)), np.zeros((N, self.Kr)), np.zeros((N, self.Kr)), []  # Batch data
 
-        _ = np.zeros((N, self.Kf))  # CONCEPTUAL ERROR. WHY CREATE IF NO NAME?
         gr_b = np.zeros((N, self.Kr))
         gr_w = np.zeros((N, self.Kr))
         g_all = np.zeros((N, len(betas)))
-        pch = []  # Batch data
+        lik_sum = np.zeros(N, dtype=float)
         for batch in range(n_batches):
             # {
             a = batch * batch_size
@@ -2051,6 +2287,8 @@ class MixedLogit(DiscreteChoiceModel):
 
             # Thresholds to avoid divide by zero warnings
             pch_batch = truncate_lower(pch_batch, min_comp_val)
+            draw_count = b - a
+            lik_sum += np.sum(pch_batch, axis=1)
 
             # Observed probability minus predicted probability
             ymp = y - p  # (N, P, J, R)
@@ -2289,12 +2527,10 @@ class MixedLogit(DiscreteChoiceModel):
                 g, pch_batch = dev.to_cpu(g), dev.to_cpu(pch_batch)
             # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-            pch.append(pch_batch)
-            g_all += g
+            g_all += g * draw_count
         # }
 
-        pch = np.concatenate(pch, axis=-1)
-        lik = pch.mean(axis=1)  # (N,)
+        lik = lik_sum / float(self.n_draws)  # (N,)
         loglik = np.log(lik)
         if weights is not None: loglik = loglik * weights
         loglik = loglik.sum()
@@ -2322,7 +2558,7 @@ class MixedLogit(DiscreteChoiceModel):
                 g *= weights[:, 0][:, None]  # Use only the first column and convert to column vector
         # }
 
-        g = np.sum(g, axis=0) / n_batches  # (K, )
+        g = np.sum(g_all, axis=0) / float(self.n_draws)  # (K, )
         g = g - self.regularize_l1_grad(betas)
         # L2 ridge penalty gradient: the objective subtracts
         # reg_penalty * sum(betas^2) from the log-likelihood, so its
@@ -2671,14 +2907,10 @@ class MixedLogit(DiscreteChoiceModel):
 
         # INITIALISE
         XBf = np.zeros((self.N, self.P, self.J))
-        XBr = np.zeros((self.N, self.P, self.J, self.batch_size))  # NOT USED?
-        V = np.zeros((self.N, self.P, self.J, self.batch_size))  # NOT USED?
 
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
         if dev.using_gpu:  # {
             XBf = dev.convert_array_gpu(XBf)
-            XBr = dev.convert_array_gpu(XBr)
-            V = dev.convert_array_gpu(V)
         # }
         # '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
@@ -2718,10 +2950,16 @@ class MixedLogit(DiscreteChoiceModel):
             Br = self.draws_generator.apply_distribution(Br, self.rvdist)
             self.Br = Br  # save Br to use later
             Xr = X[:, :, :, self.rvidx]
-            XBr = dev.cust_einsum('npjk,nkr -> npjr', Xr, Br).astype(float)  # (N, P, J, R)
-            V = XBf[:, :, :, None] + XBr  # Add an extra dimension to XBf and then add XBr
+            # Build the utility directly. Keeping a separate XBr and a
+            # preallocated V needlessly retains two (N, P, J, R) work arrays.
+            V = dev.cust_einsum('npjk,nkr -> npjr', Xr, Br).astype(float)
+            V += XBf[:, :, :, None]
         else:
             self.Br = Br_b[None, :, None]
+            V = np.broadcast_to(
+                XBf[:, :, :, None],
+                (self.N, self.P, self.J, draws.shape[-1]),
+            ).copy()
 
         #  transformations for variables with fixed coeffs
         if self.Kftrans != 0:

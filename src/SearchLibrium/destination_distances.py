@@ -167,6 +167,7 @@ def build_case_alt_distances(
     dest_lat_col: str = "dest_lat",
     dest_lon_col: str = "dest_lon",
     offset_col: str | None = "distance_offset_km",
+    member_zones_col: str | None = "member_suburbs",
 ) -> pd.DataFrame:
     """Build larch-style per-(case, alternative) distances.
 
@@ -204,7 +205,12 @@ def build_case_alt_distances(
         raise KeyError(f"build_case_alt_distances: alternatives missing columns {missing}")
 
     c = cases[req_cases].copy()
-    a = alternatives[req_alts + ([offset_col] if offset_col and offset_col in alternatives.columns else [])].copy()
+    extra_alt_cols = []
+    if offset_col and offset_col in alternatives.columns:
+        extra_alt_cols.append(offset_col)
+    if member_zones_col and member_zones_col in alternatives.columns:
+        extra_alt_cols.append(member_zones_col)
+    a = alternatives[req_alts + extra_alt_cols].copy()
     c["_oz"] = c[orig_zone_col].astype(str).str.strip().str.upper()
     a["_dz"] = a[dest_zone_col].astype(str).str.strip().str.upper()
     if offset_col and offset_col in a.columns:
@@ -225,24 +231,41 @@ def build_case_alt_distances(
     # Skim index lookup (zone label -> matrix row).
     skim_lookup: dict[str, int] = {}
     if skim_zone_ids is not None and skim_dist_mat is not None:
-        skim_lookup = {z: i for i, z in enumerate(skim_zone_ids)}
+        skim_lookup = {str(z).strip().upper(): i
+                       for i, z in enumerate(skim_zone_ids)}
     o_idx = np.array([skim_lookup.get(z, -1) for z in c["_oz"].to_numpy()], dtype=int)
     d_idx = np.array([skim_lookup.get(z, -1) for z in a["_dz"].to_numpy()], dtype=int)
 
     skim_d = np.full((n_c, n_a), np.nan, dtype=float)
     skim_t = np.full((n_c, n_a), np.nan, dtype=float)
-    if skim_dist_mat is not None and (o_idx >= 0).any() and (d_idx >= 0).any():
+    if skim_dist_mat is not None and (o_idx >= 0).any():
         sd = np.asarray(skim_dist_mat, dtype=float)
         st = np.asarray(skim_time_mat, dtype=float) if skim_time_mat is not None else None
         ok_c = np.where(o_idx >= 0)[0]
-        ok_a = np.where(d_idx >= 0)[0]
-        sub = sd[np.ix_(o_idx[ok_c], d_idx[ok_a])]
-        usable = (sub > 0.0) & (sub < float(max_km))
-        block = np.where(usable, sub, np.nan)
-        skim_d[np.ix_(ok_c, ok_a)] = block
-        if st is not None and st.shape == sd.shape:
-            sub_t = st[np.ix_(o_idx[ok_c], d_idx[ok_a])]
-            skim_t[np.ix_(ok_c, ok_a)] = np.where(usable, sub_t, np.nan)
+        ok_a = np.arange(n_a) if member_zones_col and member_zones_col in a.columns \
+            else np.where(d_idx >= 0)[0]
+        if member_zones_col and member_zones_col in a.columns:
+            for ci in ok_c:
+                for ai in ok_a:
+                    members = [z.strip().upper() for z in str(
+                        a.iloc[ai][member_zones_col] or "").split(",") if z.strip()]
+                    member_idx = [skim_lookup[z] for z in members if z in skim_lookup]
+                    if not member_idx:
+                        member_idx = [d_idx[ai]]
+                    values = sd[o_idx[ci], member_idx]
+                    valid = np.isfinite(values) & (values > 0.0) & (values < float(max_km))
+                    if valid.any():
+                        pick = int(np.flatnonzero(valid)[np.argmin(values[valid])])
+                        skim_d[ci, ai] = values[valid][pick]
+                        if st is not None and st.shape == sd.shape:
+                            skim_t[ci, ai] = st[o_idx[ci], member_idx[np.flatnonzero(valid)[pick]]]
+        else:
+            sub = sd[np.ix_(o_idx[ok_c], d_idx[ok_a])]
+            usable = (sub > 0.0) & (sub < float(max_km))
+            skim_d[np.ix_(ok_c, ok_a)] = np.where(usable, sub, np.nan)
+            if st is not None and st.shape == sd.shape:
+                sub_t = st[np.ix_(o_idx[ok_c], d_idx[ok_a])]
+                skim_t[np.ix_(ok_c, ok_a)] = np.where(usable, sub_t, np.nan)
 
     # Haversine fallback from case-specific origin coords (broadcast).
     with np.errstate(invalid="ignore"):

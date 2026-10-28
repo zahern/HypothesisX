@@ -56,12 +56,14 @@ class Halton:
     Set use_sobol=True to use scrambled Sobol sequences instead.
     """
 
-    def __init__(self, primes=None, drop=100, shuffled=False, antithetic=False, use_sobol=False):
+    def __init__(self, primes=None, drop=100, shuffled=False,
+                 antithetic=False, use_sobol=False, seed=None):
         self.primes = primes
         self.drop = drop
         self.shuffled = shuffled
         self.antithetic = antithetic
         self.use_sobol = use_sobol
+        self.seed = seed
 
         # Default primes for Halton sequence
         if self.primes is None:
@@ -81,7 +83,9 @@ class Halton:
         if self.use_sobol:
             # Use Sobol sequence (newer method)
             base = n_draws // 2 if self.antithetic else n_draws
-            draws = _sobol_generate(sample_size, base, n_vars, shuffled=self.shuffled)
+            draws = _sobol_generate(
+                sample_size, base, n_vars, shuffled=self.shuffled,
+                seed=self.seed)
             if self.antithetic:
                 draws = np.concatenate([draws, 1.0 - draws], axis=2)
         else:
@@ -110,7 +114,7 @@ class Halton:
         return draws
 
 
-def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False):
+def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False, seed=None):
     """Generate scrambled Sobol (0,1) draws.
 
     Returns
@@ -123,7 +127,7 @@ def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False):
         p2 = 1
         while p2 < total:
             p2 <<= 1
-        sobol = Sobol(d=n_vars, scramble=True)
+        sobol = Sobol(d=n_vars, scramble=True, seed=seed)
         flat = sobol.random(p2)[:total]  # (total, n_vars)
         draws = flat.reshape(sample_size, n_draws, n_vars).transpose(0, 2, 1)
     else:
