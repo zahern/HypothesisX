@@ -140,9 +140,10 @@ class MixedLogit(DiscreteChoiceModel):
         self.softmax_r = True
         self.reg_penalty = 0.001  # tiny L2 ridge — prevents singular Hessians
 
-    def generate_draws(self, sample_size, n_draws, halton=True, chol_mat=None):
+    def generate_draws(self, sample_size, n_draws, halton=True, chol_mat=None,
+                       offset=0):
         """Generate random or Halton draws via fn_generate_draws, apply distributions, return tuple."""
-        args = (sample_size, n_draws)
+        args = (sample_size, n_draws, offset)
         draws, drawstrans = self.fn_generate_draws(*args)
 
         # Filter out any False values from the lists
@@ -154,7 +155,7 @@ class MixedLogit(DiscreteChoiceModel):
         drawstrans = np.atleast_3d(drawstrans)
         return draws, drawstrans
 
-    def generate_halton_draws(self, sample_size, n_draws, n_vars):
+    def generate_halton_draws(self, sample_size, n_draws, n_vars, offset=0):
         """Generate Halton draws for multiple random variables using different primes."""
         if n_vars == 0:
             return []
@@ -166,8 +167,13 @@ class MixedLogit(DiscreteChoiceModel):
                   307, 311]
 
         from SearchLibrium.Halton import _halton_seq_traditional as halton_seq
-        draws = [halton_seq(sample_size * n_draws, prime=primes[i % len(primes)],
-                 drop=100, shuffled=False).reshape(sample_size, n_draws) for i in range(n_vars)]
+        draws = [
+            halton_seq(
+                offset * n_draws + sample_size * n_draws,
+                prime=primes[i % len(primes)], drop=100, shuffled=False
+            )[offset * n_draws:].reshape(sample_size, n_draws)
+            for i in range(n_vars)
+        ]
         draws = np.stack(draws, axis=1)
         return draws
 
@@ -186,7 +192,7 @@ class MixedLogit(DiscreteChoiceModel):
                 values[:, k, :] = 2 * values[:, k, :] - 1
         return values
 
-    def generate_draws_halton(self, sample_size, n_draws):
+    def generate_draws_halton(self, sample_size, n_draws, offset=0):
         """Generate Halton/Sobol draws (respects halton_opts configuration)."""
         # Use the Halton class from draws_generator which was configured with halton_opts
         # This ensures Sobol configuration (use_sobol=True/False) is properly applied
@@ -199,28 +205,43 @@ class MixedLogit(DiscreteChoiceModel):
             if self.randvars:
                 n_vars_r = int(np.sum(self.rvidx))
                 if n_vars_r > 0:
-                    draws = halton_gen.generate_draws(sample_size, n_draws, n_vars_r)
+                    draws = halton_gen.generate_draws(
+                        sample_size, n_draws, n_vars_r, offset=offset)
 
             if self.randtransvars:
                 n_vars_rt = int(np.sum(self.rvtransidx))
                 if n_vars_rt > 0:
-                    drawstrans = halton_gen.generate_draws(sample_size, n_draws, n_vars_rt)
+                    drawstrans = halton_gen.generate_draws(
+                        sample_size, n_draws, n_vars_rt, offset=offset)
         else:
             # Fallback to direct Halton generation (default behavior)
             if self.randvars:
-                draws = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvidx))
+                draws = self.generate_halton_draws(
+                    sample_size, n_draws, np.sum(self.rvidx), offset=offset)
             if self.randtransvars:
-                drawstrans = self.generate_halton_draws(sample_size, n_draws, np.sum(self.rvtransidx))
+                drawstrans = self.generate_halton_draws(
+                    sample_size, n_draws, np.sum(self.rvtransidx), offset=offset)
 
         return draws, drawstrans
 
-    def generate_draws_random(self, sample_size, n_draws):
+    def _indexed_random_draws(self, sample_size, n_draws, n_vars, offset,
+                              stream):
+        if n_vars == 0:
+            return []
+        from numpy.random import Generator, PCG64
+        rng = Generator(PCG64(self.draw_seed + stream))
+        rng.bit_generator.advance(offset * n_vars * n_draws)
+        return rng.random((sample_size, n_vars, n_draws))
+
+    def generate_draws_random(self, sample_size, n_draws, offset=0):
         """Generate random uniform draws, returns (draws, drawstrans) tuple with raw uniform values."""
         draws, drawstrans = [], []
         if self.randvars:
-            draws = self.get_random_draws(sample_size, n_draws, np.sum(self.rvidx))
+            draws = self._indexed_random_draws(
+                sample_size, n_draws, int(np.sum(self.rvidx)), offset, 0)
         if self.randtransvars:
-            drawstrans = self.get_random_draws(sample_size, n_draws, np.sum(self.rvtransidx))
+            drawstrans = self._indexed_random_draws(
+                sample_size, n_draws, int(np.sum(self.rvtransidx)), offset, 1)
         return draws, drawstrans
 
     def get_random_draws(self, sample_size, n_draws, n_vars):
@@ -1165,7 +1186,7 @@ class MixedLogit(DiscreteChoiceModel):
                             jac=True, method='L-BFGS-B',
                             args=_polish_args,
                             options={'gtol': self.gtol * 100,
-                                     'maxiter': 100, 'disp': False},
+                                     'maxiter': 100},
                         )
                         if (polish.get('fun', float('inf'))
                                 < jax_result.get('fun', float('inf')) + 0.1):
@@ -1243,7 +1264,11 @@ class MixedLogit(DiscreteChoiceModel):
                 self.X = np.concatenate((ones, self.X), axis=-1)
         args = (self.X, self.y, self.panel_info, draws, drawstrans, self.weights, self.avail, self.batch_size)
         bounds = bnds if self.method == "l-bfgs-b" else None
-        options = {'gtol': self.gtol, 'maxiter': self.maxiter, 'disp': False}
+        options = {'maxiter': self.maxiter}
+        if self.method in ("bfgs", "l-bfgs-b"):
+            options["gtol"] = self.gtol
+        if self.method in ("slsqp", "l-bfgs-b"):
+            options["ftol"] = self.ftol
         result = minimise_func(self.get_loglik_gradient, betas, jac=self.jac, method=self.method,
                                args=args, tol=self.ftol, bounds=bounds, options=options)
         if not _SL_QUIET:
@@ -1384,7 +1409,8 @@ class MixedLogit(DiscreteChoiceModel):
             for idx, (rv_idx, col) in enumerate(zip(het_var_rv_idx, het_var_rv_cols)):
                 het_cov = X_jax[:, :, :, col]
                 het_cov_mean = jnp.mean(het_cov, axis=(1, 2))
-                scale = jnp.exp(het_var_rv[idx] * het_cov_mean)
+                scale = jnp.exp(jnp.clip(
+                    het_var_rv[idx] * het_cov_mean, -50.0, 50.0))
                 draws_jax = draws_jax.at[:, rv_idx:rv_idx+1, :].mul(scale[:, None, None])
 
         Br = Br_b[:, None] + jnp.einsum('kl,nlr->nkr',
@@ -1415,9 +1441,11 @@ class MixedLogit(DiscreteChoiceModel):
         # apply distribution transforms
         for k, dist in enumerate(rvdist_names):
             if dist == 'ln':
-                Br = Br.at[:, k, :].set(jnp.exp(Br[:, k, :]))
+                Br = Br.at[:, k, :].set(jnp.exp(
+                    jnp.clip(Br[:, k, :], -50.0, 50.0)))
             elif dist == 'nln':
-                Br = Br.at[:, k, :].set(-jnp.exp(Br[:, k, :]))
+                Br = Br.at[:, k, :].set(-jnp.exp(
+                    jnp.clip(Br[:, k, :], -50.0, 50.0)))
             elif dist == 'tn':
                 Br = Br.at[:, k, :].set(jnp.abs(Br[:, k, :]))
             elif dist == 'u':
@@ -1477,6 +1505,128 @@ class MixedLogit(DiscreteChoiceModel):
             ll = ll + sd_pen * jnp.sum(jnp.square(betas[_start:_start + Kbw]))
         return ll
 
+    @staticmethod
+    def _jax_mxl_negloglik_scan(
+            betas, X_jax, y_jax, panel_info_jax, draw_batches_jax,
+            draw_mask_jax, fxidx, rvidx, Kf, Kr, Kchol, Kbw,
+            rvdist_names, correlationLength, n_draws, **kwargs):
+        """Plain-MXL likelihood that scans draw batches before taking logs."""
+        import jax
+        import jax.numpy as jnp
+
+        Bf = betas[:Kf]
+        Br_b = betas[Kf:Kf + Kr]
+        chol_v = betas[Kf + Kr:Kf + Kr + Kchol]
+        Br_w = betas[Kf + Kr + Kchol:Kf + Kr + Kchol + Kbw]
+
+        chol_mat = jnp.zeros((Kr, Kr))
+        idx = 0
+        for r in range(correlationLength):
+            for c in range(r + 1):
+                chol_mat = chol_mat.at[r, c].set(chol_v[idx])
+                idx += 1
+        for k in range(Kbw):
+            diag_pos = correlationLength + k
+            chol_mat = chol_mat.at[diag_pos, diag_pos].set(jnp.abs(Br_w[k]))
+
+        het_offset = kwargs.get('het_offset', Kf + Kr + Kchol + Kbw)
+        K_het_mean_rv = int(kwargs.get('K_het_mean_rv', 0))
+        K_het_var_rv = int(kwargs.get('K_het_var_rv', 0))
+        if K_het_var_rv > 0:
+            het_var = betas[
+                het_offset + K_het_mean_rv:
+                het_offset + K_het_mean_rv + K_het_var_rv
+            ]
+
+        Xr = X_jax[:, :, :, rvidx]
+        if Kf > 0:
+            Xf = X_jax[:, :, :, fxidx]
+            UB = jnp.einsum('npjk,k->npj', Xf, Bf)
+        else:
+            UB = jnp.zeros(X_jax.shape[:3])
+
+        def _draw_step(probability_sum, inputs):
+            draws_batch, draw_mask = inputs
+            if K_het_var_rv > 0:
+                scaled_draws = draws_batch
+                for het_idx, (rv_idx, col) in enumerate(zip(
+                        kwargs.get('het_var_rv_idx', []),
+                        kwargs.get('het_var_rv_cols', []))):
+                    covariate_mean = jnp.mean(
+                        X_jax[:, :, :, col], axis=(1, 2))
+                    scale = jnp.exp(jnp.clip(
+                        het_var[het_idx] * covariate_mean, -50.0, 50.0))
+                    scaled_draws = scaled_draws.at[
+                        :, rv_idx:rv_idx + 1, :
+                    ].multiply(scale[:, None, None])
+            else:
+                scaled_draws = draws_batch
+            Br = Br_b[None, :, None] + jnp.einsum(
+                'kl,nlr->nkr', chol_mat, scaled_draws[:, :Kr, :])
+
+            if K_het_mean_rv > 0:
+                het_mean = betas[
+                    het_offset:het_offset + K_het_mean_rv]
+                for het_idx, (rv_idx, col) in enumerate(zip(
+                        kwargs.get('het_mean_rv_idx', []),
+                        kwargs.get('het_mean_rv_cols', []))):
+                    covariate_mean = jnp.mean(
+                        X_jax[:, :, :, col], axis=(1, 2))
+                    Br = Br.at[:, rv_idx:rv_idx + 1, :].add(
+                        het_mean[het_idx] * covariate_mean[:, None, None])
+
+            for k, dist in enumerate(rvdist_names):
+                if dist == 'ln':
+                    Br = Br.at[:, k, :].set(jnp.exp(
+                        jnp.clip(Br[:, k, :], -50.0, 50.0)))
+                elif dist == 'nln':
+                    Br = Br.at[:, k, :].set(-jnp.exp(
+                        jnp.clip(Br[:, k, :], -50.0, 50.0)))
+                elif dist == 'tn':
+                    Br = Br.at[:, k, :].set(jnp.abs(Br[:, k, :]))
+                elif dist == 'u':
+                    sd = jnp.linalg.norm(chol_mat[k, :])
+                    Br = Br.at[:, k, :].set(
+                        Br_b[k] + sd * (draws_batch[:, k, :] - 0.5))
+
+            utility = UB[:, :, :, None] + jnp.einsum(
+                'npjk,nkr->npjr', Xr, Br)
+            utility = utility - jnp.max(utility, axis=2, keepdims=True)
+            exp_utility = jnp.exp(utility)
+            probability = exp_utility / jnp.sum(
+                exp_utility, axis=2, keepdims=True)
+            chosen_probability = jnp.sum(
+                y_jax[:, :, :, None] * probability, axis=2)
+            chosen_probability = jnp.where(
+                panel_info_jax[:, :, None] > 0,
+                chosen_probability,
+                1.0)
+            panel_probability = jnp.prod(chosen_probability, axis=1)
+            panel_probability = jnp.clip(panel_probability, 1e-300, None)
+            probability_sum = probability_sum + jnp.sum(
+                panel_probability * draw_mask[None, :], axis=1)
+            return probability_sum, None
+
+        probability_sum, _ = jax.lax.scan(
+            _draw_step,
+            jnp.zeros(X_jax.shape[0]),
+            (draw_batches_jax, draw_mask_jax))
+        simulated_probability = jnp.clip(
+            probability_sum / float(n_draws), 1e-300, None)
+        valid_person = jnp.any(panel_info_jax > 0, axis=1)
+        ll = -jnp.sum(jnp.where(
+            valid_person, jnp.log(simulated_probability), 0.0))
+
+        reg = kwargs.get('reg_penalty', 0.0)
+        if reg > 0:
+            ll = ll + reg * jnp.sum(jnp.square(betas))
+        sd_pen = kwargs.get('sd_penalty', 0.0)
+        if sd_pen > 0 and Kbw > 0:
+            start = Kf + Kr + Kchol
+            ll = ll + sd_pen * jnp.sum(
+                jnp.square(betas[start:start + Kbw]))
+        return ll
+
     # ------------------------------------------------------------------
     # MASKED (fixed-max-size) negloglik — one JIT compilation for ALL specs.
     #
@@ -1506,8 +1656,9 @@ class MixedLogit(DiscreteChoiceModel):
         base = Br_b[None, :, None] + Br_w[None, :, None] * d   # normal draw
         codes = rvdist_codes[None, :, None]              # (1, KR, 1)
         Br = base
-        Br = jnp.where(codes == 1, jnp.exp(base), Br)                        # ln
-        Br = jnp.where(codes == 2, -jnp.exp(base), Br)                       # nln
+        safe_base = jnp.clip(base, -50.0, 50.0)
+        Br = jnp.where(codes == 1, jnp.exp(safe_base), Br)                   # ln
+        Br = jnp.where(codes == 2, -jnp.exp(safe_base), Br)                  # nln
         Br = jnp.where(codes == 3, jnp.abs(base), Br)                        # tn
         Br = jnp.where(codes == 4,
                        Br_b[None, :, None] + Br_w[None, :, None] * (d - 0.5), Br)  # u
@@ -1722,10 +1873,23 @@ class MixedLogit(DiscreteChoiceModel):
             N, P, J, _ = X_np.shape
             Kf, Kr = int(self.Kf), int(self.Kr)
             Kchol, Kbw = int(self.Kchol), int(self.Kbw)
+            if getattr(self, 'Kftrans', 0) or getattr(self, 'Krtrans', 0):
+                if not _SL_QUIET:
+                    print("[JAX streamed MXL] transformed variables require "
+                          "the non-streamed JAX path.")
+                return None
             fxidx = jnp.asarray(self.fxidx, dtype=bool)
             rvidx = jnp.asarray(self.rvidx, dtype=bool)
             rvdist_names = [d for d in self.rvdist if d is not False]
             extra = self._jax_negloglik_extra_kwargs()
+            draw_batch_size = max(1, min(int(self.batch_size), self.n_draws))
+            draw_batches = (
+                self.n_draws + draw_batch_size - 1
+            ) // draw_batch_size
+            padded_draws = draw_batches * draw_batch_size
+            draw_mask = _np.zeros((draw_batches, draw_batch_size),
+                                  dtype=_np.float64)
+            draw_mask.flat[:self.n_draws] = 1.0
 
             def _pad(value, shape):
                 result = _np.zeros(shape, dtype=_np.float64)
@@ -1740,59 +1904,60 @@ class MixedLogit(DiscreteChoiceModel):
                 y_chunk = _pad(y_np[start:end], (chunk_size, P, J))
                 pi_chunk = _pad(pi_np[start:end], (chunk_size, P))
 
-                state = _np.random.get_state()
-                try:
-                    _np.random.seed(self.draw_seed + chunk_index)
-                    if self.halton and hasattr(self.draws_generator, "halton"):
-                        self.draws_generator.halton.seed = (
-                            self.draw_seed + chunk_index)
-                    draws_chunk, _ = self.generate_draws(
-                        n, self.n_draws, self.halton)
-                finally:
-                    _np.random.set_state(state)
+                draws_chunk, _ = self.generate_draws(
+                    n, self.n_draws, self.halton, offset=start)
                 draws_chunk = _pad(
                     _np.asarray(draws_chunk),
-                    (chunk_size, int(self.Kr), self.n_draws))
+                    (chunk_size, int(self.Kr), padded_draws))
+                draws_chunk = draws_chunk.reshape(
+                    chunk_size, int(self.Kr),
+                    draw_batches, draw_batch_size).transpose(2, 0, 1, 3)
                 return (
                     jnp.asarray(X_chunk),
                     jnp.asarray(y_chunk),
                     jnp.asarray(pi_chunk),
                     jnp.asarray(draws_chunk),
+                    jnp.asarray(draw_mask),
                 )
 
-            def _chunk_objective(b, X_j, y_j, pi_j, draws_j):
-                return self._jax_mxl_negloglik(
-                    b, X_j, y_j, pi_j, draws_j,
+            def _chunk_objective(b, X_j, y_j, pi_j, draws_j, mask_j):
+                chunk_extra = dict(extra)
+                chunk_extra['reg_penalty'] = 0.0
+                chunk_extra['sd_penalty'] = 0.0
+                return self._jax_mxl_negloglik_scan(
+                    b, X_j, y_j, pi_j, draws_j, mask_j,
                     fxidx, rvidx, Kf, Kr, Kchol, Kbw,
                     rvdist_names, int(self.correlationLength),
-                    **extra)
+                    self.n_draws, **chunk_extra)
 
             compiled = jax.jit(jax.value_and_grad(_chunk_objective))
-            chunk_args = [
-                _chunk_inputs(i)
-                for i in range((N + chunk_size - 1) // chunk_size)
-            ]
-            valid_counts = [
-                min(chunk_size, N - i * chunk_size)
-                for i in range(len(chunk_args))
-            ]
+            chunk_count = (N + chunk_size - 1) // chunk_size
 
             def _objective(betas_np):
                 b = jnp.asarray(betas_np, dtype=jnp.float64)
                 value = 0.0
                 gradient = jnp.zeros_like(b)
-                for args, valid in zip(chunk_args, valid_counts):
+                for chunk_index in range(chunk_count):
+                    args = _chunk_inputs(chunk_index)
                     chunk_value, chunk_gradient = compiled(b, *args)
-                    # Padded people contribute zero because their panel mask
-                    # is zero; valid is retained for clarity and future
-                    # weighted-panel support.
-                    del valid
                     value = value + chunk_value
                     gradient = gradient + chunk_gradient
+                reg = float(self.reg_penalty)
+                sd_pen = float(self.sd_penalty)
+                if reg > 0:
+                    value = value + reg * jnp.sum(jnp.square(b))
+                    gradient = gradient + 2.0 * reg * b
+                if sd_pen > 0 and Kbw > 0:
+                    sd_start = Kf + Kr + Kchol
+                    sd_slice = b[sd_start:sd_start + Kbw]
+                    value = value + sd_pen * jnp.sum(jnp.square(sd_slice))
+                    gradient = gradient.at[
+                        sd_start:sd_start + Kbw
+                    ].add(2.0 * sd_pen * sd_slice)
                 value, gradient = jax.block_until_ready((value, gradient))
                 return float(value), _np.asarray(gradient, dtype=_np.float64)
 
-            options = {'maxiter': self.maxiter, 'disp': False}
+            options = {'maxiter': self.maxiter}
             if self.method in ('bfgs', 'l-bfgs-b'):
                 options['gtol'] = self.gtol
                 options['ftol'] = self.ftol
@@ -1803,16 +1968,24 @@ class MixedLogit(DiscreteChoiceModel):
                 options=options)
 
             if self.return_hess:
-                def _hessian_objective(b):
-                    value = 0.0
-                    for args in chunk_args:
-                        value = value + _chunk_objective(b, *args)
-                    return value
-
-                hessian_fn = jax.jit(jax.hessian(_hessian_objective))
-                hessian = _np.asarray(
-                    hessian_fn(jnp.asarray(result['x'], dtype=jnp.float64)),
-                    dtype=float)
+                hessian_fn = jax.jit(jax.hessian(_chunk_objective))
+                hessian = _np.zeros(
+                    (len(result['x']), len(result['x'])), dtype=float)
+                b_opt = jnp.asarray(result['x'], dtype=jnp.float64)
+                for chunk_index in range(chunk_count):
+                    args = _chunk_inputs(chunk_index)
+                    chunk_hessian = hessian_fn(b_opt, *args)
+                    hessian += _np.asarray(chunk_hessian, dtype=float)
+                reg = float(self.reg_penalty)
+                sd_pen = float(self.sd_penalty)
+                if reg > 0:
+                    hessian += 2.0 * reg * _np.eye(len(result['x']))
+                if sd_pen > 0 and Kbw > 0:
+                    sd_start = Kf + Kr + Kchol
+                    hessian[
+                        sd_start:sd_start + Kbw,
+                        sd_start:sd_start + Kbw
+                    ] += 2.0 * sd_pen * _np.eye(Kbw)
                 try:
                     result['hess_inv'] = _np.linalg.inv(hessian)
                 except _np.linalg.LinAlgError:
@@ -1829,18 +2002,20 @@ class MixedLogit(DiscreteChoiceModel):
         Uses value_and_grad over _jax_mxl_negloglik and scipy BFGS.
         Falls back to standard numpy optimisation on failure.
         """
-        # Disable JAX for models with heterogeneity in means/variances
-        if (getattr(self, 'K_het_mean_rv', 0) > 0 or 
+        if (self.person_batch_size is not None
+                and self.person_batch_size < self.N):
+            return self._optimize_jax_streamed(betas)
+
+        # The non-streamed JAX kernel does not yet support heterogeneous
+        # covariates. The streamed scan kernel handles non-transformed
+        # mean/variance heterogeneity below.
+        if (getattr(self, 'K_het_mean_rv', 0) > 0 or
             getattr(self, 'K_het_var_rv', 0) > 0 or
             getattr(self, 'K_het_mean_rvtrans', 0) > 0 or
             getattr(self, 'K_het_var_rvtrans', 0) > 0):
             if not _SL_QUIET:
                 print("[JAX MXL optimizer] heterogeneity detected; falling back to scipy.")
             return None
-
-        if (self.person_batch_size is not None
-                and self.person_batch_size < self.N):
-            return self._optimize_jax_streamed(betas)
 
         try:
             import os
@@ -1935,7 +2110,7 @@ class MixedLogit(DiscreteChoiceModel):
                 return float(v), np.array(g, dtype=np.float64)
 
             # Build options dict based on method
-            opts = {'maxiter': self.maxiter, 'disp': False}
+            opts = {'maxiter': self.maxiter}
             if self.method in ['bfgs', 'l-bfgs-b']:
                 opts['gtol'] = self.gtol
                 opts['ftol'] = self.ftol
@@ -2137,16 +2312,8 @@ class MixedLogit(DiscreteChoiceModel):
                 chunk_avail = self._person_batch_slice(avail, start, end)
 
                 if draws is None:
-                    rng_state = np.random.get_state()
-                    try:
-                        np.random.seed(self.draw_seed + chunk_index)
-                        if self.halton and hasattr(self.draws_generator, "halton"):
-                            self.draws_generator.halton.seed = (
-                                self.draw_seed + chunk_index)
-                        chunk_draws, chunk_drawstrans = self.generate_draws(
-                            self.N, self.n_draws, self.halton)
-                    finally:
-                        np.random.set_state(rng_state)
+                    chunk_draws, chunk_drawstrans = self.generate_draws(
+                        self.N, self.n_draws, self.halton, offset=start)
                 else:
                     chunk_draws = draws[start:end]
                     chunk_drawstrans = (
@@ -2357,7 +2524,8 @@ class MixedLogit(DiscreteChoiceModel):
                     for _hi, (_rv, _col) in enumerate(zip(self.het_var_rv_idx,
                                                          self.het_var_rv_cols)):
                         _cov = np.mean(X[:, :, :, _col], axis=(1, 2))
-                        scale_row[:, _rv] = np.exp(het_var_rv[_hi] * _cov)
+                        scale_row[:, _rv] = np.exp(np.clip(
+                            het_var_rv[_hi] * _cov, -50.0, 50.0))
 
                 # Perform element-wise multiplication of two subsets of arrays,
                 gr_w = (gr_b[:, X_tril_idx, :]
@@ -2426,8 +2594,9 @@ class MixedLogit(DiscreteChoiceModel):
                                 self.het_var_rvtrans_idx,
                                 self.het_var_rvtrans_cols)):
                             _cov = np.mean(X[:, :, :, _col], axis=(1, 2))
-                            drawstrans_for_w[:, _rv, :] *= np.exp(
-                                het_var_rvtrans[_hi] * _cov)[:, None]
+                            drawstrans_for_w[:, _rv, :] *= np.exp(np.clip(
+                                het_var_rvtrans[_hi] * _cov,
+                                -50.0, 50.0))[:, None]
                     grtrans_w = dev.cust_einsum('npjr,npjk -> nkr', ymp, Xrtrans_lmda) * dertrans * drawstrans_for_w
 
                     # for the lambda param. gradient = (obs - pred) * deriv x_lambda * beta
@@ -2473,7 +2642,8 @@ class MixedLogit(DiscreteChoiceModel):
                 for idx, (rv_idx, col) in enumerate(zip(self.het_var_rv_idx, self.het_var_rv_cols)):
                     het_cov = X[:, :, :, col]
                     het_cov_mean = np.mean(het_cov, axis=(1, 2))
-                    scale = np.exp(het_var_rv[idx] * het_cov_mean)
+                    scale = np.exp(np.clip(
+                        het_var_rv[idx] * het_cov_mean, -50.0, 50.0))
                     rv_col = self.rv_col_idx[rv_idx]
                     x_r = X[:, :, :, rv_col:rv_col+1]
                     deriv = (tmp_r[:, rv_idx, :] * scale[:, None]
@@ -2500,7 +2670,8 @@ class MixedLogit(DiscreteChoiceModel):
                 for idx, (rv_idx, col) in enumerate(zip(self.het_var_rvtrans_idx, self.het_var_rvtrans_cols)):
                     het_cov = X[:, :, :, col]
                     het_cov_mean = np.mean(het_cov, axis=(1, 2))
-                    scale = np.exp(het_var_rvtrans[idx] * het_cov_mean)
+                    scale = np.exp(np.clip(
+                        het_var_rvtrans[idx] * het_cov_mean, -50.0, 50.0))
                     rv_col = self.rvtrans_col_idx[rv_idx]
                     x_r = X[:, :, :, rv_col:rv_col+1]
                     # d Brtrans / d het_var = draw * scale * sd * covariate,
@@ -2531,6 +2702,7 @@ class MixedLogit(DiscreteChoiceModel):
         # }
 
         lik = lik_sum / float(self.n_draws)  # (N,)
+        lik = np.clip(lik, min_comp_val, max_comp_val)
         loglik = np.log(lik)
         if weights is not None: loglik = loglik * weights
         loglik = loglik.sum()
@@ -2565,6 +2737,16 @@ class MixedLogit(DiscreteChoiceModel):
         # derivative (2 * reg_penalty * betas) must be included too.
         if self.reg_penalty:
             g = g - 2.0 * self.reg_penalty * betas
+        if not np.isfinite(loglik) or not np.all(np.isfinite(g)):
+            # Keep invalid trial points explicit and finite for SciPy's
+            # line-search instead of propagating NaN/Inf through the fit.
+            invalid_value = max_comp_val
+            invalid_gradient = np.nan_to_num(
+                g, nan=0.0, posinf=max_comp_val, neginf=-max_comp_val)
+            result = (invalid_value,)
+            if self.return_grad:
+                result += (invalid_gradient,)
+            return result
         self.gtol_res = np.linalg.norm(g, ord=np.inf)
 
         result = (-loglik,)  # Create a tuple
@@ -2929,7 +3111,9 @@ class MixedLogit(DiscreteChoiceModel):
                 for idx, (rv_idx, col) in enumerate(zip(self.het_var_rv_idx, self.het_var_rv_cols)):
                     het_cov = X[:, :, :, col]
                     het_cov_mean = np.mean(het_cov, axis=(1, 2))
-                    scale = np.exp(het_var_rv[idx] * het_cov_mean)  # (N,)
+                    scale = np.exp(np.clip(
+                        het_var_rv[idx] * het_cov_mean,
+                        -50.0, 50.0))  # (N,)
                     tmp[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
 
             Br = Br_b[None, :, None] + tmp
@@ -2983,7 +3167,9 @@ class MixedLogit(DiscreteChoiceModel):
                 for idx, (rv_idx, col) in enumerate(zip(self.het_var_rvtrans_idx, self.het_var_rvtrans_cols)):
                     het_cov = X[:, :, :, col]
                     het_cov_mean = np.mean(het_cov, axis=(1, 2))
-                    scale = np.exp(het_var_rvtrans[idx] * het_cov_mean)
+                    scale = np.exp(np.clip(
+                        het_var_rvtrans[idx] * het_cov_mean,
+                        -50.0, 50.0))
                     drawstrans[:, rv_idx:rv_idx+1, :] *= scale[:, None, None]
 
             Brtrans = Brtrans_b[None, :, None] + drawstrans[:, 0:self.Krtrans, :] * Brtrans_w[None, :,

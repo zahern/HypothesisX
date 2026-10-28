@@ -840,7 +840,18 @@ def propose_member_params_spec(model, vip=None, report=None, keep_t=1.0,
             _cur = float(_cur) if _cur is not None else None
         except Exception:
             _cur = None
-        gamma_max_abs = _cur if (_cur is not None and _cur > 0) else 3.0
+        # Default membership box bound (on standardised covariates). The old
+        # default of 3.0 railed whenever a single covariate strongly separated
+        # classes; widen it to 6.0 and allow an env override so the membership
+        # coefficient is not artificially pinned. (|gamma|=6 on z-scored inputs
+        # is already a very strong effect, so this stays a guardrail, not a cap
+        # the fit routinely hits.)
+        import os as _os
+        try:
+            _default = float(_os.environ.get("SL_LC_GAMMA_MAX_ABS", "6.0"))
+        except Exception:
+            _default = 6.0
+        gamma_max_abs = _cur if (_cur is not None and _cur > 0) else _default
     notes["recommendations"]["gamma_max_abs"] = gamma_max_abs
     notes["recommendations"]["gamma_max_abs_note"] = (
         "box bound is only meaningful on standardised covariates — refit with "

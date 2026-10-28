@@ -27,6 +27,8 @@ def _larch_works():
     if _LARCH_WORKS is None:
         _LARCH_WORKS = False
         try:
+            from SearchLibrium.jax_utils import ensure_jax_environment
+            ensure_jax_environment()
             import larch as lx
             from larch import P, X as LX
 
@@ -42,8 +44,7 @@ def _larch_works():
             ds = lx.Dataset.construct.from_idca(frame)
             m = lx.Model(ds)
             m.choice_ca_var = "ch"
-            for a in (0, 1):
-                m.utility_co[a] = P("B_x") * LX("x")
+            m.utility_ca = P("B_x") * LX("x")
             m.maximize_loglike()
             _LARCH_WORKS = bool(np.isfinite(m.loglike()))
         except Exception:
@@ -256,6 +257,75 @@ def test_larch_mnl_fits_synthetic():
     m.fit()
     assert np.isfinite(m.loglik)
     assert len(m.coeff_est) >= 1
+
+
+@_needs_larch()
+def test_larch_mixed_correlated_normal_fits():
+    from SearchLibrium.larch_models import LarchMixedLogit
+
+    rng = np.random.default_rng(11)
+    n, alts = 30, [0, 1, 2]
+    X = rng.normal(size=(n * len(alts), 2))
+    ids = np.repeat(np.arange(n), len(alts))
+    alt_codes = np.tile(alts, n)
+    y = np.zeros(n * len(alts))
+    y[np.arange(n) * len(alts) + rng.integers(len(alts), size=n)] = 1
+    model = LarchMixedLogit().setup(
+        X=X, y=y, varnames=["x", "z"], alts=alt_codes, ids=ids,
+        randvars={"x": "n", "z": "n"}, corvars=["x", "z"],
+        n_draws=8, draw_method="halton", draw_seed=3, maxiter=2,
+    )
+    model.fit()
+    names = [str(name) for name in model.coeff_names]
+    assert {"chol.x.x", "chol.z.x", "chol.z.z"} <= set(names)
+    assert np.isfinite(model.loglik)
+
+
+@_needs_larch()
+def test_larch_latent_class_membership_flow_recovers_classes():
+    """Regression for the Larch/sharrow membership flow.
+
+    Previously LarchLatentClass handed larch a DataTree (ds.dc.as_tree())
+    instead of the Dataset+groupid it needs, so the membership model was left
+    with ``graph is None`` and every fit died with
+    "'NoneType' object has no attribute 'node_slot_arrays'".  With the fix the
+    model fits, recovers two distinct class slopes (no class collapse), and the
+    coefficient frame is extracted by name (not positionally).
+    """
+    from SearchLibrium.larch_models import LarchLatentClass
+
+    rng = np.random.default_rng(1)
+    n, J = 600, 3
+    z = rng.normal(size=n)
+    cls = (0.8 + 1.6 * z + rng.normal(scale=0.4, size=n) > 0).astype(int)
+    x = rng.normal(size=(n, J))
+    beta = np.array([-1.8, 1.2])            # opposite-signed class tastes
+    u = x * beta[cls][:, None]
+    pr = np.exp(u)
+    pr /= pr.sum(1, keepdims=True)
+    ch = np.array([rng.choice(J, p=pr[i]) for i in range(n)])
+    chw = np.zeros((n, J))
+    chw[np.arange(n), ch] = 1
+    ids = np.repeat(np.arange(n), J)
+    alts = np.tile([1, 2, 3], n)
+    X = np.column_stack([x.ravel(), np.repeat(z, J)])
+    y = chw.ravel()
+
+    mdl = LarchLatentClass()
+    mdl.setup(X=X, y=y, varnames=["x", "z"], alts=alts, ids=ids,
+              num_classes=2, class_params_spec=[["x"], ["x"]],
+              member_params_spec=["z"], fit_intercept=False, maxiter=400)
+    mdl.fit()
+
+    assert hasattr(mdl, "_larch_model")        # fit did not fall into _fail
+    assert np.isfinite(mdl.loglik)
+    names = [str(c) for c in mdl.coeff_names]
+    assert names == ["LC0_B_x", "LC1_B_x", "LCM1_intercept", "LCM1_z"]
+    betas = dict(zip(names, np.asarray(mdl.betas, dtype=float)))
+    # classes must not collapse to the same taste coefficient
+    assert abs(betas["LC0_B_x"] - betas["LC1_B_x"]) > 0.5
+    # and the two class slopes should straddle zero (opposite tastes recovered)
+    assert betas["LC0_B_x"] * betas["LC1_B_x"] < 0
 
 
 @_needs_larch()

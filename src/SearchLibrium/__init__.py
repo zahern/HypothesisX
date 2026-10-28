@@ -111,117 +111,114 @@ except Exception:
     except Exception:
         dev = None
 
+import importlib as _importlib
+
+# Track which optional modules did not load so callers (and ``print_version``)
+# can see what is missing in a given environment.
+_import_failures = {}
+
+
 def _import_relative(module_name, names, fallback_globals=None):
-    """Try relative import first, then bare import as fallback."""
-    try:
-        mod = __import__(f'.{module_name}', fromlist=names, package=__name__)
-        return {name: getattr(mod, name) for name in names}
-    except Exception:
+    """Import ``names`` from ``module_name``.
+
+    Prefers a package-relative import (correct once SearchLibrium is installed
+    as a package); only falls back to a bare top-level import when this file is
+    being run as a loose script with no package context (``__package__`` empty).
+    Records the *real* error in ``_import_failures`` on failure and returns
+    ``None`` -- we never let a bare ``import multinomial_logit`` mask the true
+    cause, because that name can never resolve once installed as a package.
+    """
+    last_err = None
+    candidates = []
+    if __package__:
+        candidates.append(f"{__package__}.{module_name}")
+    candidates.append(module_name)
+    for target in candidates:
         try:
-            mod = __import__(module_name, fromlist=names)
-            return {name: getattr(mod, name) for name in names}
-        except Exception:
-            return None
+            mod = _importlib.import_module(target)
+        except Exception as e:  # genuine import error (missing dep, syntax, ...)
+            last_err = e
+            continue
+        missing = [n for n in names if not hasattr(mod, n)]
+        if missing:
+            last_err = AttributeError(
+                f"{module_name} is missing expected names {missing}")
+            continue
+        return {name: getattr(mod, name) for name in names}
+    _import_failures[module_name] = last_err
+    return None
 
-_core_imports = _import_relative('_choice_model', ['DiscreteChoiceModel'])
-if _core_imports:
-    DiscreteChoiceModel = _core_imports['DiscreteChoiceModel']
 
-try:
-    from .multinomial_logit import MultinomialLogit
-    from .logistic_regression import LogisticRegression
-    from .MixedLogit import MixedLogit
-    from .coupled_solver import CoupledMXLMinimiser, make_coupled_minimiser
-    from .multinomial_nested import NestedLogit, MultiLayerNestedLogit
-    from .mixed_nested import MixedNested
-    from .Halton import Halton
-    from .rrm import RandomRegret
-    from .mixedrrm import MixedRandomRegret
-    from .ordered_logit import OrderedLogit, OrderedLogitLong, ExplodedLogit, MixedExplodedLogit
-    from .selection_models import BinaryProbit, HeckmanTwoStep
-    from .zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
-    from .latent_class import LatentClassMixedLogit
-    from .latent_spec import (vip_table, near_unidentified_report,
-                              align_classes, propose_class_params_spec)
-    from .mdcev import MDCEVFitResult, MDCEVModel
-    from .multinomial_probit import MultinomialProbit
-    from .MixedLogitGSE import MixedLogitGSE
-    from .RandomP import RandomParameters
-    from .constraints_builder import ConstraintBuilder, create_constraints
-    from .search import Parameters
-    from .sapbil import SAPBIL, ProbabilityMatrix
-    from .hspbil import HSPBIL
-    from .sparseea_agds import SparseEAAGDS
-    from .call_meta import call_harmony, call_harmony_pbil, call_siman, call_parsa, call_search, call_sapbil, call_banditsa, call_parcopsa, call_agds, estimate_ctrl
-    from .predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
-    from .sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
-    from .regularization import elasticnet_objective, elasticnet_penalty_and_grad, nl_identification_priors
-    from .jax_utils import ensure_jax_environment, is_large_model, estimate_row_guard, check_gradient_health
-    from .larch_compat import apply_larch_patches
-    from .larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
-    from .skims import omx_to_dataframe, read_omx_skims, prepare_skims_from_omx, merge_skim_component
-    from .destination_distances import (
-        haversine_km, pick_skim_matrices, load_skim_matrices,
-        build_case_alt_distances, summarize_distance_sources,
-    )
-    from .accessibility import gravity_accessibility, compute_accessibility, logsum_accessibility
-    from .abm import available_stages, stage_search_config
-    from .mh_choice_estimator import (
-        ChoiceEstimate, ChoiceEstimateResult, ChoiceSetFrame,
-        GaussianRandomWalkProposal,
-        BlockRandomWalkProposal, HHTSCompetingPrior,
-        chain_diagnostics, effective_sample_size, split_rhat, r_hat,
-        estimate_dest_choice, estimate_stage_choice,
-    )
-except Exception:
-    try:
-        from multinomial_logit import MultinomialLogit
-        from logistic_regression import LogisticRegression
-        from MixedLogit import MixedLogit
-        from coupled_solver import CoupledMXLMinimiser, make_coupled_minimiser
-        from multinomial_nested import NestedLogit, MultiLayerNestedLogit
-        from mixed_nested import MixedNested
-        from Halton import Halton
-        from rrm import RandomRegret
-        from mixedrrm import MixedRandomRegret
-        from ordered_logit import OrderedLogit, OrderedLogitLong, ExplodedLogit
-        from selection_models import BinaryProbit, HeckmanTwoStep
-        from zero_inflated_ordered_probit import ZeroInflatedOrderedProbit, ZeroInflatedProbit
-        from latent_class import LatentClassMixedLogit
-        from latent_spec import (vip_table, near_unidentified_report,
-                                 align_classes, propose_class_params_spec)
-        from mdcev import MDCEVFitResult, MDCEVModel
-        from multinomial_probit import MultinomialProbit
-        from MixedLogitGSE import MixedLogitGSE
-        from RandomP import RandomParameters
-        from constraints_builder import ConstraintBuilder, create_constraints
-        from search import Parameters
-        from sapbil import SAPBIL, ProbabilityMatrix
-        from hspbil import HSPBIL
-        from sparseea_agds import SparseEAAGDS
-        from call_meta import call_siman, call_harmony, call_harmony_pbil, call_search, call_sapbil, call_banditsa, call_parsa, call_parcopsa, call_agds, estimate_ctrl
-        from predict import DestinationPredictor, predict_destination_components, predict_aggregate_destination_flows
-        from sample_data import load_electricity_data, load_travel_mode_data, load_swiss_metro_data, preview_datasets
-        from regularization import elasticnet_objective, elasticnet_penalty_and_grad, nl_identification_priors
-        from jax_utils import ensure_jax_environment, is_large_model, estimate_row_guard, check_gradient_health
-        from larch_compat import apply_larch_patches
-        from larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
-        from skims import omx_to_dataframe, read_omx_skims, prepare_skims_from_omx, merge_skim_component
-        from destination_distances import (
-            haversine_km, pick_skim_matrices, load_skim_matrices,
-            build_case_alt_distances, summarize_distance_sources,
-        )
-        from accessibility import gravity_accessibility, compute_accessibility, logsum_accessibility
-        from abm import available_stages, stage_search_config
-        from mh_choice_estimator import (
-            ChoiceEstimate, ChoiceEstimateResult, ChoiceSetFrame,
-            GaussianRandomWalkProposal,
-            BlockRandomWalkProposal, HHTSCompetingPrior,
-            chain_diagnostics, effective_sample_size, split_rhat, r_hat,
-            estimate_dest_choice, estimate_stage_choice,
-        )
-    except Exception as e:
-        warnings.warn(f"SearchLibrium: some modules failed to import: {e}")
+# Groups of (module, [public names]). Imported independently so that one module
+# with an unmet optional dependency (e.g. larch / jax absent in a given
+# environment) does not abort the entire public API, and so any warning names
+# the *actual* failing module and its real error.
+_IMPORT_GROUPS = [
+    ('_choice_model', ['DiscreteChoiceModel']),
+    ('multinomial_logit', ['MultinomialLogit']),
+    ('logistic_regression', ['LogisticRegression']),
+    ('MixedLogit', ['MixedLogit']),
+    ('coupled_solver', ['CoupledMXLMinimiser', 'make_coupled_minimiser']),
+    ('multinomial_nested', ['NestedLogit', 'MultiLayerNestedLogit']),
+    ('mixed_nested', ['MixedNested']),
+    ('Halton', ['Halton']),
+    ('rrm', ['RandomRegret']),
+    ('mixedrrm', ['MixedRandomRegret']),
+    ('ordered_logit', ['OrderedLogit', 'OrderedLogitLong', 'ExplodedLogit',
+                       'MixedExplodedLogit']),
+    ('selection_models', ['BinaryProbit', 'HeckmanTwoStep']),
+    ('zero_inflated_ordered_probit', ['ZeroInflatedOrderedProbit',
+                                      'ZeroInflatedProbit']),
+    ('latent_class', ['LatentClassMixedLogit']),
+    ('latent_spec', ['vip_table', 'near_unidentified_report', 'align_classes',
+                     'propose_class_params_spec']),
+    ('mdcev', ['MDCEVFitResult', 'MDCEVModel']),
+    ('multinomial_probit', ['MultinomialProbit']),
+    ('MixedLogitGSE', ['MixedLogitGSE']),
+    ('RandomP', ['RandomParameters']),
+    ('constraints_builder', ['ConstraintBuilder', 'create_constraints']),
+    ('search', ['Parameters']),
+    ('sapbil', ['SAPBIL', 'ProbabilityMatrix']),
+    ('hspbil', ['HSPBIL']),
+    ('sparseea_agds', ['SparseEAAGDS']),
+    ('call_meta', ['call_harmony', 'call_harmony_pbil', 'call_siman',
+                   'call_parsa', 'call_search', 'call_sapbil', 'call_banditsa',
+                   'call_parcopsa', 'call_agds', 'estimate_ctrl']),
+    ('predict', ['DestinationPredictor', 'predict_destination_components',
+                 'predict_aggregate_destination_flows']),
+    ('sample_data', ['load_electricity_data', 'load_travel_mode_data',
+                     'load_swiss_metro_data', 'preview_datasets']),
+    ('regularization', ['elasticnet_objective', 'elasticnet_penalty_and_grad',
+                        'nl_identification_priors']),
+    ('jax_utils', ['ensure_jax_environment', 'is_large_model',
+                   'estimate_row_guard', 'check_gradient_health']),
+    ('larch_compat', ['apply_larch_patches']),
+    ('larch_models', ['LarchMNL', 'LarchNestedLogit', 'LarchMixedLogit']),
+    ('skims', ['omx_to_dataframe', 'read_omx_skims', 'prepare_skims_from_omx',
+               'merge_skim_component']),
+    ('destination_distances', ['haversine_km', 'pick_skim_matrices',
+                               'load_skim_matrices', 'build_case_alt_distances',
+                               'summarize_distance_sources']),
+    ('accessibility', ['gravity_accessibility', 'compute_accessibility',
+                       'logsum_accessibility']),
+    ('abm', ['available_stages', 'stage_search_config']),
+    ('mh_choice_estimator', ['ChoiceEstimate', 'ChoiceEstimateResult',
+                             'ChoiceSetFrame', 'GaussianRandomWalkProposal',
+                             'BlockRandomWalkProposal', 'HHTSCompetingPrior',
+                             'chain_diagnostics', 'effective_sample_size',
+                             'split_rhat', 'r_hat', 'estimate_dest_choice',
+                             'estimate_stage_choice']),
+]
+
+for _mod_name, _names in _IMPORT_GROUPS:
+    _loaded = _import_relative(_mod_name, _names)
+    if _loaded:
+        globals().update(_loaded)
+
+if _import_failures:
+    _detail = '; '.join(
+        f"{m} ({type(e).__name__}: {e})" for m, e in _import_failures.items())
+    warnings.warn(f"SearchLibrium: some modules failed to import: {_detail}")
 
 try:
     from .main import print_ascii_art_logo

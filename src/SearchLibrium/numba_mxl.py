@@ -110,9 +110,9 @@ def _negloglik_nb(betas, X, y, panel, draws,
                     for q in range(Kr):
                         v += chol[k, q] * draws[n, q, r]
                     if dc == 1:
-                        v = np.exp(v)
+                        v = np.exp(min(50.0, max(-50.0, v)))
                     elif dc == 2:
-                        v = -np.exp(v)
+                        v = -np.exp(min(50.0, max(-50.0, v)))
                     elif dc == 3:
                         v = v if v >= 0.0 else -v
                     Br[k, r] = v

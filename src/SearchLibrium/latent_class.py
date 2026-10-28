@@ -1001,6 +1001,15 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         betas0 : list of ndarrays, one per class, or ndarray shape (n_classes, K)
         """
         n_params = sum(self._Ks)
+        # Allow an env override of the DE search box on the class betas so a
+        # strong taste coefficient (e.g. distance decay) is not pinned at the
+        # warm-start bound before the EM refinement even begins.
+        import os as _os
+        try:
+            bounds_scale = float(_os.environ.get(
+                "SL_LC_BOUNDS_SCALE", bounds_scale))
+        except Exception:
+            pass
         bounds = [(-bounds_scale, bounds_scale)] * n_params
 
         if self._jax_enabled and len(set(self._Ks)) == 1 and not self._panelled:

@@ -86,6 +86,11 @@ def apply_larch_patches() -> bool:
     present), False when larch is missing (clean no-op).
     """
     global _APPLIED
+    try:
+        from .jax_utils import ensure_jax_environment
+    except ImportError:
+        from jax_utils import ensure_jax_environment
+    ensure_jax_environment()
     if _APPLIED:
         return True
     try:

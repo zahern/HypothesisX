@@ -134,6 +134,7 @@ class ModelRegistry:
             'larch_mnl',
             'larch_nested',
             'larch_mixed',
+            'larch_latent_class',
         ]
         if model_dict is not None:
             self.reset_models(model_dict)
@@ -3918,6 +3919,10 @@ class Search():
         solution['randvars'] = {var: val for var, val in solution['randvars'].items()
             if var != rem_randvar} # Update by removing rem_randvar
         solution['corvars'] = [var for var in solution['corvars'] if var != rem_randvar]
+        for key in ('randvars_het_mean', 'randvars_het_var'):
+            heterogeneity = solution.get(key)
+            if isinstance(heterogeneity, dict):
+                heterogeneity.pop(rem_randvar, None)
     # }
 
     def perturb_remove_randfeature(self, solution):
@@ -3941,7 +3946,10 @@ class Search():
 
         # Find candidate variables to add or remove
         if add:
-            candidates = [var for var in self.param.asvarnames if var not in solution['randvars']]
+            candidates = [
+                var for var in self.param.asvarnames
+                if var in solution['asvars'] and var not in solution['randvars']
+            ]
             # Per-alternative random keys for individual-specific vars in the model.
             if getattr(self.param, "allow_random_isvars", False):
                 _nb = _nonbase_alts(self.param.choice_set, self.param.base_alt)
@@ -4209,9 +4217,14 @@ class Search():
         if len(candidates) > 0:
         # {
             chosen_randvar = self.random_choice(candidates)  # Choose a randvar option
-            cand_distr = [distr for distr in self.param.distr if distr not in solution['randvars'][chosen_randvar]]
-            new_distr = self.random_choice(cand_distr)
-            self.change_distribution(chosen_randvar, new_distr, solution)
+            current = solution['randvars'][chosen_randvar]
+            cand_distr = [
+                distr for distr in self.param.distr
+                if distr != current
+            ]
+            if cand_distr:
+                new_distr = self.random_choice(cand_distr)
+                self.change_distribution(chosen_randvar, new_distr, solution)
         # }
         return solution
     # }
@@ -5488,14 +5501,19 @@ class Search():
     def fit_larch(self, cls_name, X, y, varnames, isvars, alts, ids,
                   transvars, fit_intercept, init_coeff, weights, avail,
                   base_alt, maxiter, ftol, gtol, randvars=None, nests=None,
-                  n_draws=None):
+                  n_draws=None, draw_method=None, draw_seed=None,
+                  common_draws=None, corvars=None, class_params_spec=None,
+                  member_params_spec=None, num_classes=None):
     # {
         try:
-            from larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
+            from larch_models import (
+                LarchMNL, LarchNestedLogit, LarchMixedLogit, LarchLatentClass)
         except ImportError:
-            from .larch_models import LarchMNL, LarchNestedLogit, LarchMixedLogit
+            from .larch_models import (
+                LarchMNL, LarchNestedLogit, LarchMixedLogit, LarchLatentClass)
         _cls = {'LarchMNL': LarchMNL, 'LarchNestedLogit': LarchNestedLogit,
-                'LarchMixedLogit': LarchMixedLogit}[cls_name]
+                'LarchMixedLogit': LarchMixedLogit,
+                'LarchLatentClass': LarchLatentClass}[cls_name]
         _opts = dict(getattr(self.param, 'larch_opts', {}) or {})
         model = _cls()
         model.setup(X=X, y=y, varnames=list(varnames), alts=alts, ids=ids,
@@ -5505,12 +5523,156 @@ class Search():
                     maxiter=maxiter, ftol=ftol, gtol=gtol,
                     n_draws=n_draws if n_draws is not None else getattr(self.param, 'n_draws', 200),
                     nests=nests if nests is not None else getattr(self.param, 'nests', None),
+                    corvars=list(corvars or []),
                     compute_engine=_opts.get('compute_engine'),
                     reg_alpha=_opts.get('reg_alpha', 0.0),
-                    l1_ratio=_opts.get('l1_ratio', 0.0))
+                    l1_ratio=_opts.get('l1_ratio', 0.0),
+                    draw_method=draw_method if draw_method is not None else _opts.get('draw_method', 'larch'),
+                    draw_seed=draw_seed if draw_seed is not None else _opts.get('draw_seed', 0),
+                    common_draws=common_draws if common_draws is not None else _opts.get('common_draws', True),
+                    class_params_spec=class_params_spec,
+                    member_params_spec=member_params_spec,
+                    num_classes=num_classes if num_classes is not None else 2)
         model.fit()
         return model
     # }
+
+    def evaluate_larch_lc(self, sol):
+        """Evaluate a Larch latent-class candidate through the search contract."""
+        sol = self.apply_constraints(sol)
+        class_params_spec = sol.get('class_params_spec')
+        if class_params_spec is None:
+            raise ValueError("Larch latent-class candidates require class_params_spec")
+        member_params_spec = sol.get('member_params_spec')
+        all_vars_set = {
+            str(v) for spec in class_params_spec for v in (spec or [])
+        }
+        if member_params_spec is not None:
+            values = (member_params_spec.flat
+                      if hasattr(member_params_spec, 'flat')
+                      else member_params_spec)
+            all_vars_set.update(str(v) for v in values)
+        all_vars = [v for v in self.param.varnames if v in all_vars_set]
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        model = self.fit_larch(
+            'LarchLatentClass', X=X, y=self.param.choices,
+            varnames=all_vars, isvars=[], alts=self.param.alt_var,
+            ids=self.param.choice_id, transvars=[],
+            fit_intercept=bool(sol.get('asc_ind', False)), init_coeff=None,
+            weights=self.param.weights, avail=self.param.avail,
+            base_alt=self.param.base_alt, maxiter=self.param.maxiter,
+            ftol=self.param.ftol, gtol=self.param.gtol,
+            class_params_spec=class_params_spec,
+            member_params_spec=member_params_spec,
+            num_classes=len(class_params_spec))
+        sol['model'] = model
+        sol['coeff'] = model.coeff_est
+        sol['model_n'] = 'larch_latent_class'
+        return (
+            getattr(model, 'aic', float('inf')),
+            getattr(model, 'bic', float('inf')),
+            getattr(model, 'loglik', float('-inf')),
+            float('inf'),
+            sol.get('asvars', []), sol.get('isvars', []),
+            {}, self.define_bc_vars(sol), sol.get('corvars', []),
+            bool(getattr(model, 'converged', False)), sol,
+        )
+
+    def compare_mixed_implementations(self, sol, n_draws=None,
+                                      draw_method="halton", draw_seed=0,
+                                      common_draws=False):
+        """Fit one mixed-logit specification with native and Larch engines.
+
+        The specification is taken from a search solution, so both fits use
+        the same variables, random distributions, alternatives, observations,
+        draw count, draw sequence, and person-specific draw setting.
+        Covariate-dependent random means/variances are rejected because the
+        current Larch adapter does not represent those terms equivalently.
+        """
+        randvars = dict(sol.get('randvars', {}) or {})
+        corvars = list(sol.get('corvars', []) or [])
+        if sol.get('randvars_het_mean') or sol.get('randvars_het_var'):
+            raise NotImplementedError(
+                "Larch comparison does not yet support random-coefficient heterogeneity")
+
+        as_vars = list(sol.get('asvars', []) or [])
+        is_vars = list(sol.get('isvars', []) or [])
+        asc_ind = bool(sol.get('asc_ind', False))
+        rand_names = set(randvars)
+        all_vars = [
+            var for var in self.param.varnames
+            if var in (set(as_vars) | set(is_vars) | rand_names)
+        ]
+        X, all_vars = self._get_orthogonalized_X(all_vars)
+        y = self.param.choices
+        draws = int(n_draws if n_draws is not None else self.param.n_draws)
+        halton_opts = {
+            "seed": int(draw_seed),
+            "use_sobol": str(draw_method).lower() == "sobol",
+        }
+        native = self.fit_mxl(
+            X, y, varnames=all_vars, alts=self.param.alt_var,
+            isvars=is_vars, transvars=[], ids=self.param.choice_id,
+            panels=self.param.ind_id, randvars=randvars, corvars=corvars,
+            fit_intercept=asc_ind, init_coeff=None, n_draws=draws,
+            weights=self.param.weights, avail=self.param.avail,
+            base_alt=self.param.base_alt, maxiter=self.param.maxiter,
+            ftol=self.param.ftol, gtol=self.param.gtol,
+            save_fitted_params=False, halton_opts=halton_opts)
+        larch = self.fit_larch(
+            'LarchMixedLogit', X=X, y=y, varnames=all_vars,
+            isvars=is_vars, alts=self.param.alt_var, ids=self.param.choice_id,
+            transvars=[], fit_intercept=asc_ind, init_coeff=None,
+            weights=self.param.weights, avail=self.param.avail,
+            base_alt=self.param.base_alt, maxiter=self.param.maxiter,
+            ftol=self.param.ftol, gtol=self.param.gtol, randvars=randvars,
+            n_draws=draws, draw_method=draw_method, draw_seed=draw_seed,
+            common_draws=common_draws, corvars=corvars)
+
+        def _values(model, attr, size):
+            value = getattr(model, attr, None)
+            if value is None:
+                return np.full(size, np.nan)
+            return np.asarray(value, dtype=float).ravel()
+
+        def _canonical_name(name):
+            name = str(name)
+            if name.startswith("sd."):
+                return "sigma_" + name[3:]
+            if (name.startswith("B_") or name.startswith("ASC_") or
+                    name.startswith("sigma_") or name.startswith("chol.")):
+                return name
+            return "B_" + name
+
+        native_names = [
+            _canonical_name(x) for x in getattr(native, "coeff_names", [])
+        ]
+        larch_names = [
+            _canonical_name(x) for x in getattr(larch, "coeff_names", [])
+        ]
+        names = list(dict.fromkeys(native_names + larch_names))
+        native_values = dict(zip(
+            native_names, _values(native, "coeff_est", len(native_names))))
+        larch_values = dict(zip(
+            larch_names, _values(larch, "coeff_est", len(larch_names))))
+        comparison = pd.DataFrame({
+            "native": [native_values.get(name, np.nan) for name in names],
+            "larch": [larch_values.get(name, np.nan) for name in names],
+        }, index=names)
+        comparison["difference"] = comparison["larch"] - comparison["native"]
+        return {
+            "native": native,
+            "larch": larch,
+            "coefficients": comparison,
+            "loglik": {
+                "native": float(getattr(native, "loglik", np.nan)),
+                "larch": float(getattr(larch, "loglik", np.nan)),
+            },
+            "pvalues": {
+                "native": _values(native, "pvalues", len(native_names)),
+                "larch": _values(larch, "pvalues", len(larch_names)),
+            },
+        }
 
     def _larch_mae(self, cls_name, model, all_vars, is_vars, bc_vars, asc_ind, randvars=None):
     # {
@@ -5616,7 +5778,8 @@ class Search():
                 fit_intercept=asc_ind, init_coeff=None, weights=self.param.weights,
                 avail=self.param.avail, base_alt=self.param.base_alt,
                 maxiter=self.param.maxiter, ftol=self.param.ftol, gtol=self.param.gtol,
-                randvars=rand_vars if isinstance(rand_vars, dict) else {})
+                randvars=rand_vars if isinstance(rand_vars, dict) else {},
+                corvars=cor_vars)
         sol['model'] = model
         sol['coeff'] = model.coeff_est
         converged = model.converged
@@ -6497,7 +6660,8 @@ class Search():
     def evaluate_model(self, sol):
     # {
         # ── Latent class override: if param says latent, do latent ──
-        if getattr(self.param, 'latent_class', False):
+        if (getattr(self.param, 'latent_class', False)
+                and sol.get('model_n') != 'larch_latent_class'):
             return self.evaluate_lc(sol)
 
         model_n = sol.get('model_n', '')
@@ -6547,6 +6711,8 @@ class Search():
             return self.evaluate_larch_nested(sol)
         elif model_n == 'larch_mixed':
             return self.evaluate_larch_mixed(sol)
+        elif model_n == 'larch_latent_class':
+            return self.evaluate_larch_lc(sol)
         elif model_n == 'mixed_nested':
             return self.evaluate_mixed_nested(sol)
         elif model_n == 'ordered_logit':
@@ -6655,4 +6821,3 @@ class Search():
 
 
 # }
-

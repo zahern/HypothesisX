@@ -45,8 +45,9 @@ class HaltonSequence:
         self.drop = drop
         self.shuffled = shuffled
 
-    def generate(self, sample_size, n_draws, n_vars):
-        return _sobol_generate(sample_size, n_draws, n_vars, shuffled=self.shuffled)
+    def generate(self, sample_size, n_draws, n_vars, offset=0):
+        return _sobol_generate(sample_size, n_draws, n_vars,
+                               shuffled=self.shuffled, offset=offset)
 
 
 class Halton:
@@ -74,7 +75,7 @@ class Halton:
                           239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293,
                           307, 311]
 
-    def generate_draws(self, sample_size, n_draws, n_vars):
+    def generate_draws(self, sample_size, n_draws, n_vars, offset=0):
         """Generate random draws for multiple variables.
 
         When ``antithetic=True``, draws of size ``n_draws // 2`` are generated
@@ -85,36 +86,38 @@ class Halton:
             base = n_draws // 2 if self.antithetic else n_draws
             draws = _sobol_generate(
                 sample_size, base, n_vars, shuffled=self.shuffled,
-                seed=self.seed)
+                seed=self.seed, offset=offset)
             if self.antithetic:
                 draws = np.concatenate([draws, 1.0 - draws], axis=2)
         else:
             # Use traditional Halton sequence (compatible with searchlogit)
-            draws = self._generate_halton_draws(sample_size, n_draws, n_vars)
+            draws = self._generate_halton_draws(
+                sample_size, n_draws, n_vars, offset=offset)
             if self.antithetic:
                 draws_half = draws[:, :, : n_draws // 2]
                 draws = np.concatenate([draws_half, 1.0 - draws_half], axis=2)
 
         return draws
 
-    def _generate_halton_draws(self, sample_size, n_draws, n_vars):
+    def _generate_halton_draws(self, sample_size, n_draws, n_vars, offset=0):
         """Generate traditional Halton draws using different primes for each variable."""
         draws_list = []
         for i in range(n_vars):
             prime = self.primes[i % len(self.primes)]
             halton_seq = _halton_seq_traditional(
-                sample_size * n_draws,
+                offset * n_draws + sample_size * n_draws,
                 prime=prime,
                 drop=self.drop,
                 shuffled=self.shuffled
-            )
+            )[offset * n_draws:]
             draws_list.append(halton_seq.reshape(sample_size, n_draws))
 
         draws = np.stack(draws_list, axis=1)  # (sample_size, n_vars, n_draws)
         return draws
 
 
-def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False, seed=None):
+def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False, seed=None,
+                    offset=0):
     """Generate scrambled Sobol (0,1) draws.
 
     Returns
@@ -128,6 +131,8 @@ def _sobol_generate(sample_size, n_draws, n_vars, shuffled=False, seed=None):
         while p2 < total:
             p2 <<= 1
         sobol = Sobol(d=n_vars, scramble=True, seed=seed)
+        if offset:
+            sobol.fast_forward(offset * n_draws)
         flat = sobol.random(p2)[:total]  # (total, n_vars)
         draws = flat.reshape(sample_size, n_draws, n_vars).transpose(0, 2, 1)
     else:
@@ -163,10 +168,11 @@ class Draws:
         self.rvdist = rvdist or ['n'] * k
         self.rvtransdist = rvtransdist or ['n'] * k
 
-    def generate_draws(self, sample_size, n_draws, halton=True):
+    def generate_draws(self, sample_size, n_draws, halton=True, offset=0):
         """Generate draws based on the chosen method."""
         if halton:
-            draws = self.fn_generate_draws(sample_size, n_draws, self.k)
+            draws = self.fn_generate_draws(
+                sample_size, n_draws, self.k, offset=offset)
         else:
             draws = np.random.uniform(size=(sample_size, self.k, n_draws))
         draws = self.evaluate_distribution(self.rvdist, draws)
@@ -193,9 +199,11 @@ class Draws:
         index = index if index is not None else self.rvdist
         for k, distr in enumerate(index):
             if distr == 'ln':
-                betas_random[:, k, :] = np.exp(betas_random[:, k, :])
+                betas_random[:, k, :] = np.exp(
+                    np.clip(betas_random[:, k, :], -50.0, 50.0))
             elif distr == 'nln':                                   # negative log-normal
-                betas_random[:, k, :] = -np.exp(betas_random[:, k, :])
+                betas_random[:, k, :] = -np.exp(
+                    np.clip(betas_random[:, k, :], -50.0, 50.0))
             elif distr == 'tn':
                 betas_random[:, k, :] = np.maximum(betas_random[:, k, :], 0)
         return betas_random
