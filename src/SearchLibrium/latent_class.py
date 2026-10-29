@@ -1236,6 +1236,90 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
             )
         return collapsed
 
+    def _compute_rail_flags(self):
+        """Flag bound-pinned, degenerate-SE and collapsed-class fits as railed.
+
+        Rail beats the optimizer's own success flag: a fit pressed against a
+        bound has an unusable estimate even when ``converged`` is True.
+        """
+        reasons, warns = [], []
+        try:
+            shares = np.asarray(getattr(self, 'class_probs', []),
+                                dtype=float).ravel()
+            min_share = float(getattr(self, 'min_share', 0.05))
+            if shares.size and float(np.nanmin(shares)) < min_share:
+                reasons.append(
+                    f"class collapsed (min share={float(np.nanmin(shares)):.4g}"
+                    f" < {min_share:g})")
+        except Exception:
+            pass
+        try:
+            betas = getattr(self, 'class_betas', None)
+            if isinstance(betas, list) and len(betas) > 1:
+                arrs = [np.asarray(b, dtype=float).ravel() for b in betas]
+                if all(a.size == arrs[0].size for a in arrs):
+                    maxdiff = max(float(np.max(np.abs(a - arrs[0])))
+                                  for a in arrs[1:])
+                    if np.isfinite(maxdiff) and maxdiff < 1e-6:
+                        reasons.append("classes identical on betas "
+                                       f"(max |diff|={maxdiff:.1e})")
+        except Exception:
+            pass
+        try:
+            from .lc_rail_guard import rail_flags
+        except Exception:
+            rail_flags = None
+        if rail_flags is not None:
+            try:
+                params = np.asarray(getattr(self, 'coeff_est', []),
+                                    dtype=float).ravel()
+                names = [str(n) for n in getattr(self, 'coeff_names', [])]
+                se_obj = getattr(self, 'stderr', None)
+                ses = (np.asarray(se_obj, dtype=float).ravel()
+                       if se_obj is not None else np.array([]))
+                if params.size and params.size == ses.size == len(names):
+                    rf = rail_flags(dict(zip(names, params)),
+                                    dict(zip(names, ses)))
+                    reasons.extend(rf['rail'])
+                    warns.extend(rf['warnings'])
+            except Exception as exc:
+                warns.append(
+                    f"rail scan skipped: {type(exc).__name__}: {exc}")
+            try:
+                g = getattr(self, 'class_gammas', None)
+                gse_obj = getattr(self, 'gamma_se', None)
+                gse = (np.asarray(gse_obj, dtype=float).ravel()
+                       if gse_obj is not None else np.array([]))
+                if g is not None:
+                    ga = np.asarray(g, dtype=float).ravel()
+                    bound = getattr(self, 'gamma_max_abs', None)
+                    gmax = float(np.max(np.abs(ga))) if ga.size else 0.0
+                    if (bound is not None and ga.size
+                            and gmax >= float(bound) - 1e-3):
+                        reasons.append(
+                            f"membership gamma at bound {float(bound):g} "
+                            f"(max |gamma|={gmax:.4g})")
+                    elif ga.size and gmax >= 50.0:
+                        reasons.append(
+                            f"membership gamma saturated "
+                            f"(max |gamma|={gmax:.3g})")
+                    if gse.size == ga.size and ga.size:
+                        rf = rail_flags(
+                            {f"gamma_{i}": float(v)
+                             for i, v in enumerate(ga)},
+                            {f"gamma_{i}": float(s)
+                             for i, s in enumerate(gse)})
+                        reasons.extend(rf['rail'])
+                        warns.extend(rf['warnings'])
+            except Exception:
+                pass
+        self.rail_reasons = reasons
+        self.rail_warnings = warns
+        self.railed = bool(reasons)
+        if self.railed:
+            self.converged = False
+        return self.railed
+
     def _panel_sum(self, arr_task):
         """Sum a per-task array ``(N_task, C)`` into per-panel ``(n_panels, C)``.
 
@@ -1556,6 +1640,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         self.estim_time_sec = time.time() - start_time
         self.post_process()
         self._detect_collapse()
+        self._compute_rail_flags()
 
         return self
 
@@ -1722,6 +1807,7 @@ class LatentClassMixedLogit(DiscreteChoiceModel):
         else:
             self.sort_perm_ = np.arange(C, dtype=int)
         self._detect_collapse()
+        self._compute_rail_flags()
 
         return self
 

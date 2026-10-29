@@ -1501,7 +1501,8 @@ def estimate_dest_choice_lc(
         fit_ll = float(sum(_weighted_frame(frame, (labels == g).astype(float))
                            .loglike(b) for g, b in zip(groups, betas)))
         return _lc_result("grouped", names, betas, ses, shares, fit_ll,
-                          float("nan"), True, 0, frame, labels=groups)
+                          float("nan"), True, 0, frame, labels=groups,
+                          bounds=float(bounds), share_floor=float(share_floor))
 
     # ── Latent classes: EM with weighted-MNL M-steps ──────────────────────
     # Class priors are either fixed shares or a person-type membership
@@ -1540,6 +1541,14 @@ def estimate_dest_choice_lc(
         shares = np.full(n_classes, 1.0 / n_classes)
         gammas = (np.zeros((n_classes - 1, case_X.shape[1] + 1))
                   if case_X is not None else None)
+        if _start and case_X is not None:
+            # The header promises a jitter of "BOTH the class-specific betas AND
+            # the membership gammas". Only the betas were ever jittered: every
+            # restart began from a ZERO membership equation, i.e. uniform class
+            # priors, so restarts differed solely in the choice coefficients and
+            # the membership surface was effectively estimated once. Perturb it
+            # too so a 3-class fit can leave the symmetric starting point.
+            gammas = rng.normal(0.0, float(perturb_sigma), gammas.shape)
         prev_ll = -np.inf
         converged = False
         iterations = 0
@@ -1573,10 +1582,16 @@ def estimate_dest_choice_lc(
             if share_floor and float(share_floor) > 0:
                 _coll = int(np.argmin(shares))
                 if float(shares[_coll]) < 0.5 * float(share_floor):
-                    # Re-seed the collapsed class from the pooled fit with a
-                    # fresh jitter + crash anchor (a perturbation move, not a
-                    # failure) so the next E-step can differentiate it.
-                    _b = beta0 + rng.normal(0.0, float(perturb_sigma), d)
+                    # Re-seed the collapsed class so the next E-step can
+                    # differentiate it. This used to overwrite the class with
+                    # `beta0 + jitter`, where beta0 is the POOLED fit -- so a
+                    # class that was genuinely small got reset to the common
+                    # pooled surface on EVERY iteration it stayed small, could
+                    # never differentiate itself, and EM stalled. Perturb the
+                    # class's own current estimate instead: that is the
+                    # "perturbation move, not a failure" the comment claims, and
+                    # it preserves whatever separation the M-step had built.
+                    _b = betas[_coll] + rng.normal(0.0, float(perturb_sigma), d)
                     if crash_cols:
                         _b[names.index(crash_cols[0])] += crash_anchors[
                             _coll % len(crash_anchors)]
@@ -1594,7 +1609,14 @@ def estimate_dest_choice_lc(
         p = np.exp(llw - m)
         p /= p.sum(axis=1, keepdims=True)
         restart_lls.append(fit_ll)
-        if best is None or fit_ll > best[0]:
+        # Rank restarts by (converged, fit_ll), NOT by fit_ll alone. Picking
+        # purely on log-likelihood let a restart that wandered without settling
+        # beat one that had genuinely converged; the caller then rejected the
+        # whole genome ("not converged"), discarding the only usable restart.
+        # That is the mechanism behind the paper-arm runs reporting arm D as
+        # NOT converged at full sample while the n=200 smoke did converge.
+        _rank = (bool(converged), fit_ll)
+        if best is None or _rank > (bool(best[4]), best[0]):
             best = (fit_ll, betas, shares, p, converged, iterations,
                     None if gammas is None else np.asarray(gammas).copy())
     fit_ll, betas, shares, resp, converged, iterations, gammas = best
@@ -1603,10 +1625,14 @@ def estimate_dest_choice_lc(
         # membership equation the reference class structure must be kept.
         order = np.argsort(-np.asarray(shares))
         betas = [betas[i] for i in order]
-        shares = np.asarray(shares)[order]
-        resp = resp[:, order]
-    else:
-        shares = np.asarray(shares)
+        resp = np.asarray(resp)[:, order]
+    # Derive the reported shares from the SAME responsibilities that ship with
+    # the result. `shares` carried out of the EM loop was the mean of the
+    # share_floor-CLIPPED responsibilities, while the returned `resp` is the
+    # unclipped posterior, so resp.mean(axis=0) did not reproduce shares -- and
+    # stage5_lc_genes' collapse gate reads `shares` while a consumer reading
+    # `responsibilities` would compute something different.
+    shares = np.asarray(resp).mean(axis=0)
     ses = []
     for c in range(n_classes):
         fw = _weighted_frame(frame, resp[:, c])
@@ -1616,13 +1642,14 @@ def estimate_dest_choice_lc(
     return _lc_result("lc-em", names, betas, ses, shares, fit_ll, float("nan"),
                       converged, iterations, frame, responsibilities=resp,
                       membership_coefs=gammas, membership_vars=memb_cols,
-                      crash_cols=crash_cols, restart_lls=restart_lls)
+                      crash_cols=crash_cols, restart_lls=restart_lls,
+                      bounds=float(bounds), share_floor=float(share_floor))
 
 
 def _lc_result(method, names, betas, ses, shares, fit_ll, _unused, converged,
                iterations, frame, labels=None, responsibilities=None,
                membership_coefs=None, membership_vars=None, crash_cols=None,
-               restart_lls=None) -> dict:
+               restart_lls=None, bounds=15.0, share_floor=0.05) -> dict:
     n_classes = len(betas)
     k_params = n_classes * frame.dimension + (n_classes - 1)
     if membership_vars:
@@ -1644,6 +1671,22 @@ def _lc_result(method, names, betas, ses, shares, fit_ll, _unused, converged,
         "converged": bool(converged),
         "iterations": int(iterations),
     }
+    try:
+        from .lc_rail_guard import lc_result_rail as _lc_rail
+    except Exception:
+        _lc_rail = None
+    if _lc_rail is not None:
+        _rf = _lc_rail(names, betas, ses, shares,
+                       membership_coefs=membership_coefs,
+                       bounds=float(bounds),
+                       share_floor=float(share_floor),
+                       method=method)
+        out["rail"] = list(_rf["rail"])
+        out["railed"] = bool(_rf["railed"])
+        out["rail_warnings"] = list(_rf["warnings"])
+        if _rf["railed"]:
+            out["converged_by_optimizer"] = bool(out["converged"])
+            out["converged"] = False
     if labels is not None:
         out["group_labels"] = list(labels)
     if responsibilities is not None:

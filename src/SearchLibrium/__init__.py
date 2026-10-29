@@ -170,6 +170,7 @@ _IMPORT_GROUPS = [
     ('zero_inflated_ordered_probit', ['ZeroInflatedOrderedProbit',
                                       'ZeroInflatedProbit']),
     ('latent_class', ['LatentClassMixedLogit']),
+    ('lc_rail_guard', ['lc_result_rail']),
     ('latent_spec', ['vip_table', 'near_unidentified_report', 'align_classes',
                      'propose_class_params_spec']),
     ('mdcev', ['MDCEVFitResult', 'MDCEVModel']),
