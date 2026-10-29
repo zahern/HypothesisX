@@ -410,7 +410,11 @@ class _LarchBase(DiscreteChoiceModel):
             else:
                 optimizer_success = bool(
                     optimizer_result.get("success", False))
-                optimizer_nit = int(optimizer_result.get("nit", 0) or 0)
+                optimizer_nit = int(
+                    optimizer_result.get(
+                        "nit", optimizer_result.get("iterations", 0)
+                    ) or 0
+                )
             ok = bool(np.isfinite(ll) and optimizer_success)
         except Exception as e:  # noqa: BLE001
             logger.debug("larch finalize failed: %r", e)
@@ -719,9 +723,10 @@ class LarchLatentClass(_LarchBase):
     """
 
     def setup(self, *args, class_params_spec=None, member_params_spec=None,
-              num_classes=2, **kwargs):
+              num_classes=2, membership_intercept=True, **kwargs):
         super().setup(*args, **kwargs)
         self.num_classes = int(num_classes)
+        self.membership_intercept = bool(membership_intercept)
         if self.num_classes < 2:
             raise ValueError("Larch latent class models require at least two classes")
         self.class_params_spec = [
@@ -812,7 +817,8 @@ class LarchLatentClass(_LarchBase):
                       else lx.Model(compute_engine="jax",
                                     float_dtype=self.float_dtype))
         for class_number in range(1, K):
-            expr = P(f"LCM{class_number}_intercept")
+            expr = (P(f"LCM{class_number}_intercept")
+                    if self.membership_intercept else 0)
             for variable in member_vars:
                 expr = expr + P(f"LCM{class_number}_{variable}") * LX(variable)
             membership.utility_co[class_number] = expr
