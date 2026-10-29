@@ -867,35 +867,22 @@ class LarchLatentClass(_LarchBase):
             # ("could not broadcast (N,K) into (N,1)").
             membership = self._build_membership_model(lx, P, LX, ds)
 
-            latent = lx.LatentClass(
-                membership, choice_models, datatree=ds,
+            # Assemble + symmetry-break through the shared builder so this path
+            # and the ABM Stage-5 driver cannot drift apart.  Honour a
+            # caller-supplied ``init_coeff`` instead of the symmetry break.
+            _do_symmetry = self.init_coeff is None
+            latent = build_latent_class(
+                choice_models, membership, ds,
+                num_classes=self.num_classes,
+                symmetry_break=_do_symmetry,
+                class_param_names={
+                    k: [self._class_parameter_name(k, v)
+                        for v in self.class_params_spec[k]]
+                    for k in range(self.num_classes)},
+                membership_intercepts={
+                    k: f"LCM{k}_intercept" for k in range(self.num_classes)},
                 float_dtype=self.float_dtype)
-            latent.compute_engine = "jax"
-            # Break the class-collapse symmetry.  With identical per-class specs
-            # and all-zero starting values the marginal likelihood is symmetric
-            # under relabelling the classes, so the optimiser settles on the
-            # degenerate single-class solution (every class gets the same
-            # coefficients, membership stays at 0).  Seed each class's
-            # coefficients with a small deterministic class-specific offset and
-            # give the membership intercepts a mild spread so the classes start
-            # distinguishable.  Honour a caller-supplied ``init_coeff`` instead
-            # when one is given.
-            if self.init_coeff is None:
-                try:
-                    pnames_set = {str(n) for n in latent.pnames}
-                    jitter = np.linspace(-0.3, 0.3, self.num_classes)
-                    for k in range(self.num_classes):
-                        for v in self.class_params_spec[k]:
-                            nm = self._class_parameter_name(k, v)
-                            if nm in pnames_set:
-                                latent.set_value(nm, float(jitter[k]))
-                        mnm = f"LCM{k}_intercept"
-                        if mnm in pnames_set:
-                            latent.set_value(mnm, float(0.5 * jitter[k]))
-                except Exception:
-                    logger.debug("LCCM symmetry-break init skipped",
-                                 exc_info=True)
-            else:
+            if not _do_symmetry:
                 try:
                     latent.pvals = np.asarray(
                         self.init_coeff, dtype=float)[:len(latent.pnames)]
@@ -933,6 +920,90 @@ class LarchLatentClass(_LarchBase):
             return self._fail(names, self.sample_size)
 
 
+def _symmetry_break_latent_class(latent, num_classes, class_param_names=None,
+                                 membership_intercepts=None, jitter=0.3):
+    """Seed class-specific starts so the EM/optimiser does not collapse classes.
+
+    With identical per-class specs and all-zero starting values the marginal
+    likelihood is symmetric under relabelling the classes, so the optimiser
+    settles on the degenerate single-class solution (every class gets the same
+    coefficients, membership stays at 0).  This gives each class a small
+    deterministic offset and spreads the membership intercepts so the classes
+    start distinguishable.  Only names actually present in ``latent.pnames`` are
+    touched, so it is safe to pass a superset.
+
+    Parameters
+    ----------
+    class_param_names : dict[int, list[str]] | None
+        Per-class lists of class-specific coefficient names to offset.
+    membership_intercepts : dict[int, str] | None
+        Per-class membership-intercept parameter name to spread.
+    jitter : float
+        Half-width of the symmetric offset spread across classes.
+    """
+    try:
+        pnames_set = {str(n) for n in latent.pnames}
+    except Exception:
+        logger.debug("symmetry-break: pnames unavailable", exc_info=True)
+        return latent
+    offsets = np.linspace(-abs(jitter), abs(jitter), int(num_classes))
+    for k in range(int(num_classes)):
+        for nm in (class_param_names or {}).get(k, []):
+            if str(nm) in pnames_set:
+                try:
+                    latent.set_value(str(nm), float(offsets[k]))
+                except Exception:
+                    pass
+        mnm = (membership_intercepts or {}).get(k)
+        if mnm and str(mnm) in pnames_set:
+            try:
+                latent.set_value(str(mnm), float(0.5 * offsets[k]))
+            except Exception:
+                pass
+    return latent
+
+
+def build_latent_class(choice_models, membership_model, datatree, *,
+                       num_classes, symmetry_break=True,
+                       class_param_names=None, membership_intercepts=None,
+                       float_dtype=None, jitter=0.3):
+    """Assemble a larch ``LatentClass`` from pre-built submodels.
+
+    This is the single source of truth for wiring a larch latent-class model so
+    callers (SearchLibrium's own :class:`LarchLatentClass` and the production
+    ABM Stage-5 driver) share one construction and cannot drift apart.  The
+    caller supplies ready per-class choice models and a membership model that
+    already carries a valid K-class graph (see
+    :meth:`LarchLatentClass._build_membership_model` for the flat-skeleton
+    builder, or build a dedicated class datatree for dotted membership
+    covariates).  This function attaches them, sets the JAX engine, and applies
+    the class-collapse symmetry break.
+
+    Parameters
+    ----------
+    choice_models : dict[int, larch.Model]
+        Per-class choice models, keyed by class id (0..K-1).
+    membership_model : larch.Model
+        Class-membership model with a K-elemental graph of its own.
+    datatree : larch Dataset or DataTree
+        Shared choice data for the class models.
+    num_classes : int
+    symmetry_break, class_param_names, membership_intercepts, jitter
+        Forwarded to :func:`_symmetry_break_latent_class`.
+    """
+    lx, _P, _LX = _require_larch()
+    kw = {} if float_dtype is None else {"float_dtype": float_dtype}
+    latent = lx.LatentClass(membership_model, choice_models,
+                            datatree=datatree, **kw)
+    latent.compute_engine = "jax"
+    if symmetry_break:
+        _symmetry_break_latent_class(
+            latent, num_classes, class_param_names=class_param_names,
+            membership_intercepts=membership_intercepts, jitter=jitter)
+    return latent
+
+
 __all__ = [
     "LarchMNL", "LarchNestedLogit", "LarchMixedLogit", "LarchLatentClass",
+    "build_latent_class",
 ]
