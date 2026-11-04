@@ -91,9 +91,13 @@ jax = [
     "jaxopt>=0.8.5",
 ]
 larch = [
-    "larch>=6",
+    "larch>=6,<7",
     "sharrow",
     "xarray",
+    # Larch only estimates mixtures (mixed logit) on its JAX engine; the
+    # numba engine ignores them.  Larch's JAX optimizer imports IPython.
+    "jax>=0.4.30",
+    "ipython",
 ]
 skims = [
     "openmatrix",

@@ -299,19 +299,25 @@ class SparseEAAGDS(Search):
         if self.param.generator.rand() < pc_i:
             shared = self._active_vars(child) & self._active_vars(partner)
             p_rand = partner.get('randvars', {}) or {}
-            c_rand = child.get('randvars', {}) or {}
-            for v in shared:
+            c_rand = dict(child.get('randvars', {}) or {})
+            for v in sorted(shared):
                 if v in p_rand and self.param.generator.rand() < 0.5:
                     c_rand[v] = p_rand[v]
             child['randvars'] = {k: val for k, val in c_rand.items()
                                  if k in self._active_vars(child)}
 
         # ---- dec mutation: redraw one variable's distribution --------------
+        # Routed through change_distribution so corvars stay Normal and the
+        # model type stays compatible (e.g. larch_mixed <-> larch_mnl).
         if self.param.generator.rand() < max(pm_i, self.pm0):
-            rands = list((child.get('randvars', {}) or {}).keys())
+            rands = [v for v in (child.get('randvars', {}) or {})
+                     if v not in (getattr(self.param, 'ps_randvars', {}) or {})]
+            current = (child.get('randvars', {}) or {})
             if rands and getattr(self.param, 'distr', None):
                 v = self.random_choice(rands)
-                child['randvars'][v] = self.param.generator.choice(self.param.distr)
+                options = [d for d in self.param.distr if d != current.get(v)]
+                if options:
+                    self.change_distribution(v, self.random_choice(options), child)
 
         # ---- (B) mask crossover: adopt a differing variable from partner ---
         cand = self._candidate_vars()
@@ -335,6 +341,31 @@ class SparseEAAGDS(Search):
                     child = self.add_asvar(v, child)
 
         child = self.repair_solution(child)
+        return self._sync_random_spec(child)
+
+    def _sync_random_spec(self, child):
+        """Make randvars / corvars / model_n mutually consistent.
+
+        The decision-variable operators above edit ``randvars`` directly, so a
+        child can gain random parameters while keeping a fixed-coefficient
+        ``model_n`` (they would be silently ignored), lose its last one while
+        staying a mixed model, or keep a correlated variable whose distribution
+        is no longer Normal (Larch and native correlated mixing need Normal).
+        """
+        try:
+            randvars = child.get('randvars', {}) or {}
+            if hasattr(self, 'normalize_randvars'):
+                randvars = self.normalize_randvars(
+                    child.get('asvars', []) or [], randvars,
+                    child.get('isvars', []) or [])
+            child['randvars'] = randvars
+            corvars = [v for v in (child.get('corvars', []) or [])
+                       if randvars.get(v) == 'n']
+            child['corvars'] = corvars if len(corvars) >= 2 else []
+            if hasattr(self, 'align_model_with_solution'):
+                self.align_model_with_solution(child)
+        except Exception:  # noqa: BLE001 - never lose a child over bookkeeping
+            pass
         return child
 
     def _reproduce(self, mem):

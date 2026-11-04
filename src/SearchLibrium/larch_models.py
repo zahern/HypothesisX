@@ -13,8 +13,13 @@ Flavours
 ``LarchNestedLogit``  — Larch 6 nested logit via ``lx.NestingTree``
                         (nest map ``{nest: [alt codes]}``, like
                         :class:`NestedLogit`).
-``LarchMixedLogit``   — Larch 6 mixed logit with Normal, lognormal,
-                        uniform, triangular, and correlated Normal mixing.
+``LarchMixedLogit``   — Larch 6 mixed logit (random parameters) with every
+                        distribution the search proposes (``n``, ``ln``,
+                        ``nln``, ``tn``, ``u``, ``t``; native mean/spread
+                        parameterisation), correlated Normal blocks,
+                        panel (repeated-choice) likelihood and
+                        Halton/Sobol draws.  JAX engine only: Larch's numba
+                        engine ignores mixtures.
 
 All three share the base :class:`_LarchBase`:
 
@@ -59,132 +64,206 @@ logger = logging.getLogger(__name__)
 
 _CHOICE_COL = "_sl_choice"
 _AVAIL_COL = "_sl_avail"
+_PANEL_COL = "_sl_panel"
+_WEIGHT_COL = "_sl_weight"
 
 
-def _triangular_mixture(lx, target, low, high):
-    """Build a Larch mixture whose target parameter has a triangular draw."""
-    import jax.numpy as jnp
-
-    class Triangular(lx.mixtures.Mixture):
-        def __init__(self):
-            super().__init__()
-            self.target_ = target
-            self.low_ = low
-            self.high_ = high
-            self.itarget = self.ilow = self.ihigh = -1
-
-        def param_names(self):
-            return {self.target_: 0.0, self.low_: -1.0, self.high_: 1.0}
-
-        def prep(self, bucket):
-            self.itarget = bucket.get_param_loc(self.target_)
-            self.ilow = bucket.get_param_loc(self.low_)
-            self.ihigh = bucket.get_param_loc(self.high_)
-
-        def roll(self, draw_vec, parameters):
-            low = parameters[..., self.ilow]
-            high = parameters[..., self.ihigh]
-            mode = parameters[..., self.itarget]
-            span = jnp.maximum(high - low, 1e-8)
-            cdf_mode = jnp.clip((mode - low) / span, 1e-8, 1.0 - 1e-8)
-            left = low + jnp.sqrt(draw_vec * span * (mode - low))
-            right = high - jnp.sqrt(
-                (1.0 - draw_vec) * span * (high - mode))
-            value = jnp.where(draw_vec < cdf_mode, left, right)
-            return parameters.at[..., self.itarget].set(value)
-
-        def to_dict(self):
-            return {
-                "type": "Triangular",
-                "target": self.target_,
-                "low": self.low_,
-                "high": self.high_,
-            }
-
-    return Triangular()
+def _isvar_column(var, alt):
+    return f"_sl_is__{var}__{int(alt)}"
 
 
-def _correlated_normal_mixture(lx, variables, target, draw_index):
-    """Create one correlated-normal component for a Larch model."""
+def isvar_parameter_name(var, alt):
+    """Larch parameter name of an individual-specific variable's coefficient."""
+    return f"B_{var}_{int(alt)}"
+
+
+#: SearchLibrium random-coefficient codes understood by the Larch adapter.
+#: Each maps to the same transform the native ``MixedLogit`` applies to a
+#: standard-uniform draw ``u`` with mean ``b`` and spread ``s``:
+#:
+#: ======  ===============================  ==========================
+#: code    coefficient                      parameters
+#: ======  ===============================  ==========================
+#: ``n``   ``b + s * Phi^-1(u)``            ``B_x``, ``sigma_x``
+#: ``ln``  ``exp(b + s * Phi^-1(u))``       ``B_x``, ``sigma_x`` (log-scale)
+#: ``nln`` ``-exp(b + s * Phi^-1(u))``      ``B_x``, ``sigma_x`` (log-scale)
+#: ``tn``  ``max(b + s * Phi^-1(u), 0)``    ``B_x``, ``sigma_x``
+#: ``u``   ``b + s * (2u - 1)``             ``B_x``, ``sigma_x`` (half-width)
+#: ``t``   ``b + s * tri(u)`` on ``[-1,1]``  ``B_x``, ``sigma_x`` (half-width)
+#: ======  ===============================  ==========================
+LARCH_DISTRIBUTIONS = {
+    "n": "n", "normal": "n",
+    "ln": "ln", "lognormal": "ln",
+    "nln": "nln", "neglognormal": "nln",
+    "tn": "tn", "truncnormal": "tn", "truncated_normal": "tn",
+    "u": "u", "uniform": "u",
+    "t": "t", "triangular": "t",
+}
+
+_DRAW_EPS = 1e-7
+
+
+def _canonical_distribution(spec):
+    """Return the canonical distribution code for a ``randvars`` value."""
+    if isinstance(spec, dict):
+        spec = spec.get("dist", "n")
+    code = LARCH_DISTRIBUTIONS.get(str(spec).strip().lower())
+    if code is None:
+        raise ValueError(
+            f"Unsupported Larch mixing distribution {spec!r}; expected one of "
+            f"{sorted(set(LARCH_DISTRIBUTIONS.values()))}")
+    return code
+
+
+def _distribution_mixture(lx, target, scale, dist):
+    """Larch mixture applying a SearchLibrium distribution to ``target``.
+
+    Unlike ``lx.mixtures.Uniform`` (which randomises its *low* parameter and so
+    never touches the utility coefficient) this always overwrites ``target``,
+    keeps the native mean/spread parameterisation for every distribution, and
+    tolerates a negative spread (its sign is not identified for symmetric
+    distributions, exactly as in the native estimator).
+    """
     import jax.numpy as jnp
     from jax.scipy.special import ndtri
 
-    variables = tuple(variables)
-    target_variable = target[2:] if str(target).startswith("B_") else target
-    target_index = variables.index(target_variable)
-    mean_names = tuple(f"B_{variable}" for variable in variables)
+    dist = _canonical_distribution(dist)
+
+    class SearchLibriumMixture(lx.mixtures.Mixture):
+        def __init__(self):
+            super().__init__()
+            self.target_ = target
+            self.scale_ = scale
+            self.dist_ = dist
+            self.itarget = self.iscale = -1
+
+        def __repr__(self):
+            return (f"SearchLibriumMixture({self.target_!r}, "
+                    f"{self.scale_!r}, dist={self.dist_!r})")
+
+        def param_names(self):
+            return {self.target_: 0.0, self.scale_: 0.1}
+
+        def prep(self, bucket):
+            self.itarget = bucket.get_param_loc(self.target_)
+            self.iscale = bucket.get_param_loc(self.scale_)
+
+        def roll(self, draw_vec, parameters):
+            u = jnp.clip(draw_vec, _DRAW_EPS, 1.0 - _DRAW_EPS)
+            mean = parameters[..., self.itarget]
+            spread = parameters[..., self.iscale]
+            if self.dist_ == "u":
+                value = mean + spread * (2.0 * u - 1.0)
+            elif self.dist_ == "t":
+                tri = jnp.where(u <= 0.5, jnp.sqrt(2.0 * u) - 1.0,
+                                1.0 - jnp.sqrt(2.0 * (1.0 - u)))
+                value = mean + spread * tri
+            else:
+                value = mean + spread * ndtri(u)
+                if self.dist_ == "ln":
+                    value = jnp.exp(value)
+                elif self.dist_ == "nln":
+                    value = -jnp.exp(value)
+                elif self.dist_ == "tn":
+                    value = jnp.maximum(value, 0.0)
+            return parameters.at[..., self.itarget].set(value)
+
+        def to_dict(self):
+            return {"type": "SearchLibriumMixture", "target": self.target_,
+                    "scale": self.scale_, "dist": self.dist_}
+
+    return SearchLibriumMixture()
+
+
+def _correlated_normal_mixture(lx, mean_names, chol_labels, draw_index):
+    """One member of a correlated-Normal block (``b + L z``).
+
+    The block has one mixture per random coefficient so Larch generates one
+    draw column per coefficient; :func:`_correlated_model_class` hands every
+    member the draw columns of the whole block (``draw_cols``, filled in after
+    the mixtures are assembled), and member ``draw_index`` writes coefficient
+    ``draw_index`` of ``b + L z``.
+    """
+    import jax.numpy as jnp
+    from jax.scipy.special import ndtri
+
+    mean_names = tuple(mean_names)
+    chol_labels = tuple(chol_labels)
+    k = len(mean_names)
     chol_names = tuple(
-        f"chol.{row}.{col}"
-        for row in variables
-        for col in variables[:variables.index(row) + 1]
-    )
+        f"chol.{chol_labels[row]}.{chol_labels[col]}"
+        for row in range(k) for col in range(row + 1))
+    diag_names = {f"chol.{c}.{c}" for c in chol_labels}
 
     class CorrelatedNormal(lx.mixtures.Mixture):
         def __init__(self):
             super().__init__()
-            self.target_ = target
+            self.target_ = mean_names[draw_index]
             self.draw_index = int(draw_index)
+            self.draw_cols = None
             self.mean_locs = []
             self.chol_locs = []
 
+        def __repr__(self):
+            return f"CorrelatedNormal({self.target_!r}, block={list(mean_names)})"
+
         def param_names(self):
             values = {name: 0.0 for name in mean_names}
-            values.update({
-                name: (0.1 if name.rsplit(".", 1)[1] ==
-                       name.rsplit(".", 1)[0].split(".")[-1] else 0.0)
-                for name in chol_names
-            })
+            values.update({name: (0.1 if name in diag_names else 0.0)
+                           for name in chol_names})
             return values
 
         def prep(self, bucket):
-            self.mean_locs = [
-                bucket.get_param_loc(name) for name in mean_names
-            ]
-            self.chol_locs = [
-                bucket.get_param_loc(name) for name in chol_names
-            ]
+            self.mean_locs = [bucket.get_param_loc(n) for n in mean_names]
+            self.chol_locs = [bucket.get_param_loc(n) for n in chol_names]
 
-        def roll(self, draw_vec, parameters):
-            # The correlated model subclass calls roll_full instead.
-            return parameters
+        def roll(self, draw_vec, parameters):  # pragma: no cover - guard
+            raise RuntimeError(
+                "CorrelatedNormal needs the full draw vector; build the model "
+                "with _correlated_model_class")
 
         def roll_full(self, draws, parameters):
-            u = jnp.clip(draws[..., list(range(len(variables)))], 1e-8, 1.0 - 1e-8)
+            cols = list(self.draw_cols)
+            u = jnp.clip(draws[..., cols], _DRAW_EPS, 1.0 - _DRAW_EPS)
             z = ndtri(u)
-            means = jnp.stack(
-                [parameters[..., loc] for loc in self.mean_locs], axis=-1)
-            chol = jnp.zeros(
-                (*parameters.shape[:-1], len(variables), len(variables)))
+            means = jnp.stack([parameters[..., loc] for loc in self.mean_locs],
+                              axis=-1)
+            chol = jnp.zeros((*parameters.shape[:-1], k, k))
             pos = 0
-            for row in range(len(variables)):
+            for row in range(k):
                 for col in range(row + 1):
                     chol = chol.at[..., row, col].set(
                         parameters[..., self.chol_locs[pos]])
                     pos += 1
             values = means + jnp.einsum("...ij,...j->...i", chol, z)
-            return parameters.at[..., self.mean_locs[target_index]].set(
-                values[..., target_index])
+            return parameters.at[..., self.mean_locs[self.draw_index]].set(
+                values[..., self.draw_index])
 
         def to_dict(self):
-            return {
-                "type": "CorrelatedNormal",
-                "target": self.target_,
-                "variables": list(variables),
-            }
+            return {"type": "CorrelatedNormal", "target": self.target_,
+                    "block": list(mean_names)}
 
     return CorrelatedNormal()
 
 
 def _correlated_model_class(lx):
-    """Return a Larch model class that supports full-vector mixture draws."""
+    """Return a Larch model class that supports full-vector mixture draws.
+
+    Every member of a correlated block must read the block's *original*
+    parameter means, so the block is evaluated against the un-rolled
+    parameters and the results are written back afterwards.
+    """
     class CorrelatedModel(lx.Model):
         def apply_random_draws(self, parameters, draws=None):
             import jax.numpy as jnp
             parameters = jnp.broadcast_to(
                 parameters, [*draws.shape[:-1], parameters.shape[0]])
+            base = parameters
             for mix_n, mix in enumerate(self.mixtures):
                 if hasattr(mix, "roll_full"):
-                    parameters = mix.roll_full(draws, parameters)
+                    rolled = mix.roll_full(draws, base)
+                    loc = mix.mean_locs[mix.draw_index]
+                    parameters = parameters.at[..., loc].set(rolled[..., loc])
                 else:
                     parameters = mix.roll(draws[..., mix_n], parameters)
             return parameters
@@ -262,7 +341,7 @@ class _LarchBase(DiscreteChoiceModel):
               nests=None, compute_engine=None, reg_alpha=0.0,
               l1_ratio=0.0, verbose=False, draw_method="larch",
               draw_seed=0, common_draws=True, structural_equations=None,
-              corvars=None,
+              corvars=None, panels=None,
               float_dtype=np.float32,
               **kwargs):
         # {
@@ -289,6 +368,7 @@ class _LarchBase(DiscreteChoiceModel):
         self.draw_method = str(draw_method)
         self.draw_seed = int(draw_seed)
         self.common_draws = bool(common_draws)
+        self.panels = None if panels is None else np.asarray(panels).ravel()
         self.float_dtype = np.dtype(float_dtype).type
         self.structural_equations = dict(structural_equations or {})
         self.randvars = dict(randvars or {})
@@ -307,6 +387,30 @@ class _LarchBase(DiscreteChoiceModel):
         frame[_CHOICE_COL] = y
         if self.avail_long is not None:
             frame[_AVAIL_COL] = self.avail_long
+        if self.panels is not None:
+            if len(self.panels) != len(y):
+                raise ValueError(
+                    f"panels size ({len(self.panels)}) != y size ({len(y)})")
+            frame[_PANEL_COL] = self.panels
+        if self.weights is not None and len(self.weights) == len(y):
+            frame[_WEIGHT_COL] = self.weights
+        # Individual-specific variables are constant across alternatives, so a
+        # generic coefficient on them cancels out of every choice probability
+        # (unidentified, infinite standard error).  Give them one
+        # alternative-specific coefficient per non-base alternative instead,
+        # via interacted columns ``var * [alt == a]`` (these stay idca, so the
+        # same datatree serves every engine).
+        self._isvar_cols = {}
+        alt_arr = frame["_sl_alt"].to_numpy()
+        for var in self.isvars:
+            if str(var) not in frame.columns:
+                continue
+            for alt in self.alt_codes:
+                if int(alt) == int(self.base_alt):
+                    continue
+                col = _isvar_column(var, alt)
+                frame[col] = frame[str(var)].to_numpy() * (alt_arr == alt)
+                self._isvar_cols[(str(var), int(alt))] = col
         self._ca_frame = frame
         self.Xnames = list(varnames)
         self.ordered_varnames = list(varnames)
@@ -357,8 +461,18 @@ class _LarchBase(DiscreteChoiceModel):
             expr = term if expr is None else expr + term
         return expr if expr is not None else 0
 
+    def _asvar_columns(self):
+        """Variables entering with one generic coefficient (non-isvars)."""
+        isv = {str(v) for v in self.isvars}
+        return [str(v) for v in self.varnames if str(v) not in isv]
+
     def _specify_mnl_utilities(self, m, P, LX, cols):
+        isv = {str(v) for v in getattr(self, "isvars", [])}
+        cols = [c for c in cols if c not in isv]
         expr = self._linear_utility(P, LX, cols)
+        for (var, alt), col in getattr(self, "_isvar_cols", {}).items():
+            term = P(isvar_parameter_name(var, alt)) * LX(col)
+            expr = term if isinstance(expr, int) else expr + term
         for target, covariates in self.structural_equations.items():
             if target not in cols:
                 continue
@@ -436,6 +550,8 @@ class _LarchBase(DiscreteChoiceModel):
         self.betas = np.asarray(self.coeff_est, dtype=float)
         # Predicted shares for downstream observed-vs-predicted plots.
         try:
+            if len(getattr(m, "mixtures", []) or []):
+                raise RuntimeError("mixed: probabilities simulated by caller")
             probs = np.asarray(m.probability(), dtype=float)
             J = len(self.alt_codes)
             if probs.ndim == 2 and probs.shape[1] == J:
@@ -459,6 +575,41 @@ class _LarchBase(DiscreteChoiceModel):
         self.pred_prob = np.array([])
         return self
 
+    def _fallback_names(self):
+        """Parameter names used when a fit fails before Larch names them."""
+        names = [f"B_{v}" for v in self._asvar_columns()]
+        names += [isvar_parameter_name(v, a) for (v, a) in self._isvar_cols]
+        if self.fit_intercept:
+            names += [f"ASC_{a}" for a in self.alt_codes
+                      if int(a) != int(self.base_alt)]
+        return names
+
+    def _idca_dataset(self, lx):
+        """Larch IDCA dataset (cases sorted by panel when panels are given)."""
+        frame = self._ca_frame
+        if _PANEL_COL in frame.columns:
+            # Larch folds panels by contiguous runs of the group id.
+            frame = frame.sort_values([_PANEL_COL, "_sl_case", "_sl_alt"],
+                                      kind="stable")
+        frame = frame.copy()
+        frame.index = pd.MultiIndex.from_arrays(
+            [frame["_sl_case"].values, frame["_sl_alt"].values],
+            names=["_caseid_", "_altid_"])
+        return lx.Dataset.construct.from_idca(frame), frame
+
+    def _set_case_weights(self, m, frame):
+        if _WEIGHT_COL not in frame.columns:
+            return
+        if _PANEL_COL in frame.columns:
+            # Larch folds ca/co/ch/av into panels but not the weight array.
+            warnings.warn("Larch adapter ignores weights for panel mixed logit",
+                          RuntimeWarning, stacklevel=3)
+            return
+        try:
+            m.weight_co_var = _WEIGHT_COL
+        except Exception:  # noqa: BLE001
+            logger.debug("Larch weights not applied", exc_info=True)
+
     def _maximize_loglike(self, model):
         """Run Larch with the optimizer limits supplied to ``setup``."""
         result = model.maximize_loglike(
@@ -467,6 +618,7 @@ class _LarchBase(DiscreteChoiceModel):
                 "maxiter": max(0, int(self.maxiter)),
                 "ftol": float(self.ftol),
             },
+            quiet=True,
         )
         model._sl_optimizer_result = result
         return result
@@ -480,13 +632,10 @@ class LarchMNL(_LarchBase):
         self.fit_start_time = time.time()
         try:
             lx, P, LX = _require_larch()
-            frame = self._ca_frame.copy()
-            frame.index = pd.MultiIndex.from_arrays(
-                [frame["_sl_case"].values, frame["_sl_alt"].values],
-                names=["_caseid_", "_altid_"])
-            ds = lx.Dataset.construct.from_idca(frame)
+            ds, frame = self._idca_dataset(lx)
             m = self._new_model(ds, lx)
             _set_choice_columns(m)
+            self._set_case_weights(m, frame)
             cols = [str(v) for v in self.varnames]
             self._specify_mnl_utilities(m, P, LX, cols)
             if self.init_coeff is not None:
@@ -509,10 +658,7 @@ class LarchMNL(_LarchBase):
             return self._finalize(m, names, self.sample_size)
         except Exception as e:  # noqa: BLE001
             logger.debug("LarchMNL.fit failed: %r", e)
-            names = [f"B_{v}" for v in self.varnames]
-            if self.fit_intercept:
-                names += [f"ASC_{a}" for a in self.alt_codes if int(a) != int(self.base_alt)]
-            return self._fail(names, self.sample_size)
+            return self._fail(self._fallback_names(), self.sample_size)
     # }
 
 
@@ -547,13 +693,10 @@ class LarchNestedLogit(_LarchBase):
         self.fit_start_time = time.time()
         try:
             lx, P, LX = _require_larch()
-            frame = self._ca_frame.copy()
-            frame.index = pd.MultiIndex.from_arrays(
-                [frame["_sl_case"].values, frame["_sl_alt"].values],
-                names=["_caseid_", "_altid_"])
-            ds = lx.Dataset.construct.from_idca(frame)
+            ds, frame = self._idca_dataset(lx)
             m = self._new_model(ds, lx, graph=self._build_tree(lx))
             _set_choice_columns(m)
+            self._set_case_weights(m, frame)
             cols = [str(v) for v in self.varnames]
             self._specify_mnl_utilities(m, P, LX, cols)
             if self.init_coeff is not None:
@@ -578,18 +721,85 @@ class LarchNestedLogit(_LarchBase):
             return self._finalize(m, names, self.sample_size)
         except Exception as e:  # noqa: BLE001
             logger.debug("LarchNestedLogit.fit failed: %r", e)
-            names = [f"B_{v}" for v in self.varnames]
-            return self._fail(names, self.sample_size)
+            return self._fail(self._fallback_names(), self.sample_size)
     # }
 
 
 class LarchMixedLogit(_LarchBase):
-    """Larch 6 mixed logit with Normal mixing on long-format data.
+    """Larch 6 mixed logit (random parameters) on long-format data.
 
-    ``randvars`` maps variable name -> distribution code (only ``'n'``
-    Normal mixing is currently wired; other codes fall back to Normal with
-    a warning, matching ``MixedRandomRegret``'s convention).
+    ``randvars`` maps a variable to a SearchLibrium distribution code
+    (``'n'``, ``'ln'``, ``'nln'``, ``'tn'``, ``'u'``, ``'t'``; see
+    :data:`LARCH_DISTRIBUTIONS`), so every distribution the specification
+    search can propose is estimated with the same mean/spread
+    parameterisation as the native :class:`MixedLogit`: ``B_<var>`` is the
+    mean (log-scale for ``ln``/``nln``) and ``sigma_<var>`` the spread.
+
+    * **Individual-specific variables** get one coefficient per non-base
+      alternative (``B_<var>_<alt>``).  A random key ``'<var>'`` makes every
+      one of them random; ``'<var>.<alt>'`` (the search's
+      ``allow_random_isvars`` key) makes only that alternative's random.
+    * **Correlated coefficients**: ``corvars`` with two or more Normal random
+      variables are estimated jointly as ``b + L z`` with a lower-triangular
+      Cholesky factor ``chol.<row>.<col>``.
+    * **Panels**: pass ``panels`` (person id per long row) to use the panel
+      likelihood -- one set of draws per person, product of the choice
+      probabilities over that person's choices.  Draws are person-specific
+      by default (``common_draws=False``), as in the native estimator.
+    * **Draws**: ``draw_method='halton'``/``'sobol'`` inject SearchLibrium's
+      own sequences; ``'larch'`` uses Larch's stratified random draws.
+
+    Only Larch's **JAX engine** evaluates ``mixtures``; the numba engine
+    silently drops them and would estimate an MNL whose ``sigma_*``
+    parameters never move.  The adapter therefore always builds the mixed
+    model on JAX and fails the fit (ranked last by the search) if JAX is not
+    available, rather than returning a mislabelled MNL.
     """
+
+    def setup(self, *args, common_draws=False, **kwargs):
+        return super().setup(*args, common_draws=common_draws, **kwargs)
+
+    # -- random-coefficient plan -------------------------------------
+    def _random_terms(self):
+        """Ordered list of ``(key, var, parameter, sigma, dist)`` tuples."""
+        isv = {str(v) for v in self.isvars}
+        asv = set(self._asvar_columns())
+        terms = []
+        for key, spec in (self.randvars or {}).items():
+            key = str(key)
+            dist = _canonical_distribution(spec)
+            if key in asv:
+                terms.append((key, key, f"B_{key}", f"sigma_{key}", dist))
+                continue
+            base, _, alt = key.rpartition(".")
+            if key in isv:
+                targets = [(a, isvar_parameter_name(key, a))
+                           for (v, a) in self._isvar_cols if v == key]
+                for a, pname in targets:
+                    terms.append((key, key, pname, f"sigma_{key}_{a}", dist))
+            elif base in isv and alt.lstrip("-").isdigit() \
+                    and (base, int(alt)) in self._isvar_cols:
+                terms.append((key, base, isvar_parameter_name(base, alt),
+                               f"sigma_{base}_{int(alt)}", dist))
+            else:
+                warnings.warn(
+                    f"Random variable {key!r} is not in the model; ignored.",
+                    RuntimeWarning, stacklevel=3)
+        return terms
+
+    def _correlated_block(self, terms):
+        """Generic Normal random asvars that form a correlated block."""
+        wanted = [str(v) for v in self.corvars]
+        block = [t for t in terms
+                 if t[0] in wanted and t[2] == f"B_{t[0]}"]
+        if len(block) < 2:
+            return []
+        bad = [t[0] for t in block if t[4] != "n"]
+        if bad:
+            raise ValueError(
+                "Larch correlated coefficients require Normal distributions; "
+                f"got non-Normal for {bad}")
+        return block
 
     def fit(self, **kwargs):
         # {
@@ -601,84 +811,66 @@ class LarchMixedLogit(_LarchBase):
                 ensure_jax_environment()
             except Exception:
                 pass
-            frame = self._ca_frame.copy()
-            frame.index = pd.MultiIndex.from_arrays(
-                [frame["_sl_case"].values, frame["_sl_alt"].values],
-                names=["_caseid_", "_altid_"])
-            ds = lx.Dataset.construct.from_idca(frame)
-            # Mixing needs JAX; fall back cleanly when unavailable.
-            model_class = (
-                _correlated_model_class(lx) if len(self.corvars) >= 2
-                else lx.Model
-            )
-            try:
-                m = model_class(ds, compute_engine="jax")
-            except Exception:
-                m = model_class(ds)
+            terms = self._random_terms()
+            block = self._correlated_block(terms)
+            ds, frame = self._idca_dataset(lx)
+            model_class = _correlated_model_class(lx) if block else lx.Model
+            m = model_class(ds, compute_engine="jax",
+                            float_dtype=self.float_dtype)
+            if terms and m.compute_engine != "jax":
+                raise RuntimeError(
+                    "Larch mixed logit needs the JAX compute engine (the numba "
+                    "engine ignores mixtures); install jax.")
+            if self.compute_engine and str(self.compute_engine) != "jax" \
+                    and terms:
+                logger.info("LarchMixedLogit: compute_engine=%r ignored; "
+                            "mixtures are only estimated by JAX",
+                            self.compute_engine)
             _set_choice_columns(m)
+            if _PANEL_COL not in frame.columns:
+                self._set_case_weights(m, frame)
             cols = [str(v) for v in self.varnames]
             self._specify_mnl_utilities(m, P, LX, cols)
-            mixed = set(self.randvars or {})
-            correlated = [
-                var for var in self.corvars
-                if var in mixed and var in cols
-            ]
-            if len(correlated) >= 2 and any(
-                    str(self.randvars[var]).lower() not in {"n", "normal"}
-                    for var in correlated):
-                raise ValueError(
-                    "Larch correlated coefficients currently require Normal "
-                    "distributions")
-            for var in mixed:
-                for suffix in [""] + [f"_{a}" for a in self.alt_codes]:
-                    pname = f"B_{var}{suffix}"
-                    try:
-                        if pname not in m.pf.index:
-                            continue
-                        spec = self.randvars.get(var, "n")
-                        if isinstance(spec, dict):
-                            dist = str(spec.get("dist", "n")).lower()
-                        else:
-                            dist = str(spec).lower()
-                        if var in correlated:
-                            mixture = _correlated_normal_mixture(
-                                lx, correlated, pname, correlated.index(var))
-                        elif dist in {"n", "normal"}:
-                            mixture = lx.mixtures.Normal(
-                                pname, f"sigma_{var}{suffix}")
-                        elif dist in {"ln", "lognormal"}:
-                            mixture = lx.mixtures.LogNormal(
-                                pname, f"sigma_{var}{suffix}")
-                        elif dist in {"nln", "neglognormal"}:
-                            mixture = lx.mixtures.NegLogNormal(
-                                pname, f"sigma_{var}{suffix}")
-                        elif dist in {"u", "uniform"}:
-                            mixture = lx.mixtures.Uniform(
-                                f"low_{var}{suffix}",
-                                f"high_{var}{suffix}")
-                        elif dist in {"t", "triangular"}:
-                            mixture = _triangular_mixture(
-                                lx, pname, f"low_{var}{suffix}",
-                                f"high_{var}{suffix}")
-                        else:
-                            warnings.warn(
-                                f"Unsupported Larch mixture {dist!r} "
-                                f"for {var}; using Normal.",
-                                RuntimeWarning, stacklevel=2)
-                            mixture = lx.mixtures.Normal(
-                                pname, f"sigma_{var}{suffix}")
-                        m.mixtures.append(mixture)
-                    except Exception:
-                        logger.debug("Unable to configure Larch mixture %s",
-                                     pname, exc_info=True)
+
+            # Correlated block first so its draw columns are contiguous;
+            # deterministic order keeps draws reproducible across runs.
+            block_names = [t[2] for t in block]
+            block_labels = [t[0] for t in block]
+            mixtures = [
+                _correlated_normal_mixture(lx, block_names, block_labels, i)
+                for i in range(len(block))]
+            for i, mix in enumerate(mixtures):
+                mix.draw_cols = list(range(len(block)))
+            for key, var, pname, sigma, dist in terms:
+                if pname in block_names:
+                    continue
+                mixtures.append(_distribution_mixture(lx, pname, sigma, dist))
+            for mix in mixtures:
+                m.mixtures.append(mix)
+            self.random_terms = terms
+            self.n_random = len(mixtures)
+
+            if _PANEL_COL in frame.columns:
+                panel_of_case = (frame.groupby("_sl_case", sort=False)
+                                 [_PANEL_COL].first().to_numpy())
+                m.groupid = panel_of_case
+                n_panels = int(len(np.unique(panel_of_case)))
+            else:
+                n_panels = int(self.sample_size)
+            self.n_panels = n_panels
             _configure_larch_draws(
-                m, len(mixed), self.n_draws, self.draw_seed,
-                self.draw_method, self.common_draws, self.sample_size)
-            if self.draw_method.lower() in {"halton", "sobol"} and mixed:
-                # Larch's optimizer does not always materialize injected
-                # ``_draws`` before its first JAX likelihood call.
-                m.make_random_draws(
-                    "jax" if self._engine() == "jax" else "numpy")
+                m, len(mixtures), self.n_draws, self.draw_seed,
+                self.draw_method, self.common_draws, n_panels)
+            if mixtures and self.draw_method.lower() in {"halton", "sobol"}:
+                injected = m._draws
+                drawn = m.make_random_draws("jax")
+                if injected is not None and (
+                        drawn is None
+                        or np.shape(drawn) != np.shape(injected)):
+                    raise RuntimeError(
+                        f"Larch rejected {self.draw_method} draws of shape "
+                        f"{np.shape(injected)} (expected "
+                        f"{np.shape(drawn)})")
             if self.init_coeff is not None:
                 try:
                     m.pvals = np.asarray(self.init_coeff, dtype=float)[:len(m.pnames)]
@@ -703,13 +895,67 @@ class LarchMixedLogit(_LarchBase):
             except Exception:
                 pass
             names = [str(n) for n in m.pnames]
-            self.Kr = len(mixed)
-            return self._finalize(m, names, self.sample_size)
+            self._larch_model = m
+            # Every mixture parameter (sigma / chol) is already in ``names``,
+            # so _finalize counts it in Kf; Kr stays 0 to avoid double counting.
+            out = self._finalize(m, names, self.sample_size)
+            if mixtures:
+                self.pred_prob = self._mixed_pred_prob(m)
+            return out
         except Exception as e:  # noqa: BLE001
-            logger.debug("LarchMixedLogit.fit failed: %r", e)
-            names = [f"B_{v}" for v in self.varnames]
+            logger.warning("LarchMixedLogit.fit failed: %r", e)
+            names = self._fallback_names()
+            for _key, _var, _pname, sigma, _dist in getattr(
+                    self, "random_terms", []) or []:
+                names.append(sigma)
             return self._fail(names, self.sample_size)
     # }
+
+    def simulated_probability(self, m=None):
+        """Simulated choice probabilities, averaged over the mixing draws.
+
+        Larch's ``probability()`` runs on numba and ``jax_probability`` uses
+        the mean parameters, so neither integrates over the random
+        coefficients.  This applies each person's draws
+        (``jax_random_params``) and averages the logit probabilities over
+        them.  Returns ``(n_cases, n_alts)`` in Larch's (panel-sorted) case
+        order; padding rows of unbalanced panels are dropped.
+        """
+        import jax
+        import jax.numpy as jnp
+        from larch.model.jaxmodel import _as_jnp_array, _get_jnp_array
+
+        m = m if m is not None else self._larch_model
+        m.check_random_draws()
+        params = jnp.asarray(m.pvals)
+        rand = m.jax_random_params(params)
+        bundle = {"ca": _get_jnp_array(m.dataset, "ca"),
+                  "co": _get_jnp_array(m.dataset, "co"),
+                  "av": _as_jnp_array(m._data_arrays.av)}
+
+        def one_case(rp, db):
+            pr = jax.vmap(m._jax_probability, in_axes=(0, None))(rp, db)
+            return pr.mean(axis=0)
+
+        J = len(self.alt_codes)
+        if m.groupid is not None:
+            f = jax.vmap(jax.vmap(one_case, in_axes=(None, 0)),
+                         in_axes=(0, 0))
+            probs = np.asarray(f(rand, bundle), dtype=float)
+            probs = probs.reshape(-1, probs.shape[-1])[:, :J]
+            ch = np.asarray(m._data_arrays.ch, dtype=float)
+            real = ch.reshape(-1, ch.shape[-1])[:, :J].sum(axis=1) > 0
+            return probs[real]
+        f = jax.vmap(one_case, in_axes=(0, 0))
+        return np.asarray(f(rand, bundle), dtype=float)[:, :J]
+
+    def _mixed_pred_prob(self, m):
+        try:
+            return self.simulated_probability(m).mean(axis=0)
+        except Exception:  # noqa: BLE001
+            logger.debug("Larch simulated probabilities unavailable",
+                         exc_info=True)
+            return np.array([])
 
 
 class LarchLatentClass(_LarchBase):
@@ -1010,6 +1256,7 @@ def build_latent_class(choice_models, membership_model, datatree, *,
 
 
 __all__ = [
+    "LARCH_DISTRIBUTIONS", "isvar_parameter_name",
     "LarchMNL", "LarchNestedLogit", "LarchMixedLogit", "LarchLatentClass",
     "build_latent_class",
 ]

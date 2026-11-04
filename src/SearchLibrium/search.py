@@ -4203,11 +4203,21 @@ class Search():
     ''' ---------------------------------------------------------- '''
     def change_distribution(self, randvar, new_distr, solution):
     # {
-        solution['randvars'][randvar] = new_distr  # Make change
+        if new_distr == 'f':
+            # 'f' (fixed) means "not random": drop it rather than carrying an
+            # 'f' entry that mixed estimators would have to guess about.
+            solution['randvars'] = {var: val for var, val in solution['randvars'].items()
+                                    if var != randvar}
+        else:
+            solution['randvars'][randvar] = new_distr  # Make change
 
-         # Corvars need to be normally distributed:
+        # Corvars need to be normally distributed (and random at all):
         if randvar in solution['corvars'] and new_distr != 'n':
             solution['corvars'] = [var for var in solution['corvars'] if var != randvar]
+
+        # Keep model_n consistent: e.g. dropping the last random parameter
+        # must move a mixed candidate to a fixed-coefficient model.
+        self.align_model_with_solution(solution)
     # }
 
     # Requirement: solution['randvars'] is not None
@@ -5503,7 +5513,7 @@ class Search():
                   base_alt, maxiter, ftol, gtol, randvars=None, nests=None,
                   n_draws=None, draw_method=None, draw_seed=None,
                   common_draws=None, corvars=None, class_params_spec=None,
-                  member_params_spec=None, num_classes=None):
+                  member_params_spec=None, num_classes=None, panels=None):
     # {
         try:
             from larch_models import (
@@ -5529,7 +5539,9 @@ class Search():
                     l1_ratio=_opts.get('l1_ratio', 0.0),
                     draw_method=draw_method if draw_method is not None else _opts.get('draw_method', 'larch'),
                     draw_seed=draw_seed if draw_seed is not None else _opts.get('draw_seed', 0),
-                    common_draws=common_draws if common_draws is not None else _opts.get('common_draws', True),
+                    # Person-specific draws by default, as in the native MixedLogit.
+                    common_draws=common_draws if common_draws is not None else _opts.get('common_draws', False),
+                    panels=panels,
                     class_params_spec=class_params_spec,
                     member_params_spec=member_params_spec,
                     num_classes=num_classes if num_classes is not None else 2)
@@ -5627,7 +5639,8 @@ class Search():
             base_alt=self.param.base_alt, maxiter=self.param.maxiter,
             ftol=self.param.ftol, gtol=self.param.gtol, randvars=randvars,
             n_draws=draws, draw_method=draw_method, draw_seed=draw_seed,
-            common_draws=common_draws, corvars=corvars)
+            common_draws=common_draws, corvars=corvars,
+            panels=self.param.ind_id)
 
         def _values(model, attr, size):
             value = getattr(model, attr, None)
@@ -5674,16 +5687,22 @@ class Search():
             },
         }
 
-    def _larch_mae(self, cls_name, model, all_vars, is_vars, bc_vars, asc_ind, randvars=None):
+    def _larch_mae(self, cls_name, model, all_vars, is_vars, bc_vars, asc_ind, randvars=None,
+                   corvars=None):
     # {
         _df_test = self.param.df_test if self.param.df_test is not None else self.param.df
+        _test_panels = None
+        if randvars:
+            _test_panels = (self.param.test_ind_id if self.param.df_test is not None
+                            else self.param.ind_id)
         X_test, _ = self._get_orthogonalized_X(all_vars, df=_df_test)
         y_test = self.param.test_choices
         test_model = self.fit_larch(cls_name, X_test, y_test, varnames=all_vars, isvars=is_vars,
                 alts=self.param.test_alt_var, ids=self.param.test_choice_id, transvars=bc_vars,
                 fit_intercept=asc_ind, init_coeff=model.coeff_est, weights=self.param.test_weight_var,
                 avail=self.param.test_avail, base_alt=self.param.base_alt,
-                maxiter=0, ftol=self.param.ftol, gtol=self.param.gtol, randvars=randvars)
+                maxiter=0, ftol=self.param.ftol, gtol=self.param.gtol, randvars=randvars,
+                corvars=corvars, panels=_test_panels)
         # maxiter=0 warm-start still runs finalize; reuse its predictions.
         model.mae = self.compute_mae(test_model)
         return model.mae
@@ -5779,14 +5798,15 @@ class Search():
                 avail=self.param.avail, base_alt=self.param.base_alt,
                 maxiter=self.param.maxiter, ftol=self.param.ftol, gtol=self.param.gtol,
                 randvars=rand_vars if isinstance(rand_vars, dict) else {},
-                corvars=cor_vars)
+                corvars=cor_vars, panels=self.param.ind_id)
         sol['model'] = model
         sol['coeff'] = model.coeff_est
         converged = model.converged
         aic, bic, loglik = model.aic, model.bic, model.loglik
         if self.mae_is_an_objective():
             self._larch_mae('LarchMixedLogit', model, all_vars, is_vars, bc_vars, asc_ind,
-                            randvars=rand_vars if isinstance(rand_vars, dict) else {})
+                            randvars=rand_vars if isinstance(rand_vars, dict) else {},
+                            corvars=cor_vars)
         mae = model.mae
         if getattr(self.param, 'verbose', False):
             model.summarise()

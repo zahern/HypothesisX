@@ -332,3 +332,175 @@ def test_larch_latent_class_membership_flow_recovers_classes():
 def test_larch_compat_noop_flags():
     from SearchLibrium.larch_compat import apply_larch_patches
     assert apply_larch_patches() in (True, False)
+
+
+# ---------------------------------------------------------------------------
+# mixed logit: distributions, panels, isvars, engine (larch + jax needed)
+# ---------------------------------------------------------------------------
+
+def _panel_mixed_data(n_people=120, n_tasks=4, seed=7):
+    """Panel data: random ``time`` coefficient (person-level), fixed ``x``,
+    and an individual-specific ``inc`` with alternative-specific effects."""
+    rng = np.random.default_rng(seed)
+    rows, case = [], 0
+    for p in range(n_people):
+        b_time = -1.0 + 0.8 * rng.normal()
+        inc = rng.normal()
+        for _ in range(n_tasks):
+            x = rng.normal(size=3)
+            t = rng.uniform(0, 2, size=3)
+            v = 0.5 * x + b_time * t + np.array([0.0, 0.5 * inc, -0.4 * inc])
+            ch = int(np.argmax(v + rng.gumbel(size=3)))
+            for j in range(3):
+                rows.append((p, case, j, x[j], t[j], inc, int(j == ch)))
+            case += 1
+    return pd.DataFrame(rows, columns=["pid", "cid", "alt", "x", "time", "inc", "ch"])
+
+
+def _fit_mixed(df, **kw):
+    from SearchLibrium.larch_models import LarchMixedLogit
+    args = dict(X=df[["x", "time", "inc"]].to_numpy(), y=df["ch"].to_numpy(),
+                varnames=["x", "time", "inc"], isvars=["inc"],
+                alts=df["alt"].to_numpy(), ids=df["cid"].to_numpy(),
+                panels=df["pid"].to_numpy(), n_draws=50,
+                draw_method="halton", maxiter=200)
+    args.update(kw)
+    model = LarchMixedLogit().setup(**args)
+    model.fit()
+    return model
+
+
+def _needs_jax():
+    return pytest.mark.skipif(
+        __import__("importlib").util.find_spec("jax") is None,
+        reason="Larch mixtures are only evaluated by the JAX engine")
+
+
+@_needs_larch()
+@_needs_jax()
+@pytest.mark.parametrize("dist", ["n", "ln", "nln", "tn", "u", "t"])
+def test_larch_mixed_every_search_distribution_is_estimated(dist):
+    """Every distribution code the search can propose must reach Larch as a
+    real mixture on ``B_<var>`` (mean) + ``sigma_<var>`` (spread).
+
+    Regression: ``u`` used ``lx.mixtures.Uniform`` (which randomises its *low*
+    parameter, never ``B_time``), ``t`` failed to fit and ``tn`` silently fell
+    back to Normal.
+    """
+    df = _panel_mixed_data()
+    model = _fit_mixed(df, randvars={"time": dist})
+    names = [str(n) for n in model.coeff_names]
+    assert hasattr(model, "_larch_model"), "fit fell into _fail"
+    assert np.isfinite(model.loglik)
+    assert {"B_time", "sigma_time"} <= set(names)
+    assert not any(n.startswith(("low_", "high_")) for n in names)
+    mix = model._larch_model.mixtures[0]
+    assert mix.to_dict()["dist"] == dist
+    # the spread must actually be estimated (it moves off its 0.1 start)
+    if dist in {"n", "u", "t"}:
+        sigma = abs(dict(zip(names, model.coeff_est))["sigma_time"])
+        assert sigma > 0.2
+
+
+@_needs_larch()
+@_needs_jax()
+def test_larch_mixed_panel_isvars_and_simulated_shares():
+    df = _panel_mixed_data()
+    model = _fit_mixed(df, randvars={"time": "n"})
+    names = set(str(n) for n in model.coeff_names)
+    # isvars get alternative-specific coefficients (identified), not B_inc
+    assert {"B_inc_1", "B_inc_2"} <= names and "B_inc" not in names
+    assert model.n_panels == df["pid"].nunique()
+    assert model._larch_model._draws.shape == (model.n_panels, 50, 1)
+    probs = model.simulated_probability()
+    assert probs.shape == (df["cid"].nunique(), 3)
+    np.testing.assert_allclose(probs.sum(axis=1), 1.0, atol=1e-5)
+    np.testing.assert_allclose(model.pred_prob, model.obs_prob, atol=0.03)
+    se = dict(zip(model.coeff_names, model.stderr))
+    assert np.isfinite(se["B_inc_1"]) and np.isfinite(se["sigma_time"])
+
+
+@_needs_larch()
+@_needs_jax()
+def test_larch_mixed_random_isvar_per_alternative_key():
+    df = _panel_mixed_data()
+    model = _fit_mixed(df, randvars={"time": "n", "inc.1": "n"})
+    names = set(str(n) for n in model.coeff_names)
+    assert {"sigma_time", "sigma_inc_1"} <= names
+    assert "sigma_inc_2" not in names
+
+
+@_needs_larch()
+@_needs_jax()
+def test_larch_mixed_never_falls_back_to_numba():
+    """The numba engine ignores ``mixtures`` (it would fit an MNL whose sigma
+    never moves), so a numba request must still be estimated on JAX."""
+    df = _panel_mixed_data()
+    model = _fit_mixed(df, randvars={"time": "n"}, compute_engine="numba")
+    assert model._larch_model.compute_engine == "jax"
+    sigma = abs(dict(zip(model.coeff_names, model.coeff_est))["sigma_time"])
+    assert sigma > 0.2
+
+
+@_needs_larch()
+@_needs_jax()
+def test_larch_mixed_correlated_block_uses_its_own_draw_columns():
+    """A correlated block mixed with an independent random parameter: the
+    block's members must read the block's draw columns, not column 0..k-1
+    regardless of position."""
+    df = _panel_mixed_data()
+    df["z"] = np.random.default_rng(0).normal(size=len(df))
+    model = _fit_mixed(
+        df, X=df[["x", "time", "z", "inc"]].to_numpy(),
+        varnames=["x", "time", "z", "inc"],
+        randvars={"x": "u", "time": "n", "z": "n"}, corvars=["time", "z"])
+    mixes = model._larch_model.mixtures
+    assert [getattr(m, "draw_cols", None) for m in mixes[:2]] == [[0, 1], [0, 1]]
+    assert mixes[2].to_dict()["target"] == "B_x"
+    names = set(str(n) for n in model.coeff_names)
+    assert {"chol.time.time", "chol.z.time", "chol.z.z", "sigma_x"} <= names
+    assert np.isfinite(model.loglik)
+
+
+# ---------------------------------------------------------------------------
+# search perturbations keep the random-parameter spec consistent
+# ---------------------------------------------------------------------------
+
+def _search_for_perturbations(models=("larch_mnl", "larch_mixed")):
+    from SearchLibrium.search import Parameters, Search
+    df = pd.DataFrame({"x": [0.5, 0.2, 0.3, 0.8], "y": [1.0, 0.0, 2.0, 1.0]})
+    p = Parameters(
+        criterions=[("bic", -1)], df=df, varnames=["x", "y"],
+        asvarnames=["x", "y"], isvarnames=[], choice_set=[0, 1],
+        choices=np.array([1, 0, 1, 0], dtype="int32"),
+        alt_var=np.array([1, 0, 1, 0], dtype="int32"),
+        choice_id=np.array([0, 0, 1, 1], dtype="int32"),
+        ind_id=np.array([0, 0, 1, 1], dtype="int32"),
+        models=list(models), auto_as_is=False, allow_corvars=True,
+        distr=["n", "u", "f"])
+    return Search(p)
+
+
+def test_change_distribution_fixed_drops_randvar_and_realigns_model():
+    s = _search_for_perturbations()
+    sol = {"asvars": ["x", "y"], "isvars": [], "randvars": {"x": "n", "y": "n"},
+           "corvars": ["x", "y"], "model_n": "larch_mixed"}
+    s.change_distribution("x", "u", sol)
+    assert sol["randvars"] == {"x": "u", "y": "n"}
+    assert sol["corvars"] == ["y"]
+    s.change_distribution("x", "f", sol)
+    s.change_distribution("y", "f", sol)
+    assert sol["randvars"] == {}
+    assert sol["model_n"] == "larch_mnl"
+
+
+def test_agds_sync_random_spec_after_operators():
+    from SearchLibrium.sparseea_agds import SparseEAAGDS
+    s = _search_for_perturbations()
+    # a child that picked up a random parameter by crossover but kept a
+    # fixed-coefficient model, plus a corvar that is no longer Normal
+    child = {"asvars": ["x", "y"], "isvars": [], "randvars": {"x": "u", "y": "n"},
+             "corvars": ["x", "y"], "model_n": "larch_mnl"}
+    SparseEAAGDS._sync_random_spec(s, child)
+    assert child["model_n"] == "larch_mixed"
+    assert child["corvars"] == []
