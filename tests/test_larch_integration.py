@@ -396,10 +396,37 @@ def test_larch_mixed_every_search_distribution_is_estimated(dist):
     assert not any(n.startswith(("low_", "high_")) for n in names)
     mix = model._larch_model.mixtures[0]
     assert mix.to_dict()["dist"] == dist
-    # the spread must actually be estimated (it moves off its 0.1 start)
-    if dist in {"n", "u", "t"}:
+    # the spread must actually be estimated (it moves off its 0.1 start) with
+    # a finite standard error -- including 'tn' on this negative coefficient
+    if dist in {"n", "u", "t", "tn"}:
         sigma = abs(dict(zip(names, model.coeff_est))["sigma_time"])
         assert sigma > 0.2
+        se = dict(zip(names, model.stderr))
+        assert np.isfinite(se["sigma_time"]) and np.isfinite(se["B_time"])
+
+
+@_needs_larch()
+@_needs_jax()
+def test_larch_mixed_tn_truncates_on_the_coefficients_sign():
+    """'tn' on a negative coefficient (time) must truncate at zero from above
+    (min(., 0)), not pin the draws at zero with max(., 0); the sign chosen in
+    training is carried into a warm-start refit (the MAE path)."""
+    df = _panel_mixed_data()
+    normal = _fit_mixed(df, randvars={"time": "n"})
+    tn = _fit_mixed(df, randvars={"time": "tn", "x": "tn"})
+    assert tn.tn_signs == {"B_time": -1.0, "B_x": 1.0}
+    signs = {m.target_: m.sign_ for m in tn._larch_model.mixtures}
+    assert signs == {"B_time": -1.0, "B_x": 1.0}
+    assert dict(zip(tn.coeff_names, tn.coeff_est))["B_time"] < 0
+    # no worse than a few log-points from the untruncated normal fit
+    assert tn._larch_model.loglike() > normal._larch_model.loglike() - 5.0
+
+    refit = _fit_mixed(df, randvars={"time": "tn", "x": "tn"},
+                       init_coeff=tn.coeff_est, maxiter=0,
+                       tn_signs=tn.tn_signs)
+    assert refit.tn_signs == tn.tn_signs
+    np.testing.assert_allclose(refit._larch_model.loglike(),
+                               tn._larch_model.loglike(), rtol=1e-4)
 
 
 @_needs_larch()

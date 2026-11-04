@@ -87,10 +87,19 @@ def isvar_parameter_name(var, alt):
 #: ``n``   ``b + s * Phi^-1(u)``            ``B_x``, ``sigma_x``
 #: ``ln``  ``exp(b + s * Phi^-1(u))``       ``B_x``, ``sigma_x`` (log-scale)
 #: ``nln`` ``-exp(b + s * Phi^-1(u))``      ``B_x``, ``sigma_x`` (log-scale)
-#: ``tn``  ``max(b + s * Phi^-1(u), 0)``    ``B_x``, ``sigma_x``
+#: ``tn``  ``max(b + s * Phi^-1(u), 0)``    ``B_x``, ``sigma_x`` (see below)
 #: ``u``   ``b + s * (2u - 1)``             ``B_x``, ``sigma_x`` (half-width)
 #: ``t``   ``b + s * tri(u)`` on ``[-1,1]``  ``B_x``, ``sigma_x`` (half-width)
 #: ======  ===============================  ==========================
+#:
+#: ``tn`` is *sign-aware* in the Larch adapter: a normal truncated at zero on
+#: the side of the coefficient's sign, i.e. ``max(., 0)`` for a positive
+#: coefficient and ``min(., 0)`` for a negative one (e.g. time or cost).  The
+#: sign is fixed for the whole fit -- from ``tn_signs`` when given, else from
+#: ``init_coeff``, else from a fixed-coefficient MNL pre-fit -- so the
+#: likelihood stays smooth.  A one-sided ``max(., 0)`` on a negative
+#: coefficient pins most draws at zero, flattens the likelihood and yields
+#: NaN standard errors, ranking the spec last for the wrong reason.
 LARCH_DISTRIBUTIONS = {
     "n": "n", "normal": "n",
     "ln": "ln", "lognormal": "ln",
@@ -115,7 +124,7 @@ def _canonical_distribution(spec):
     return code
 
 
-def _distribution_mixture(lx, target, scale, dist):
+def _distribution_mixture(lx, target, scale, dist, sign=1.0):
     """Larch mixture applying a SearchLibrium distribution to ``target``.
 
     Unlike ``lx.mixtures.Uniform`` (which randomises its *low* parameter and so
@@ -135,6 +144,7 @@ def _distribution_mixture(lx, target, scale, dist):
             self.target_ = target
             self.scale_ = scale
             self.dist_ = dist
+            self.sign_ = -1.0 if float(sign) < 0 else 1.0
             self.itarget = self.iscale = -1
 
         def __repr__(self):
@@ -165,12 +175,15 @@ def _distribution_mixture(lx, target, scale, dist):
                 elif self.dist_ == "nln":
                     value = -jnp.exp(value)
                 elif self.dist_ == "tn":
-                    value = jnp.maximum(value, 0.0)
+                    # truncate at zero on the coefficient's side
+                    value = (jnp.maximum(value, 0.0) if self.sign_ > 0
+                             else jnp.minimum(value, 0.0))
             return parameters.at[..., self.itarget].set(value)
 
         def to_dict(self):
             return {"type": "SearchLibriumMixture", "target": self.target_,
-                    "scale": self.scale_, "dist": self.dist_}
+                    "scale": self.scale_, "dist": self.dist_,
+                    "sign": self.sign_}
 
     return SearchLibriumMixture()
 
@@ -756,8 +769,46 @@ class LarchMixedLogit(_LarchBase):
     available, rather than returning a mislabelled MNL.
     """
 
-    def setup(self, *args, common_draws=False, **kwargs):
-        return super().setup(*args, common_draws=common_draws, **kwargs)
+    def setup(self, *args, common_draws=False, tn_signs=None, **kwargs):
+        super().setup(*args, common_draws=common_draws, **kwargs)
+        self.tn_signs_in = dict(tn_signs or {})
+        return self
+
+    def _mnl_prefit(self, lx, P, LX, ds, frame):
+        """Fixed-coefficient MNL on the same data: ``{param: value}``.
+
+        Gives the sign of each ``tn`` coefficient and starting values for the
+        mixed fit (means start at the MNL estimates instead of zero).
+        """
+        try:
+            m0 = self._new_model(ds, lx)
+            _set_choice_columns(m0)
+            if _PANEL_COL not in frame.columns:
+                self._set_case_weights(m0, frame)
+            self._specify_mnl_utilities(
+                m0, P, LX, [str(v) for v in self.varnames])
+            self._maximize_loglike(m0)
+            return {str(n): float(v) for n, v in zip(m0.pnames, m0.pvals)}
+        except Exception:  # noqa: BLE001
+            logger.debug("LarchMixedLogit: MNL pre-fit failed", exc_info=True)
+            return {}
+
+    def _resolve_tn_signs(self, tn_targets, prefit):
+        """Sign (+1/-1) of each ``tn`` target parameter."""
+        signs = {}
+        init = None
+        if self.init_coeff is not None and getattr(self, "_init_names", None):
+            init = dict(zip(self._init_names,
+                            np.asarray(self.init_coeff, dtype=float)))
+        for pname in tn_targets:
+            if pname in self.tn_signs_in:
+                value = float(self.tn_signs_in[pname])
+            elif init is not None and pname in init:
+                value = init[pname]
+            else:
+                value = prefit.get(pname, 0.0)
+            signs[pname] = -1.0 if value < 0 else 1.0
+        return signs
 
     # -- random-coefficient plan -------------------------------------
     def _random_terms(self):
@@ -841,12 +892,34 @@ class LarchMixedLogit(_LarchBase):
                 for i in range(len(block))]
             for i, mix in enumerate(mixtures):
                 mix.draw_cols = list(range(len(block)))
+            tn_targets = [t[2] for t in terms
+                          if t[4] == "tn" and t[2] not in block_names]
+            prefit = {}
+            if tn_targets and not set(tn_targets) <= set(self.tn_signs_in) \
+                    and self.init_coeff is None:
+                prefit = self._mnl_prefit(lx, P, LX, ds, frame)
+            # Names in the mixed model's order (to read signs off init_coeff).
+            self._init_names = None
+            self.tn_signs = {}
             for key, var, pname, sigma, dist in terms:
                 if pname in block_names:
                     continue
                 mixtures.append(_distribution_mixture(lx, pname, sigma, dist))
             for mix in mixtures:
                 m.mixtures.append(mix)
+            if tn_targets:
+                self._init_names = [str(n) for n in m.pnames]
+                self.tn_signs = self._resolve_tn_signs(tn_targets, prefit)
+                for mix in mixtures:
+                    if getattr(mix, "dist_", None) == "tn":
+                        mix.sign_ = self.tn_signs[mix.target_]
+            if prefit:
+                for name, value in prefit.items():
+                    if name in m.pf.index:
+                        try:
+                            m.set_value(name, value)
+                        except Exception:  # noqa: BLE001
+                            pass
             self.random_terms = terms
             self.n_random = len(mixtures)
 

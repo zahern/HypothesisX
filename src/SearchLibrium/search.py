@@ -5513,7 +5513,8 @@ class Search():
                   base_alt, maxiter, ftol, gtol, randvars=None, nests=None,
                   n_draws=None, draw_method=None, draw_seed=None,
                   common_draws=None, corvars=None, class_params_spec=None,
-                  member_params_spec=None, num_classes=None, panels=None):
+                  member_params_spec=None, num_classes=None, panels=None,
+                  tn_signs=None):
     # {
         try:
             from larch_models import (
@@ -5542,6 +5543,7 @@ class Search():
                     # Person-specific draws by default, as in the native MixedLogit.
                     common_draws=common_draws if common_draws is not None else _opts.get('common_draws', False),
                     panels=panels,
+                    **({'tn_signs': tn_signs} if tn_signs else {}),
                     class_params_spec=class_params_spec,
                     member_params_spec=member_params_spec,
                     num_classes=num_classes if num_classes is not None else 2)
@@ -5702,7 +5704,8 @@ class Search():
                 fit_intercept=asc_ind, init_coeff=model.coeff_est, weights=self.param.test_weight_var,
                 avail=self.param.test_avail, base_alt=self.param.base_alt,
                 maxiter=0, ftol=self.param.ftol, gtol=self.param.gtol, randvars=randvars,
-                corvars=corvars, panels=_test_panels)
+                corvars=corvars, panels=_test_panels,
+                tn_signs=getattr(model, 'tn_signs', None))
         # maxiter=0 warm-start still runs finalize; reuse its predictions.
         model.mae = self.compute_mae(test_model)
         return model.mae
