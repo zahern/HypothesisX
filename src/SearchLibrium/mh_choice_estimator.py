@@ -212,12 +212,18 @@ class IdentificationReport:
     eigenvalues: np.ndarray
     suggested_drop: tuple[str, ...] = ()
     weak_directions: tuple[dict, ...] = ()
+    # Features that do not vary within a case.  In a conditional logit such a
+    # column is a case-level constant and cancels from the probability, so it
+    # is unidentified whatever the information matrix looks like -- see the
+    # constant-column pass in identify_weak_features.
+    constant_features: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
             "condition_number": float(self.condition_number),
             "eigenvalues": [float(v) for v in np.asarray(self.eigenvalues).ravel()],
             "suggested_drop": list(self.suggested_drop),
+            "constant_features": list(self.constant_features),
             "weak_directions": [
                 {
                     "eigenvalue": float(d["eigenvalue"]),
@@ -241,6 +247,7 @@ def identify_weak_features(
     offset_col: str = "log_correction",
     max_drop: int | None = None,
     protected: Sequence[str] = (),
+    constant_tol: float = 1e-10,
 ) -> IdentificationReport:
     """Find structurally weak directions in a long choice-set frame.
 
@@ -248,6 +255,16 @@ def identify_weak_features(
     ``possible_overspec.py``) for the sampled MNL used here: eigendecompose the
     scaled exact information matrix at ``beta`` (zeros when omitted) and return
     one feature per near-null direction as ``suggested_drop``.
+
+    A separate pass catches features that are CONSTANT WITHIN A CASE.  Those are
+    case-level constants in a conditional logit -- they cancel from the
+    probability -- so the estimator leaves them at the ridge (coefficient ~0)
+    however much the column varies across cases.  The eigen test cannot see
+    them: it rescales by ``sqrt(diag(info))``, and for such a column that
+    diagonal is its own numerical residue, so the column reports a unit
+    "self-correlation" and no weak direction.  The share of a feature's
+    variation that lies within cases is the direct test, and any feature below
+    ``constant_tol`` of it is reported in ``constant_features``.
     """
     frame = data if isinstance(data, ChoiceSetFrame) else ChoiceSetFrame.from_long(
         data, feature_cols, case_col=case_col, alt_col=alt_col,
@@ -260,35 +277,75 @@ def identify_weak_features(
     else:
         beta_vec = np.asarray(beta, dtype=float).reshape(-1)
     info, _, _ = frame.information(beta_vec)
-    diag = np.clip(np.diag(info), 1e-300, None)
-    scale = np.sqrt(diag)
-    scaled = info / np.outer(scale, scale)
-    evals, evecs = np.linalg.eigh(0.5 * (scaled + scaled.T))
-    condition = float(evals[-1] / max(evals[0], 1e-300))
-    weak = np.flatnonzero(evals < float(tol))
     protected_set = {str(p) for p in (protected or ())}
     drops: list[str] = []
     directions: list[dict] = []
+
+    # ── Case-constant columns (before the eigen pass) ──────────────────────
+    # Within-case variation is the only variation a conditional logit can use.
+    # A column without it is unidentified whatever the information matrix says
+    # -- and what it says is numerical noise: the row is a difference of two
+    # ~equal quantities, so its diagonal is a residue and the scaled matrix
+    # picks up huge NEGATIVE eigenvalues that then masquerade as weak
+    # directions.  Identify the constant columns first and run the eigen pass on
+    # the remaining submatrix, so those artifacts cannot produce a drop list
+    # (and cannot displace the real loaders by already-claimed names).
+    d = frame.dimension
+    s1 = np.zeros(d)
+    s2 = np.zeros(d)
+    within_ss = np.zeros(d)
+    n_rows = 0
+    for x in frame.x:
+        xi = np.asarray(x, dtype=float)
+        if xi.ndim != 2 or xi.shape[0] < 2:
+            continue
+        s1 += xi.sum(axis=0)
+        s2 += (xi * xi).sum(axis=0)
+        n_rows += xi.shape[0]
+        within_ss += ((xi - xi.mean(axis=0)) ** 2).sum(axis=0)
+    total_ss = np.clip(s2 - (s1 * s1) / max(n_rows, 1), 0.0, None)
+    share = np.divide(within_ss, total_ss,
+                      out=np.zeros(d), where=total_ss > 0)
+    # ``where=total_ss > 0`` leaves the share at 0 for a column with no variance
+    # at all, which is equally unidentified, so one test covers both.
+    constant_mask = share <= float(constant_tol)
+    constant = [names[j] for j in np.flatnonzero(constant_mask)
+                if names[j] not in protected_set]
+    for name in constant:
+        directions.append({"eigenvalue": 0.0, "loadings": {name: 1.0}})
+    drops.extend(constant)
+
+    keep = np.flatnonzero(~constant_mask)
+    keep_names = [names[j] for j in keep]
+    sub = info[np.ix_(keep, keep)]
+    diag = np.clip(np.diag(sub), 1e-300, None)
+    scale = np.sqrt(diag)
+    scaled = sub / np.outer(scale, scale)
+    evals, evecs = np.linalg.eigh(0.5 * (scaled + scaled.T))
+    condition = float(evals[-1] / max(evals[0], 1e-300)) if evals.size else float("nan")
+    weak = np.flatnonzero(evals < float(tol))
+
     for idx in weak:
         # Unscale the direction: v_j = evec_j / sqrt(info_jj).
         v = evecs[:, idx] / scale
         v = v / (np.linalg.norm(v) + 1e-300)
         order = np.argsort(-np.abs(v))
-        top = {names[j]: float(v[j]) for j in order[: min(8, len(order))]}
+        top = {keep_names[j]: float(v[j]) for j in order[: min(8, len(order))]}
         directions.append({"eigenvalue": float(evals[idx]), "loadings": top})
         # Never drop user-protected features (e.g. explicitly requested
         # behavioural interactions); fall through to the next-largest loader.
         j = next((int(k) for k in order
-                  if names[int(k)] not in protected_set), None)
+                  if keep_names[int(k)] not in protected_set), None)
         if j is None:
             continue
-        if abs(v[j]) >= float(loading_threshold) and names[j] not in drops:
-            drops.append(names[j])
+        if abs(v[j]) >= float(loading_threshold) and keep_names[j] not in drops:
+            drops.append(keep_names[j])
     if max_drop is not None and len(drops) > int(max_drop):
         drops = drops[: int(max_drop)]
     return IdentificationReport(
         condition_number=condition, eigenvalues=evals,
-        suggested_drop=tuple(drops), weak_directions=tuple(directions))
+        suggested_drop=tuple(drops), weak_directions=tuple(directions),
+        constant_features=tuple(constant))
 
 
 class GaussianRandomWalkProposal:
@@ -1338,12 +1395,23 @@ def _fit_membership_gammas(case_X, resp, l2: float = 1.0, maxiter: int = 200,
 
 
 def _fit_frame_mnl(frame: "ChoiceSetFrame", x0, *, prior_scale: float = 5.0,
-                   bounds: float = 15.0, maxiter: int = 500, tol: float = 1e-9):
+                   bounds: float = 15.0, maxiter: int = 500, tol: float = 1e-9,
+                   grad_tol: float = 1e-6, retries: int = 2):
     """Weighted MNL fit on a (copied) frame: L-BFGS-B on the analytic gradient.
 
     Mirrors larch's ``minimize(logloss, jac=d_logloss, bounds=pbounds)`` with
     a weak N(0, prior_scale^2) ridge so unidentified directions are bounded.
     The Manski-Lerman offset travels inside the frame, so it is exact here.
+
+    ``ftol`` alone is a relative decrease test, so L-BFGS-B can stop with a
+    large gradient and still report success -- and can stop short of the
+    optimum when it runs out of iterations. The fit is therefore re-started
+    from its own solution while the gradient is too large, keeping the better
+    objective value, and the returned result carries the evidence
+    (``grad_inf``, ``grad_tol``, ``fit_message``) alongside ``success``, which
+    is true when either scipy succeeded or the gradient shows a stationary
+    point. The threshold is per observation, since the likelihood scales with
+    the sample.
     """
     from scipy.optimize import minimize
     d = frame.dimension
@@ -1355,10 +1423,49 @@ def _fit_frame_mnl(frame: "ChoiceSetFrame", x0, *, prior_scale: float = 5.0,
         g = grad - prior_prec * np.asarray(beta, dtype=float)
         return -total, -g
 
-    res = minimize(nll, np.asarray(x0, dtype=float), jac=True,
-                   method="L-BFGS-B",
-                   bounds=[(-float(bounds), float(bounds))] * d,
-                   options={"maxiter": int(maxiter), "ftol": float(tol)})
+    try:
+        g_tol = float(grad_tol) * max(int(frame.n_cases), 1)
+    except Exception:
+        g_tol = float(grad_tol)
+
+    def _run(start, n_iter):
+        # ftol is a relative-decrease test on an objective of order 1e3, so on
+        # its own it stops while the gradient is still ~1e-2. Stop on the
+        # gradient; ftol is only kept as a floating-point floor.
+        return minimize(nll, np.asarray(start, dtype=float), jac=True,
+                        method="L-BFGS-B",
+                        bounds=[(-float(bounds), float(bounds))] * d,
+                        options={"maxiter": int(n_iter),
+                                 "ftol": min(float(tol), 1e-15),
+                                 "gtol": g_tol})
+
+    res = _run(x0, maxiter)
+    left = int(retries)
+    while left > 0:
+        g = np.asarray(nll(np.asarray(res.x, dtype=float))[1], dtype=float)
+        g_inf = float(np.max(np.abs(g))) if g.size else float("nan")
+        if not np.isfinite(g_inf) or g_inf <= g_tol:
+            break
+        left -= 1
+        try:
+            retry = _run(res.x, max(2 * int(maxiter), int(maxiter)))
+        except Exception:
+            break
+        if not np.isfinite(float(getattr(retry, "fun", np.inf))) \
+                or float(retry.fun) > float(res.fun) - 1e-9:
+            break                     # no progress: keep what we had
+        res = retry
+
+    try:
+        g = np.asarray(nll(np.asarray(res.x, dtype=float))[1], dtype=float)
+        g_inf = float(np.max(np.abs(g))) if g.size else float("nan")
+    except Exception:
+        g_inf = float("nan")
+    res.grad_inf = g_inf
+    res.grad_tol = g_tol
+    res.fit_message = str(getattr(res, "message", "") or "")
+    res.converged_evidence = bool(np.isfinite(g_inf) and g_inf <= g_tol)
+    res.success = bool(getattr(res, "success", False) or res.converged_evidence)
     return np.asarray(res.x, dtype=float), float(-res.fun), res
 
 
@@ -1572,10 +1679,22 @@ def estimate_dest_choice_lc(
                 p = np.clip(p, float(share_floor) / n_classes, None)
                 p /= p.sum(axis=1, keepdims=True)
             new_shares = p.mean(axis=0)
-            # M-step: weighted MNL per class + membership gammas
-            betas = [_fit_frame_mnl(_weighted_frame(frame, p[:, c]), betas[c],
-                                    prior_scale=prior_scale, bounds=bounds)[0]
-                     for c in range(n_classes)]
+            # M-step: weighted MNL per class + membership gammas.
+            # Keep each fit's first-order optimality: the optimizer flag only
+            # says the M-step stopped, the gradient says it stopped at an
+            # optimum, and without it the reported class solution carries no
+            # evidence about the M-steps at all.
+            # NB: warm start from the previous iteration's betas, so build the
+            # new vectors in a separate list rather than clearing `betas` first.
+            _prev = betas
+            betas = []
+            mstep_grad = []
+            for c in range(n_classes):
+                _b, _, _r = _fit_frame_mnl(_weighted_frame(frame, p[:, c]),
+                                           _prev[c], prior_scale=prior_scale,
+                                           bounds=bounds)
+                betas.append(_b)
+                mstep_grad.append(float(getattr(_r, "grad_inf", float("nan"))))
             if case_X is not None:
                 gammas = _fit_membership_gammas(case_X, p, l2=membership_l2, standardize=True)
             shares = new_shares
@@ -1618,14 +1737,16 @@ def estimate_dest_choice_lc(
         _rank = (bool(converged), fit_ll)
         if best is None or _rank > (bool(best[4]), best[0]):
             best = (fit_ll, betas, shares, p, converged, iterations,
-                    None if gammas is None else np.asarray(gammas).copy())
-    fit_ll, betas, shares, resp, converged, iterations, gammas = best
+                    None if gammas is None else np.asarray(gammas).copy(),
+                    mstep_grad)
+    fit_ll, betas, shares, resp, converged, iterations, gammas, mstep_grad = best
     if case_X is None:
         # label switching only reorders the fixed-share solution; with a
         # membership equation the reference class structure must be kept.
         order = np.argsort(-np.asarray(shares))
         betas = [betas[i] for i in order]
         resp = np.asarray(resp)[:, order]
+        mstep_grad = [mstep_grad[i] for i in order]
     # Derive the reported shares from the SAME responsibilities that ship with
     # the result. `shares` carried out of the EM loop was the mean of the
     # share_floor-CLIPPED responsibilities, while the returned `resp` is the
@@ -1643,13 +1764,16 @@ def estimate_dest_choice_lc(
                       converged, iterations, frame, responsibilities=resp,
                       membership_coefs=gammas, membership_vars=memb_cols,
                       crash_cols=crash_cols, restart_lls=restart_lls,
-                      bounds=float(bounds), share_floor=float(share_floor))
+                      bounds=float(bounds), share_floor=float(share_floor),
+                      mstep_grad_inf=mstep_grad,
+                      mstep_grad_tol=1e-6 * frame.n_cases)
 
 
 def _lc_result(method, names, betas, ses, shares, fit_ll, _unused, converged,
                iterations, frame, labels=None, responsibilities=None,
                membership_coefs=None, membership_vars=None, crash_cols=None,
-               restart_lls=None, bounds=15.0, share_floor=0.05) -> dict:
+               restart_lls=None, bounds=15.0, share_floor=0.05,
+               mstep_grad_inf=None, mstep_grad_tol=None) -> dict:
     n_classes = len(betas)
     k_params = n_classes * frame.dimension + (n_classes - 1)
     if membership_vars:
@@ -1671,6 +1795,13 @@ def _lc_result(method, names, betas, ses, shares, fit_ll, _unused, converged,
         "converged": bool(converged),
         "iterations": int(iterations),
     }
+    if mstep_grad_inf is not None:
+        _mg = [float(v) for v in mstep_grad_inf]
+        _mt = None if mstep_grad_tol is None else float(mstep_grad_tol)
+        out["mstep_grad_inf"] = _mg
+        out["mstep_grad_tol"] = _mt
+        out["mstep_stationary"] = [bool(_mt is not None and np.isfinite(v)
+                                       and v <= _mt) for v in _mg]
     try:
         from .lc_rail_guard import lc_result_rail as _lc_rail
     except Exception:

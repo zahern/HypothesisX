@@ -319,8 +319,39 @@ def fit_rrm_numba(model, start=None, compute_inference=True):
     result = _sp_min(_obj, start, jac=True, method='BFGS',
                      options={'maxiter': int(getattr(model, 'maxiter', 2000) or 2000),
                               'gtol': 1e-6, 'disp': False})
+    # Same contract as the pure-scipy path: re-polish while the gradient is
+    # still large, then judge convergence on first-order optimality instead of
+    # scipy's success flag (BFGS reports precision loss after it has already
+    # converged, which used to mark every RRM fit as failed).
+    #
+    # The gradient here is a central difference of the njit likelihood, which
+    # is noisy on the near-collinear period design, so the polish and the final
+    # verdict use the analytic numpy gradient: both engines then land on the
+    # same optimum and agree on whether it is one.
+    def _analytic_grad(x):
+        try:
+            return model.get_loglike_gradient(
+                np.asarray(x, dtype=float), np.ones(M, dtype=float) * 1e-10)[1]
+        except Exception:
+            return None
+
+    def _obj_exact(b):
+        b = np.ascontiguousarray(np.asarray(b, dtype=np.float64))
+        f, g = model.get_loglike_gradient(b, np.ones(M, dtype=float) * 1e-10)
+        return float(f), np.asarray(g, dtype=np.float64)
+
+    try:
+        try:
+            from rrm import assess_convergence as _assess, polish_result as _polish
+        except ImportError:
+            from .rrm import assess_convergence as _assess, polish_result as _polish
+        n_obs = int(len(y_idx))
+        result = _polish(_obj_exact, result, grad_fun=_analytic_grad, n_obs=n_obs)
+        model.converged, model.grad_norm_inf, model.fit_message = _assess(
+            result, n_obs=n_obs, grad=_analytic_grad(result.x))
+    except Exception:
+        model.converged = bool(getattr(result, 'success', False))
     model.coeff_est = result.x
-    model.converged = result.success
     model.beta = result.x
     try:
         model.post_process(compute_inference=compute_inference)

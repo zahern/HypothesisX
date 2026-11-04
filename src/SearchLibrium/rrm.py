@@ -46,6 +46,124 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import stats
 from scipy.optimize import minimize
+
+# ── Convergence assessment ─────────────────────────────────────────────────
+# scipy's BFGS reports success=False with "Desired error not necessarily
+# achieved due to precision loss" once the line search can no longer improve
+# at float64 precision. That happens AFTER the optimum has been reached, so
+# treating result.success as the convergence verdict marks good fits as
+# failures. Downstream that is expensive: the ABM pipeline (stage4 Schedule
+# Placement) labels the model 'optimizer_stopped' and down-weights its period
+# probabilities (blend_alpha 0.08-0.35), so a converged RRM contributes almost
+# nothing to the simulated schedule. All 8 RRM timing models in runs
+# 27284748/27293944 hit this.
+#
+# The verdict below is first-order optimality (scaled gradient at the
+# solution), with a short re-polish when the gradient is still large, which is
+# what actually recovers fits that stalled in the line search.
+RRM_GRAD_TOL = 1e-6          # on the MEAN log-likelihood gradient, per obs
+RRM_POLISH_ATTEMPTS = 2
+RRM_POLISH_MAXITER = 2000
+
+
+def grad_tolerance(n_obs=None, gtol=None):
+    """Absolute gradient threshold for a sample of ``n_obs`` observations.
+
+    The likelihood is a sum, so its gradient grows with the sample size: a
+    fixed absolute threshold is strict on small samples and meaningless on
+    large ones. The criterion used here is that the gradient of the *mean* log
+    likelihood is below ``RRM_GRAD_TOL``. At that point the remaining
+    log-likelihood gain is far below what any reported digit could show.
+    """
+    if gtol is not None:
+        return float(gtol)
+    try:
+        n = int(n_obs or 0)
+    except Exception:
+        n = 0
+    return float(RRM_GRAD_TOL * max(n, 1))
+
+
+def _grad_inf_norm(result, n_params=None, grad=None):
+    """Largest absolute gradient component at the reported solution.
+
+    ``grad`` overrides ``result.jac`` so callers holding a more accurate
+    gradient (the analytic numpy one, or the numba engine's finite-difference
+    estimate at a nearly-collinear solution) can supply it.
+    """
+    try:
+        jac = (np.asarray(grad, dtype=float) if grad is not None
+               else np.asarray(result.jac, dtype=float)).ravel()
+        if jac.size == 0 or not np.all(np.isfinite(jac)):
+            return float('nan')
+        return float(np.max(np.abs(jac)))
+    except Exception:
+        return float('nan')
+
+
+def assess_convergence(result, gtol=None, n_obs=None, grad=None):
+    """Decide convergence from the evidence, not only ``result.success``.
+
+    Returns ``(converged, grad_inf, message)``. A fit counts as converged when
+    scipy says so, or when the gradient is small enough to be at a stationary
+    point even though the line search gave up on precision. Unknown gradients
+    fall back to scipy's verdict rather than claiming success.
+    """
+    tol = grad_tolerance(n_obs, gtol)
+    grad = _grad_inf_norm(result, grad=grad)
+    msg = str(getattr(result, 'message', '') or '')
+    success = bool(getattr(result, 'success', False))
+    if success:
+        return True, grad, msg
+    if np.isfinite(grad) and grad <= tol:
+        return True, grad, msg + ' [accepted: scaled gradient below tolerance]'
+    return False, grad, msg
+
+
+def polish_result(fun, result, gtol=None, attempts=None, maxiter=None,
+                  grad_fun=None, n_obs=None):
+    """Re-run BFGS from the reported solution while the gradient is too large.
+
+    The first BFGS call already did the work; this only rescues fits that
+    stopped early with a usable point. The best objective value wins, so a
+    polish pass can never return a worse fit than the one it started from.
+
+    ``grad_fun(x)`` supplies a more accurate gradient than ``result.jac`` for
+    the stopping test (the numba engine's finite differences are noisy where
+    the specification is nearly collinear, which would otherwise keep the
+    retry loop running at a point that is already optimal).
+    """
+    tol = grad_tolerance(n_obs, gtol)
+    n_left = int(RRM_POLISH_ATTEMPTS if attempts is None else attempts)
+    n_iter = int(RRM_POLISH_MAXITER if maxiter is None else maxiter)
+    best = result
+    best_f = float(getattr(result, 'fun', np.inf))
+
+    def _stopping_grad(res):
+        if grad_fun is None:
+            return None
+        try:
+            return grad_fun(res.x)
+        except Exception:
+            return None
+
+    while n_left > 0:
+        ok, grad, _msg = assess_convergence(best, tol, grad=_stopping_grad(best))
+        if ok:
+            break
+        n_left -= 1
+        try:
+            retry = minimize(fun, np.asarray(best.x, dtype=float), jac=True,
+                             method='BFGS', tol=1e-8,
+                             options={'maxiter': n_iter,
+                                      'gtol': max(tol, 1e-6), 'disp': False})
+        except Exception:
+            break
+        f_new = float(getattr(retry, 'fun', np.inf))
+        if not np.isfinite(f_new) or f_new > best_f + 1e-9:
+            break                      # no progress: keep what we had
+        best, best_f = retry, f_new
+    return best
 import pandas as pd
 from time import time
 try:
@@ -635,8 +753,11 @@ class RandomRegret(DiscreteChoiceModel):
             self.fit_start_time = _time()
             result = sp_min(_obj, start, jac=True, method='BFGS',
                             options={'maxiter': 2000, 'gtol': 1e-6, 'disp': False})
+            result = polish_result(_obj, result, maxiter=2000,
+                                   n_obs=self.nb_samples)
             self.coeff_est = result.x
-            self.converged = result.success
+            self.converged, self.grad_norm_inf, self.fit_message = \
+                assess_convergence(result, n_obs=self.nb_samples)
             self.beta      = result.x
             self.post_process()
             return
@@ -688,8 +809,14 @@ class RandomRegret(DiscreteChoiceModel):
             jac=True,
             options={'maxiter': getattr(self, 'maxiter', 2000)},
         )
+        # Re-polish while the gradient is still large, then judge convergence
+        # on first-order optimality rather than scipy's precision-loss flag
+        # (see assess_convergence above).
+        _polish_fun = lambda _x: self.get_loglike_gradient(_x, delta)
+        result = polish_result(_polish_fun, result, n_obs=self.nb_samples)
         self.coeff_est = result.x
-        self.converged =result.success
+        self.converged, self.grad_norm_inf, self.fit_message = \
+            assess_convergence(result, n_obs=self.nb_samples)
         self.beta = result.x  # Extract results
         self.post_process(compute_inference=compute_inference)
     # }

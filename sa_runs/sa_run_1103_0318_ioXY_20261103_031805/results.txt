@@ -1,0 +1,8 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : run_1103_0318_ioXY
+Started      : 20261103_031805
+Output dir   : sa_runs\sa_run_1103_0318_ioXY_20261103_031805
+Criterions   : [('nsig', -1), ('bic', -1)]
+Models       : ['multinomial']
+tI=100, tF=0.01, steps=2, iter/step=2
+────────────────────────────────────────────────────────────

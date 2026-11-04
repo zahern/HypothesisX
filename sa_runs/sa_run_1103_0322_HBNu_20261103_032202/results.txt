@@ -1,0 +1,8 @@
+SearchLibrium — Simulated Annealing Run
+Run ID       : run_1103_0322_HBNu
+Started      : 20261103_032202
+Output dir   : sa_runs\sa_run_1103_0322_HBNu_20261103_032202
+Criterions   : [('bic', -1), ('nsig', -1)]
+Models       : ['multinomial', 'mixed_logit']
+tI=100, tF=0.01, steps=2, iter/step=2
+────────────────────────────────────────────────────────────
