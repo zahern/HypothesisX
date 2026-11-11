@@ -25,9 +25,30 @@ What it fixes (see original module docstring for the full story):
 4. **``pf`` inference sync** — writes ridge-aware ``std_err`` / ``t_stat``
    (``value / se``, not the inverted historic form) / ``p_value`` into the
    parameter frame, served through a ``pf`` property shim.
+5. **Numba engine graph-None rebuild guards** (promoted 2026-11-11;
+   HPC-validated in probe jobs ``lc_graphfix_probe`` / ``lc_classdt_probe``).
+   Larch 6.0.x rebuilds fixed/work arrays from graph slots on every
+   unmangle/reflow; a graph-less (datatreeless) sub-model — e.g. the class
+   membership model whenever upstream wiring skips it — died with
+   ``AttributeError "'NoneType' object has no attribute
+   'node_slot_arrays'"`` the moment anyone reassigns or reads its dataset.
+   Both rebuilds now no-op when ``graph is None``.
+6. **LatentClass membership datatree wiring for tree inputs** (promoted
+   2026-11-11; same probe lineage). Stock larch auto-wires the class
+   membership model's datatree/graph ONLY when ``datatree`` is a Dataset;
+   every tree-shaped input (exactly what the production Stage-5 pipeline
+   passes) took no branch, so the membership model stayed datatreeless and
+   the first ``loglike()`` died inside ``LatentClass.jax_probability``.
+   The patch mirrors the Dataset-branch wiring for non-Dataset inputs by
+   handing the membership model a minimal flat class dataset (case × K
+   altids). Canary-gated: deactivates itself once upstream larch wires
+   membership for DataTree inputs natively.
 
 Idempotent and a safe no-op when larch is not installed or its internals
-differ (every patch site is guarded by ``hasattr``).
+differ (every patch site is guarded by ``hasattr``). Patches 5 and 6 share
+the marker attributes ``_graph_none_guard`` / ``_qut_membership_wiring``
+with the tour pipeline's own ``larch_patches.py``, so applying either copy
+first makes the other a no-op (no double wrapping).
 """
 
 from __future__ import annotations
@@ -271,6 +292,128 @@ def apply_larch_patches() -> bool:
     for _cls in (NumbaModel, JaxModel):
         if _cls is not None:
             _install_pf_shim(_cls)
+
+    # ── numba engine: graph-None rebuild guards ──────────────────────
+    # Larch 6.0.x rebuilds fixed/work arrays from graph slots on every
+    # unmangle/reflow; a graph-less (datatreeless) sub-model therefore dies
+    # with AttributeError "'NoneType' object has no attribute
+    # 'node_slot_arrays'" the moment anyone reassigns or reads its dataset
+    # (first surfaced as the stage-5 LCCM arm's anonymous -1e9 GA sentinel).
+    # Guard both rebuilds to a no-op when graph is None: a graphless model has
+    # no slots to rebuild FROM, and its evaluation path (flow folds) does not
+    # take them from there. Idempotent via the _graph_none_guard marker,
+    # shared with the tour pipeline's larch_patches.py.
+    try:
+        from larch.model import numbamodel as _nbm_g
+    except Exception as _e_g:  # noqa: BLE001
+        _nbm_g = None
+        logger.debug("larch_compat: numbamodel unavailable (%s)", _e_g)
+    if _nbm_g is not None:
+        for _gname in ("_rebuild_fixed_arrays", "_rebuild_work_arrays"):
+            _gorig = getattr(_nbm_g.NumbaModel, _gname, None)
+            if _gorig is None or getattr(_gorig, "_graph_none_guard", False):
+                continue
+
+            def _graph_guarded(orig, _nm):
+                def _impl(self):
+                    if getattr(self, "graph", None) is None:
+                        logger.debug(
+                            "larch_compat: %s skipped for graphless %s",
+                            _nm, type(self).__name__)
+                        return
+                    return orig(self)
+                _impl._graph_none_guard = True
+                return _impl
+
+            setattr(_nbm_g.NumbaModel, _gname, _graph_guarded(_gorig, _gname))
+            logger.info("larch_compat: NumbaModel.%s → graph-None guard", _gname)
+
+    # ── LatentClass: membership-model datatree wiring for tree inputs ──
+    # Larch 6.0.x LatentClass.__init__ auto-wires the class-membership
+    # model's datatree/graph ONLY when ``datatree`` is a Dataset (the
+    # no-groupid ``set_altids`` branch). Every tree-shaped input — exactly
+    # what the production Stage-5 pipeline passes — takes NO branch, so the
+    # membership model stays datatreeless: graph None, _data_arrays None,
+    # and the first loglike() dies inside LatentClass.jax_probability with
+    # "'NoneType' object has no attribute 'av'" (pre-guard form:
+    # 'node_slot_arrays'; validated 2026-11-10 via HPC probes
+    # lc_graphfix_probe / lc_classdt_probe). Reference arms converge only
+    # because they pass a flat Dataset.
+    #
+    # The patch mirrors the no-groupid wiring for non-Dataset inputs by
+    # handing the membership model a minimal flat class dataset
+    # (case × K altids) — the intercept-only membership used by the
+    # pipeline needs nothing more, larch builds the membership graph from
+    # these altids, and reflow overwrites classmodel.dataset with the
+    # derived class data anyway. Covariate plumbing stays the caller's
+    # business, as in stock larch. Canary-gated: deactivates itself once
+    # upstream larch wires membership for DataTree inputs natively.
+    def _lc_membership_needs_wiring():
+        import pandas as _pd_lc
+        from larch.dataset import DataTree as _DT, Dataset as _DS
+        try:
+            _d = _pd_lc.DataFrame(
+                {"case": ["a", "a", "b", "b"], "alt": [1, 2, 1, 2],
+                 "ch": [1.0, 0.0, 0.0, 1.0]}
+            ).set_index(["case", "alt"])
+            dto = _DS.construct.from_idca(_d, fill_missing=0.0)
+            _cm = larch.Model()                    # membership model
+            _ch = larch.Model()                    # single class
+            _ch.utility_co[2] = larch.P("g") * 1.0
+            _lc = larch.LatentClass(_cm, {1: _ch}, datatree=_DT(main=dto))
+            return getattr(_lc.class_membership_model, "datatree",
+                           None) is None
+        except Exception as _e_c:  # noqa: BLE001
+            logger.debug("larch_compat: LC membership canary failed (%r) "
+                         "— assuming wiring needed", _e_c)
+            return True
+
+    if _lc_membership_needs_wiring():
+        from larch.dataset import DataTree as _DT_w, Dataset as _DS_w
+        _LC_cls = larch.LatentClass
+        _lc_orig_init = _LC_cls.__init__
+        if not getattr(_lc_orig_init, "_qut_membership_wiring", False):
+
+            def _lc_wired_init(self, classmodel, choicemodels,
+                               datatree=None, **kw):
+                try:
+                    if (classmodel.datatree is None and datatree is not None
+                            and not isinstance(datatree, _DS_w)):
+                        _keys = sorted(choicemodels.keys())
+                        _rid = datatree.root_dataset
+                        _dims = list(_rid.sizes)
+                        _cdim = next(
+                            (d for d in _dims
+                             if "caseid" in str(d).lower()
+                             or str(d).startswith("_case")),
+                            None)
+                        if _cdim is None:
+                            _cdim = max(_dims,
+                                        key=lambda d: int(_rid.sizes[d]))
+                        _nc = int(_rid.sizes[_cdim])
+                        import pandas as _pd_lc2
+                        _ca = _pd_lc2.DataFrame({
+                            "case_id": np.repeat(np.arange(_nc), len(_keys)),
+                            "_altid_": np.tile(
+                                np.asarray(_keys, dtype=np.int64), _nc),
+                        }).set_index(["case_id", "_altid_"])
+                        classmodel.datatree = _DS_w.construct.from_idca(
+                            _ca, fill_missing=0.0)
+                        logger.info(
+                            "larch_compat: LatentClass membership datatree "
+                            "wired for %s input (%d classes)",
+                            type(datatree).__name__, len(_keys))
+                except Exception as _e_mw:  # noqa: BLE001
+                    logger.debug(
+                        "larch_compat: membership wiring skipped (%r)",
+                        _e_mw)
+                return _lc_orig_init(self, classmodel, choicemodels,
+                                     datatree=datatree, **kw)
+
+            _lc_wired_init._qut_membership_wiring = True
+            _LC_cls.__init__ = _lc_wired_init
+            logger.info("larch_compat: LatentClass.__init__ → membership "
+                        "datatree wiring for tree inputs")
 
     logger.info("larch_compat: applied")
     return True

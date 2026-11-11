@@ -218,7 +218,8 @@ def test_stage_configs():
 def test_registry_lists_larch_models():
     from SearchLibrium.search import ModelRegistry
     models = ModelRegistry().get_models()
-    assert {"larch_mnl", "larch_nested", "larch_mixed"} <= set(models)
+    assert {"larch_mnl", "larch_nested", "larch_mixed",
+            "larch_latent_class"} <= set(models)
 
 
 def test_parameters_accepts_larch_opts_quietly(capsys):
