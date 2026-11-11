@@ -72,7 +72,10 @@ def test_graph_none_rebuild_guards_installed():
     model = lx.Model()
     assert getattr(model, "graph", None) is None
     model._rebuild_fixed_arrays()
-    model._rebuild_work_arrays()
+    # larch calls this with on_missing_data=...; the guard must forward the
+    # keyword instead of raising TypeError (smoke_s5b regression, 2026-11-11).
+    model._rebuild_work_arrays(on_missing_data="silent")
+    model._rebuild_work_arrays(on_missing_data="raise")
 
 
 def test_latent_class_membership_wired_for_datatree_input():

@@ -315,13 +315,16 @@ def apply_larch_patches() -> bool:
                 continue
 
             def _graph_guarded(orig, _nm):
-                def _impl(self):
+                # Forward *args/**kwargs: larch calls
+                # _rebuild_work_arrays(on_missing_data=...), and dropping that
+                # keyword raises TypeError before the graph guard is reached.
+                def _impl(self, *args, **kwargs):
                     if getattr(self, "graph", None) is None:
                         logger.debug(
                             "larch_compat: %s skipped for graphless %s",
                             _nm, type(self).__name__)
                         return
-                    return orig(self)
+                    return orig(self, *args, **kwargs)
                 _impl._graph_none_guard = True
                 return _impl
 
